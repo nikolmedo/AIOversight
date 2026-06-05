@@ -1,5 +1,6 @@
 import { ConnectorContext, QuotaBucket, QuotaProvider, QuotaSnapshot } from '../types';
 import { fetchClaudeUsage } from './browser-session';
+import { ClaudeCodeCliQuotaProvider } from './cli-quota';
 
 interface UsageWindow {
   utilization?: number;
@@ -26,6 +27,13 @@ class ClaudeCodeQuotaProvider implements QuotaProvider {
   constructor(private readonly ctx: ConnectorContext) {}
 
   async fetch(): Promise<QuotaSnapshot> {
+    // Try the claude CLI first — already authenticated, no browser session needed
+    try {
+      return await new ClaudeCodeCliQuotaProvider().fetch();
+    } catch {
+      // CLI unavailable, timed out, or output unparseable — fall through to browser session
+    }
+
     const fetchedAt = Date.now();
     const result = await fetchClaudeUsage();
 
