@@ -1,0 +1,14 @@
+node_modules/
+dist/
+release/
+.DS_Store
+*.log
+.env
+.env.*
+.atl/
+.claude/
+assets/tray-icon.png
+assets/tray-icon@2x.png
+assets/icon.png
+assets/icon.ico
+assets/icon.icns

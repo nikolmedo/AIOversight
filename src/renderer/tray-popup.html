@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; img-src 'self' data:;" />
+  <title>AI Oversight</title>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="tray-popup.css" />
+</head>
+<body>
+  <header class="popup-header">
+    <div class="brand">
+      <img class="logo" src="assets/ai-icon.png" alt="" />
+      <div>
+        <h1>AI Oversight</h1>
+        <p class="tagline">Live quota across integrations</p>
+      </div>
+    </div>
+  </header>
+  <main id="content">
+    <p class="empty">Loading…</p>
+  </main>
+  <footer class="popup-footer">
+    <div class="footer-row">
+      <button id="refreshAll" class="refresh-btn" aria-label="Refresh quotas">↻ Refresh</button>
+      <span id="refreshTimer" class="refresh-timer" aria-live="polite"></span>
+      <button id="openSettings" class="primary small">Settings…</button>
+    </div>
+  </footer>
+  <script src="tray-popup.js"></script>
+</body>
+</html>

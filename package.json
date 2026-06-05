@@ -1,0 +1,32 @@
+{
+  "name": "aioversight",
+  "version": "0.1.1",
+  "private": true,
+  "description": "Lightweight, framework-agnostic monitoring tool for autonomous AI agents — execution alerts, human-in-the-loop interventions, and universal token/quota tracking.",
+  "main": "dist/main/index.js",
+  "author": "@nikolmedo",
+  "license": "MIT",
+  "scripts": {
+    "postinstall": "node scripts/generate-icons.js",
+    "build": "tsc -p tsconfig.json && node scripts/copy-renderer.js",
+    "dev": "npm run build && electron .",
+    "start": "electron .",
+    "rebuild": "npm run build && electron .",
+    "smoke": "npm run build && node scripts/smoke.js",
+    "package": "npm run build && electron-builder",
+    "package:mac": "npm run build && electron-builder --mac",
+    "package:win": "npm run build && electron-builder --win",
+    "clean": "rimraf dist release"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "electron": "^31.3.1",
+    "electron-builder": "^24.13.3",
+    "rimraf": "^5.0.5",
+    "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "sql.js": "^1.14.1"
+  }
+}

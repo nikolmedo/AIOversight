@@ -1,0 +1,215 @@
+/**
+ * Connector framework — types shared by every integration.
+ *
+ * A Connector is a self-contained integration with one or both of:
+ *   - a `detector` that emits AgentEvent (waiting / finished) for desktop
+ *     notifications.
+ *   - a `quota` provider that returns a normalised QuotaSnapshot polled by
+ *     the QuotaService.
+ *
+ * Each integration lives under `src/main/connectors/<id>/` and exports a
+ * default `Connector` definition. Adding a new provider is just dropping a
+ * folder and registering it in `registry.ts`.
+ */
+
+// --- Notification side ------------------------------------------------------
+
+/**
+ * Two flavours of notification event:
+ *   - 'waiting'  -> the agent has paused mid-task and needs a human to act
+ *                   (e.g. a tool call awaiting approval).
+ *   - 'finished' -> the agent has completed its turn with a final answer
+ *                   and no pending tool calls.
+ */
+export type EventKind = 'waiting' | 'finished';
+
+export interface AgentEvent {
+  /** Stable id for the conversation/session. Used for de-dup and cooldowns. */
+  sessionId: string;
+  /** Human label for the producing tool: "Cursor", "Claude Code", etc. */
+  agent: string;
+  /** Which connector raised this event (matches Connector.id). */
+  detectorId: string;
+  kind: EventKind;
+  /** Free-form short message to show in the notification body. */
+  message: string;
+  /** Optional title override. Defaults vary by kind. */
+  title?: string;
+  /** Optional file path the user might want to jump to. */
+  source?: string;
+  detectedAt: number;
+}
+
+/** Back-compat alias kept so older imports keep working. */
+export type WaitingEvent = AgentEvent;
+
+/**
+ * Status of the last meaningful line in a transcript.
+ *   - 'pending' : assistant message that contains a tool_use / function_call
+ *                 with no following resolution. -> waiting.
+ *   - 'final'   : assistant message with text only, no pending tool. -> finished.
+ *   - 'tool'    : orphan tool_use / function_call line. -> waiting.
+ *   - 'user'    : user is the last speaker; no event fires.
+ *   - 'unknown' : couldn't classify; no event fires.
+ */
+export type LineStatus = 'user' | 'pending' | 'final' | 'tool' | 'unknown';
+
+export interface Detector {
+  start(): Promise<void> | void;
+  stop(): Promise<void> | void;
+}
+
+// --- Quota side -------------------------------------------------------------
+
+/** One usage bucket (e.g. individual credits, team pool, per-model requests). */
+export interface QuotaBucket {
+  id: string;
+  label: string;
+  used: number;
+  limit: number | null;
+  remaining: number | null;
+  unit: 'credits' | 'requests' | 'usd';
+  enabled: boolean;
+}
+
+/**
+ * Normalised quota snapshot every connector returns. Renderers and the tray
+ * popup work off this shape exclusively, so adding a new connector doesn't
+ * require any UI changes.
+ */
+export type QuotaSnapshot =
+  | {
+      ok: true;
+      fetchedAt: number;
+      buckets: QuotaBucket[];
+      membershipType?: string;
+      limitType?: string;
+      billingCycleStart?: string;
+      billingCycleEnd?: string;
+      displayMessages: string[];
+      authMethod?: 'bearer' | 'cookie' | 'api-key' | 'pat' | string;
+      /** Optional one-line summary the connector wants in the tray tooltip. */
+      trayLine?: string;
+      /** Optional source path / URL for the UI's footnote. */
+      source?: string;
+    }
+  | {
+      ok: false;
+      fetchedAt: number;
+      error: string;
+      /** Optional source path / URL the UI can show as "looked at:". */
+      source?: string;
+      /**
+       * Set when the failure is because the user must sign in interactively
+       * (e.g. claude.ai). The UI shows a "Sign in" button that triggers the
+       * connector's login flow instead of just displaying the error.
+       */
+      needsLogin?: boolean;
+    };
+
+export interface QuotaProvider {
+  fetch(): Promise<QuotaSnapshot>;
+}
+
+// --- Configuration schema ---------------------------------------------------
+
+export interface ConnectorConfigField {
+  key: string;
+  label: string;
+  /**
+   * 'secret' fields are stored encrypted via Electron safeStorage and never
+   * round-tripped to the renderer. They display as `<input type=password>`
+   * with placeholder "(set)" once a value exists.
+   *
+   * 'enum' fields render as a `<select>` populated from `options`.
+   */
+  type: 'string' | 'number' | 'boolean' | 'paths' | 'secret' | 'enum';
+  default: string | number | boolean | string[];
+  help?: string;
+  /** Which subsection this field belongs to. Defaults to 'notifications'. */
+  section?: 'notifications' | 'quota' | 'general';
+  /** Hide the field unless `quota` (or `notifications`) is enabled. */
+  requiresEnabled?: 'notifications' | 'quota';
+  /** For `type: 'enum'`: the available choices. */
+  options?: Array<{ value: string; label: string }>;
+}
+
+// --- Connector definition ---------------------------------------------------
+
+/**
+ * Runtime context handed to every detector / quota provider when constructed.
+ * The runtime injects `secret()` for safeStorage-backed values and `log()`
+ * for structured logs that surface in the Logs tab.
+ */
+export interface ConnectorContext {
+  /**
+   * Emit an event from a detector. The runtime fills in `detectorId` and
+   * `detectedAt`, and defaults `kind` to 'waiting' for back-compat.
+   */
+  emit(
+    event: Omit<AgentEvent, 'detectorId' | 'detectedAt' | 'kind'> & {
+      detectedAt?: number;
+      kind?: EventKind;
+    },
+  ): void;
+  log(level: 'debug' | 'info' | 'warn' | 'error', message: string, meta?: Record<string, unknown>): void;
+  resolvePath(p: string): string;
+  /**
+   * Look up a secret stored via SecretStore. Returns null when missing.
+   * Secrets are namespaced as `<connectorId>::<key>`.
+   */
+  secret(key: string): string | null;
+}
+
+export interface Connector {
+  /** Stable identifier, matches settings key. */
+  id: string;
+  /** Display name shown in the UI card header. */
+  name: string;
+  /** Vendor / company, used for grouping and a small pill in the UI. */
+  vendor: string;
+  description: string;
+  enabledByDefault: boolean;
+  /** Settings fields rendered in the Integrations card. */
+  configSchema: ConnectorConfigField[];
+  /** Optional notification detector. Omit if the integration has no detector. */
+  detector?: {
+    create(config: Record<string, unknown>, ctx: ConnectorContext): Detector;
+  };
+  /** Optional quota provider. Omit if the integration has no quota source. */
+  quota?: {
+    /** Default poll interval in minutes if the user hasn't set an override. */
+    defaultIntervalMinutes: number;
+    create(config: Record<string, unknown>, ctx: ConnectorContext): QuotaProvider;
+  };
+}
+
+// --- Persisted shape (used by SettingsStore + IPC) --------------------------
+
+export interface ConnectorEnabled {
+  notifications: boolean;
+  quota: boolean;
+}
+
+export interface ConnectorRuntimeConfig {
+  enabled: Record<string, ConnectorEnabled>;
+  config: Record<string, Record<string, unknown>>;
+  /** Optional per-connector poll interval override (minutes). 0 = manual. */
+  pollOverrideMinutes?: Record<string, number>;
+}
+
+// --- Public metadata sent to the renderer (no secrets) ----------------------
+
+export interface ConnectorMetadata {
+  id: string;
+  name: string;
+  vendor: string;
+  description: string;
+  enabledByDefault: boolean;
+  hasDetector: boolean;
+  hasQuota: boolean;
+  defaultIntervalMinutes?: number;
+  configSchema: ConnectorConfigField[];
+  /** Which secret keys exist (so the UI can show "(set)" without value). */
+  setSecretKeys?: string[];
+}

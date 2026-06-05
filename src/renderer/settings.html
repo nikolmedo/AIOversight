@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; script-src 'self'; img-src 'self' data:;" />
+  <title>AI Oversight</title>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="settings.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img class="logo" src="assets/ai-icon.png" alt="" />
+      <div class="brand-meta">
+        <h1>AI Oversight</h1>
+        <p class="tagline">Agent notifications &amp; quota tracking</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <span class="live-badge">Live</span>
+      <span id="pauseBadge" class="badge hidden">Paused</span>
+      <button id="testBtn" class="ghost">Send test notification</button>
+      <button id="pauseBtn" class="ghost">Pause</button>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="integrations">Integrations</button>
+    <button class="tab" data-tab="events">Recent events</button>
+    <button class="tab" data-tab="logs">Logs</button>
+    <button class="tab" data-tab="general">General</button>
+    <button class="tab" data-tab="integrate">Webhook recipe</button>
+  </nav>
+
+  <main>
+    <section id="tab-integrations" class="tab-panel active">
+      <p class="hint">
+        Each integration is a self-contained connector with its own
+        <strong>notifications</strong> and <strong>quota</strong> sections. Toggle
+        either independently. Credentials stay encrypted on this machine.
+      </p>
+      <div id="connectors"></div>
+    </section>
+
+    <section id="tab-events" class="tab-panel">
+      <div class="section-header">
+        <h2>Recent events</h2>
+        <button id="clearEvents" class="ghost small">Clear</button>
+      </div>
+      <ul id="events" class="events"></ul>
+      <p class="empty hidden" id="eventsEmpty">No events yet. The bell will ring when an agent waits on you or finishes a turn.</p>
+    </section>
+
+    <section id="tab-logs" class="tab-panel">
+      <h2>Diagnostic logs</h2>
+      <pre id="logs" class="logs"></pre>
+    </section>
+
+    <section id="tab-general" class="tab-panel">
+      <h2>General</h2>
+      <fieldset class="quiet">
+        <legend>Notifications</legend>
+        <label class="row">
+          <input type="checkbox" id="showNotifications" />
+          <span>Show desktop notifications (master switch)</span>
+        </label>
+        <label class="row">
+          <input type="checkbox" id="notifyOnWaiting" />
+          <span>An agent is <strong>waiting on me</strong> (paused on a tool / approval prompt)</span>
+        </label>
+        <label class="row">
+          <input type="checkbox" id="notifyOnFinished" />
+          <span>An agent <strong>finished its turn</strong> (final answer, no pending tools)</span>
+        </label>
+        <label class="row">
+          <span>Per-session cooldown (seconds)</span>
+          <input type="number" min="1" max="3600" id="cooldown" class="num" />
+        </label>
+      </fieldset>
+      <fieldset class="quiet">
+        <legend>Quota</legend>
+        <label class="row">
+          <input type="checkbox" id="showQuotaInTray" />
+          <span>Show quota summary in menu bar / tray tooltip</span>
+        </label>
+        <label class="row">
+          <span>Default auto-refresh (minutes, 0 = manual only)</span>
+          <input type="number" min="0" max="1440" id="quotaPollMinutes" class="num" />
+        </label>
+        <p class="hint">
+          Each integration may override this in its own card. Connectors that
+          require an API key won't poll until you've set one.
+        </p>
+      </fieldset>
+      <fieldset class="quiet">
+        <legend>Quiet hours</legend>
+        <label class="row">
+          <input type="checkbox" id="quietEnabled" />
+          <span>Suppress notifications during a window</span>
+        </label>
+        <div class="row inline">
+          <label>From <input type="number" min="0" max="23" id="quietStart" class="num small" /></label>
+          <label>To <input type="number" min="0" max="23" id="quietEnd" class="num small" /></label>
+          <span class="hint">24-hour, local time</span>
+        </div>
+      </fieldset>
+      <p class="hint" id="settingsPath"></p>
+    </section>
+
+    <section id="tab-integrate" class="tab-panel">
+      <h2>Webhook recipe</h2>
+      <p>
+        For agents we don't introspect natively (GitHub Copilot, Gemini /
+        Antigravity, Cline, custom MCP servers, shell hooks, CI…), POST a JSON
+        payload to the local webhook to fire a notification.
+      </p>
+      <pre class="code" id="curlExample"></pre>
+      <h3>Hook examples</h3>
+      <p>Add to a Claude Code <code>SessionStart</code>/<code>PreToolUse</code> hook, a Cursor hook, an Aider <code>--read</code> command, or any agent-side script:</p>
+      <pre class="code">{
+  "agent": "Copilot",
+  "sessionId": "vscode-workspace-123",
+  "kind": "waiting",
+  "title": "Copilot wants to run a command",
+  "message": "Allow execution of 'npm install'?",
+  "source": "/Users/me/projects/myapp"
+}</pre>
+      <p class="hint">
+        <code>kind</code> is <code>"waiting"</code> (default) or <code>"finished"</code>.
+        Use <code>"finished"</code> from a shell wrapper that traps the agent's exit
+        to be notified when its OS process terminates. All fields except
+        <code>agent</code> and <code>message</code> are optional.
+      </p>
+    </section>
+  </main>
+
+  <script src="settings.js" defer></script>
+</body>
+</html>
