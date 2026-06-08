@@ -114,10 +114,18 @@
     if (buckets.length === 0) {
       return '<p class="empty small">No usage buckets yet.</p>';
     }
-    // First bucket = primary, rest = collapsible.
-    return buckets
-      .map((b, i) => renderBucket(b, { collapsible: i > 0 }))
-      .join('');
+    const withPct = buckets
+      .filter(b => b.limit != null && b.limit > 0)
+      .sort((a, b) => {
+        const pa = Math.round((a.used / a.limit!) * 100);
+        const pb = Math.round((b.used / b.limit!) * 100);
+        return pb - pa;
+      });
+    const noPct = buckets.filter(b => !(b.limit != null && b.limit > 0));
+    return [
+      ...withPct.map(b => renderBucket(b, { collapsible: false })),
+      ...noPct.map(b => renderBucket(b, { collapsible: true })),
+    ].join('');
   }
 
   function renderConnectorBlock(def: ConnectorMetadata, snap: QuotaSnapshot | undefined): string {

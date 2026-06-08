@@ -128,6 +128,7 @@ interface AgentWatcherAPI {
   getQuotas(): Promise<Record<string, QuotaSnapshot>>;
   refreshQuota(id?: string): Promise<QuotaSnapshot | Record<string, QuotaSnapshot>>;
   claudeLogin(): Promise<boolean>;
+  copilotLogin(): Promise<boolean>;
   onEvent(cb: (e: RecentEvent) => void): () => void;
   onLog(cb: (e: LogEntry) => void): () => void;
   onPaused(cb: (paused: boolean) => void): () => void;

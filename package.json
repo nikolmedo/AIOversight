@@ -1,6 +1,6 @@
 {
   "name": "aioversight",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Lightweight, framework-agnostic monitoring tool for autonomous AI agents — execution alerts, human-in-the-loop interventions, and universal token/quota tracking.",
   "main": "dist/main/index.js",

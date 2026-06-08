@@ -9,6 +9,8 @@ import { QuotaService } from './connectors/quota-service';
 import { SecretStore } from './connectors/secret-store';
 import { QuotaSnapshot } from './connectors/types';
 import { startClaudeLogin } from './connectors/claude-code/browser-session';
+import { startCopilotLogin } from './connectors/github-copilot/copilot-login';
+import CopilotConnector from './connectors/github-copilot';
 
 let tray: Tray | null = null;
 let trayHandle: TrayHandle | null = null;
@@ -247,6 +249,14 @@ function registerIpc(): void {
     // Refresh the Claude quota as soon as the user finishes signing in, so the
     // panel updates without waiting for the next poll.
     startClaudeLogin(() => void quotaService!.refresh('claude-code'));
+    return true;
+  });
+
+  ipcMain.handle('copilot:login', () => {
+    // Same idea as claude:login — refresh the moment the device-flow completes.
+    startCopilotLogin(secretStore!, runtime!.contextFor(CopilotConnector), () =>
+      void quotaService!.refresh('github-copilot'),
+    );
     return true;
   });
 

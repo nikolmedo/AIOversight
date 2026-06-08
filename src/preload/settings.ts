@@ -20,6 +20,7 @@ const api = {
   getQuotas: () => ipcRenderer.invoke('quota:get'),
   refreshQuota: (id?: string) => ipcRenderer.invoke('quota:refresh', id),
   claudeLogin: () => ipcRenderer.invoke('claude:login'),
+  copilotLogin: () => ipcRenderer.invoke('copilot:login'),
   onEvent: (cb: (e: unknown) => void) => {
     const listener = (_: unknown, e: unknown) => cb(e);
     ipcRenderer.on('event', listener);

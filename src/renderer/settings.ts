@@ -107,9 +107,10 @@ function renderConnectorCard(def: ConnectorMetadata): HTMLElement {
     ({ notifications: false, quota: false } as ConnectorEnabled);
   const cfg = initial.settings.connectors.config[def.id] ?? {};
 
-  const card = document.createElement('div');
+  const card = document.createElement('details');
   card.className = 'connector';
   card.dataset.connectorId = def.id;
+  if (enabledState.notifications || enabledState.quota) card.setAttribute('open', '');
 
   const notifFields = def.configSchema.filter(f => (f.section ?? 'notifications') === 'notifications');
   const quotaFields = def.configSchema.filter(f => f.section === 'quota');
@@ -151,7 +152,7 @@ function renderConnectorCard(def: ConnectorMetadata): HTMLElement {
     : '';
 
   card.innerHTML = `
-    <div class="connector-header">
+    <summary class="connector-header">
       <div class="connector-title-block">
         <div class="connector-title">${escapeHtml(def.name)}</div>
         <div class="connector-desc">${escapeHtml(def.description)}</div>
@@ -160,7 +161,7 @@ function renderConnectorCard(def: ConnectorMetadata): HTMLElement {
         ${def.hasDetector ? '<span class="pill pill-section">notifications</span>' : ''}
         ${def.hasQuota ? '<span class="pill pill-section">quota</span>' : ''}
       </div>
-    </div>
+    </summary>
     ${notifSection}
     ${quotaSection}
   `;
@@ -222,16 +223,18 @@ function renderConnectorCard(def: ConnectorMetadata): HTMLElement {
     );
 
     // The snapshot panel is re-rendered via innerHTML, so delegate the
-    // "Sign in to Claude" click from the persistent panel element.
+    // "Sign in" click from the persistent panel element.
     const panel = card.querySelector('[data-role="quota-snapshot"]') as HTMLElement;
     panel.addEventListener('click', async e => {
-      const btn = (e.target as HTMLElement).closest('[data-role="claude-login"]') as
+      const btn = (e.target as HTMLElement).closest('[data-role="connector-login"]') as
         | HTMLButtonElement
         | null;
       if (!btn) return;
       btn.disabled = true;
       btn.textContent = 'Opening sign-in…';
-      await window.aw.claudeLogin();
+      const id = btn.dataset.connectorId;
+      if (id === 'claude-code') await window.aw.claudeLogin();
+      else if (id === 'github-copilot') await window.aw.copilotLogin();
     });
 
     refreshQuotaCardFor(card, def);
@@ -360,17 +363,26 @@ function refreshQuotaCard(id: string): void {
 function refreshQuotaCardFor(card: HTMLElement, def: ConnectorMetadata): void {
   const panel = card.querySelector('[data-role="quota-snapshot"]') as HTMLElement;
   if (!panel) return;
-  panel.innerHTML = renderQuotaSnapshot(quotas[def.id]);
+  panel.innerHTML = renderQuotaSnapshot(quotas[def.id], def.id, def.name);
 }
 
-function renderQuotaSnapshot(q: QuotaSnapshot | undefined): string {
+const LOGIN_LABELS: Record<string, string> = {
+  'claude-code': 'Sign in to Claude',
+  'github-copilot': 'Sign in to GitHub Copilot',
+};
+
+function renderQuotaSnapshot(q: QuotaSnapshot | undefined, connectorId?: string, connectorName?: string): string {
   if (!q) {
     return '<p class="empty small">No data yet — click <em>Refresh now</em>.</p>';
   }
   if (!q.ok) {
-    const loginBtn = q.needsLogin
-      ? '<button class="primary small" data-role="claude-login">Sign in to Claude</button>'
+    const loginLabel = connectorId
+      ? (LOGIN_LABELS[connectorId] ?? `Sign in to ${connectorName ?? connectorId}`)
       : '';
+    const loginBtn =
+      q.needsLogin && connectorId
+        ? `<button class="primary small" data-role="connector-login" data-connector-id="${escapeHtml(connectorId)}">${escapeHtml(loginLabel)}</button>`
+        : '';
     return `
       <div class="quota-error">${escapeHtml(q.error)}</div>
       ${loginBtn}

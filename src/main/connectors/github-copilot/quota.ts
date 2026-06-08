@@ -3,30 +3,14 @@ import { ConnectorContext, QuotaBucket, QuotaProvider, QuotaSnapshot } from '../
 /**
  * GitHub Copilot quota provider.
  *
- * GitHub deprecated the `/copilot/usage` endpoint in 2025 in favour of
- * `/copilot/metrics`. This provider:
+ * Uses a single OAuth token obtained via the device-flow in `copilot-login.ts`.
+ * The same token is used for both the personal-quota endpoint and (optionally)
+ * the official org metrics endpoint — no PAT or separate mode needed.
  *
- *   1. Tries the **org** path first (`/orgs/{slug}/...`).
- *   2. If that returns 404 (and the user hasn't pinned a slug type), falls
- *      back to the **enterprise** path (`/enterprises/{slug}/...`).
- *   3. Surfaces aggregated usage metrics + active seat counts when available.
- *
- * Auth: classic PAT with `manage_billing:copilot` (and `read:org` /
- * `read:enterprise` for the matching scope), or a fine-grained token with
- * the equivalent permissions on the target org.
+ * Personal quota  : GET copilot_internal/user  (internal, unsupported by GitHub)
+ * Org metrics     : GET /orgs/{slug}/copilot/metrics  (official API — only when
+ *                   `org` config key is set and the token has manage_billing:copilot)
  */
-
-type SlugType = 'org' | 'enterprise' | 'auto';
-
-type Endpoint = 'metrics' | 'billing' | 'usage';
-
-function endpointUrl(slugType: 'org' | 'enterprise', slug: string, endpoint: Endpoint): string {
-  const base =
-    slugType === 'org'
-      ? `https://api.github.com/orgs/${encodeURIComponent(slug)}`
-      : `https://api.github.com/enterprises/${encodeURIComponent(slug)}`;
-  return `${base}/copilot/${endpoint}`;
-}
 
 async function httpsGetJson(
   url: string,
@@ -68,186 +52,76 @@ async function httpsGetJson(
   });
 }
 
-class CopilotQuotaProvider implements QuotaProvider {
-  private cfg: Record<string, unknown> = {};
-  constructor(private readonly ctx: ConnectorContext) {}
-  setConfig(cfg: Record<string, unknown>): void {
-    this.cfg = cfg;
-  }
+// Headers that mirror VS Code Copilot Chat — the internal endpoint may check
+// these to verify the request comes from an official editor client.
+const EDITOR_HEADERS: Record<string, string> = {
+  'Editor-Version': 'vscode/1.107.0',
+  'Editor-Plugin-Version': 'copilot-chat/0.35.0',
+  'Copilot-Integration-Id': 'vscode-chat',
+  'User-Agent': 'GitHubCopilotChat/0.35.0',
+};
 
-  async fetch(): Promise<QuotaSnapshot> {
-    const fetchedAt = Date.now();
-    const pat = this.ctx.secret('githubPat');
-    const slug = (this.cfg.org as string | undefined)?.trim();
-    const requested = ((this.cfg.slugType as string | undefined) ?? 'auto') as SlugType;
+const COPILOT_USER_URL = 'https://api.github.com/copilot_internal/user';
 
-    if (!pat) {
-      return {
-        ok: false,
-        fetchedAt,
-        error:
-          'No GitHub PAT set. Create a token with `manage_billing:copilot` (+ `read:org` for org slugs, `read:enterprise` for enterprise slugs) and paste it below.',
-      };
-    }
-    if (!slug) {
-      return {
-        ok: false,
-        fetchedAt,
-        error:
-          'No GitHub slug configured. GitHub does not expose per-user Copilot quota for individual plans — set an org or enterprise slug you administer.',
-      };
-    }
+// ---- Personal quota parsing -------------------------------------------------
 
-    const headers = {
-      Authorization: `Bearer ${pat}`,
-      Accept: 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent': 'aioversight',
-    };
-
-    // Decide which slug types to probe.
-    const candidateTypes: Array<'org' | 'enterprise'> =
-      requested === 'org'
-        ? ['org']
-        : requested === 'enterprise'
-          ? ['enterprise']
-          : ['org', 'enterprise'];
-
-    const attempts: string[] = [];
-    let firstError: string | null = null;
-
-    for (const slugType of candidateTypes) {
-      this.ctx.log('debug', `[copilot] trying ${slugType} ${slug}`);
-      const probe = await this.fetchFor(slugType, slug, headers, attempts, fetchedAt);
-      if (probe) return probe;
-      // probe is null means 404 (try the next type) or a recoverable miss.
-      // If a hard error already happened, fetchFor returns the snapshot directly.
-      if (!firstError) {
-        firstError = `Tried ${attempts[attempts.length - 1]} → 404`;
-      }
-    }
-
-    return {
-      ok: false,
-      fetchedAt,
-      error: this.buildNotFoundMessage(slug, requested, attempts),
-    };
-  }
-
-  /**
-   * Tries the {metrics, billing} pair for one slug type. Returns:
-   *   - ok snapshot on success.
-   *   - error snapshot on a hard failure (auth / 5xx).
-   *   - null on 404 so the caller can try the next slug type.
-   */
-  private async fetchFor(
-    slugType: 'org' | 'enterprise',
-    slug: string,
-    headers: Record<string, string>,
-    attempts: string[],
-    fetchedAt: number,
-  ): Promise<QuotaSnapshot | null> {
-    // Metrics is the modern endpoint. Older PATs may only see /usage; we fall
-    // back to it on 404 from /metrics specifically.
-    const metricsUrl = endpointUrl(slugType, slug, 'metrics');
-    attempts.push(metricsUrl);
-    const metrics = await httpsGetJson(metricsUrl, headers);
-
-    if (metrics.status === 401 || metrics.status === 403) {
-      return {
-        ok: false,
-        fetchedAt,
-        error: `GitHub auth failed (${metrics.status}) on ${metricsUrl}: ${formatGhError(metrics.status, metrics.json)}`,
-      };
-    }
-
-    let dailyData: Array<Record<string, unknown>> | null = null;
-    let metricsSource = metricsUrl;
-
-    if (metrics.status === 404) {
-      // Try legacy /usage on the same slug type — some org plans never got /metrics.
-      const usageUrl = endpointUrl(slugType, slug, 'usage');
-      attempts.push(usageUrl);
-      const usage = await httpsGetJson(usageUrl, headers);
-      if (usage.status === 404) {
-        return null;
-      }
-      if (usage.status >= 400) {
-        return {
-          ok: false,
-          fetchedAt,
-          error: `GitHub ${usage.status} on ${usageUrl}: ${formatGhError(usage.status, usage.json)}`,
-        };
-      }
-      dailyData = (usage.json ?? []) as Array<Record<string, unknown>>;
-      metricsSource = usageUrl;
-    } else if (metrics.status >= 400) {
-      return {
-        ok: false,
-        fetchedAt,
-        error: `GitHub ${metrics.status} on ${metricsUrl}: ${formatGhError(metrics.status, metrics.json)}`,
-      };
-    } else {
-      dailyData = (metrics.json ?? []) as Array<Record<string, unknown>>;
-    }
-
-    const buckets = parseCopilotMetrics(dailyData ?? []);
-
-    // Billing endpoint for seat counts. Optional — failures here are non-fatal.
-    const billingUrl = endpointUrl(slugType, slug, 'billing');
-    attempts.push(billingUrl);
-    try {
-      const billing = await httpsGetJson(billingUrl, headers);
-      if (billing.status < 400) {
-        const seatBucket = parseSeatBreakdown(billing.json as Record<string, unknown>);
-        if (seatBucket) buckets.unshift(seatBucket);
-      }
-    } catch {
-      // ignore — seats are decoration
-    }
-
-    return {
-      ok: true,
-      fetchedAt,
-      buckets,
-      membershipType: `copilot-${slugType}:${slug}`,
-      displayMessages: [],
-      authMethod: 'pat',
-      source: metricsSource,
-    };
-  }
-
-  private buildNotFoundMessage(slug: string, requested: SlugType, attempts: string[]): string {
-    const triedList = attempts.length > 0 ? `\nTried:\n  ${attempts.join('\n  ')}` : '';
-    if (requested === 'org') {
-      return (
-        `GitHub returned 404 for org "${slug}". ` +
-        `If "${slug}" is actually an enterprise slug (Copilot Standalone customers often have one), switch the slug type to "Enterprise" below. ` +
-        `Otherwise verify the slug and that your PAT has manage_billing:copilot + read:org on this org.${triedList}`
-      );
-    }
-    if (requested === 'enterprise') {
-      return (
-        `GitHub returned 404 for enterprise "${slug}". ` +
-        `Verify the slug and that your PAT has manage_billing:copilot + read:enterprise.${triedList}`
-      );
-    }
-    return (
-      `GitHub returned 404 for "${slug}" as both an organization and an enterprise. ` +
-      `Common causes: typo in the slug; PAT missing manage_billing:copilot; PAT classic vs fine-grained mismatch; ` +
-      `or you are not an admin of this org/enterprise (Copilot endpoints return 404 instead of 403 for non-admins).${triedList}`
-    );
-  }
+interface QuotaSnapshotEntry {
+  entitlement?: number;
+  remaining?: number;
+  unlimited?: boolean;
 }
 
-function parseCopilotMetrics(daily: Array<Record<string, unknown>>): QuotaBucket[] {
-  // Supports both shapes:
-  //   - legacy /usage: { total_active_users, total_acceptances_count,
-  //     total_suggestions_count, total_chat_turns }[]
-  //   - new /metrics:  { total_active_users, total_engaged_users,
-  //     copilot_ide_code_completions: { editors:[{ models:[{ total_code_acceptances, total_code_suggestions, ... }]}] },
-  //     copilot_ide_chat: { editors:[{ models:[{ total_chats, total_chat_insertion_events, ... }]}] },
-  //     copilot_dotcom_chat / copilot_dotcom_pull_requests, ... }[]
+const QUOTA_LABELS: Record<string, string> = {
+  premium_interactions: 'Premium requests',
+  chat: 'Chat',
+  completions: 'Code completions',
+};
+
+function parsePersonalQuota(json: Record<string, unknown>): {
+  buckets: QuotaBucket[];
+  membershipType?: string;
+  billingCycleEnd?: string;
+  displayMessages: string[];
+} {
+  const buckets: QuotaBucket[] = [];
+  const snapshots = json.quota_snapshots as Record<string, QuotaSnapshotEntry> | undefined;
+
+  for (const [key, snap] of Object.entries(snapshots ?? {})) {
+    if (!snap || typeof snap !== 'object') continue;
+    const label = QUOTA_LABELS[key] ?? key;
+
+    if (snap.unlimited) {
+      buckets.push({ id: key, label: `${label} (unlimited)`, used: 0, limit: null, remaining: null, unit: 'requests', enabled: true });
+      continue;
+    }
+
+    const limit = Number.isFinite(snap.entitlement) ? Number(snap.entitlement) : null;
+    const remaining = Number.isFinite(snap.remaining) ? Number(snap.remaining) : null;
+    if (limit == null && remaining == null) continue;
+
+    buckets.push({
+      id: key,
+      label,
+      used: limit != null && remaining != null ? Math.max(0, limit - remaining) : 0,
+      limit,
+      remaining,
+      unit: 'requests',
+      enabled: true,
+    });
+  }
+
+  const resetDate = typeof json.quota_reset_date === 'string' ? json.quota_reset_date : undefined;
+  return {
+    buckets,
+    membershipType: typeof json.copilot_plan === 'string' ? json.copilot_plan : undefined,
+    billingCycleEnd: resetDate,
+    displayMessages: resetDate ? [`Quota resets ${resetDate}`] : [],
+  };
+}
+
+// ---- Org metrics parsing ----------------------------------------------------
+
+function parseOrgMetrics(daily: Array<Record<string, unknown>>): QuotaBucket[] {
   let activeUsersPeak = 0;
   let engagedUsersPeak = 0;
   let suggestionsAccepted = 0;
@@ -259,15 +133,11 @@ function parseCopilotMetrics(daily: Array<Record<string, unknown>>): QuotaBucket
     activeUsersPeak = Math.max(activeUsersPeak, Number(day.total_active_users ?? 0));
     engagedUsersPeak = Math.max(engagedUsersPeak, Number(day.total_engaged_users ?? 0));
 
-    // Legacy fields
     suggestionsAccepted += Number(day.total_acceptances_count ?? 0);
     suggestionsTotal += Number(day.total_suggestions_count ?? 0);
     chatTurns += Number(day.total_chat_turns ?? 0);
 
-    // New /metrics shape — code completions
-    const ide = day.copilot_ide_code_completions as
-      | { editors?: Array<{ models?: Array<Record<string, unknown>> }> }
-      | undefined;
+    const ide = day.copilot_ide_code_completions as { editors?: Array<{ models?: Array<Record<string, unknown>> }> } | undefined;
     if (ide?.editors) {
       for (const editor of ide.editors) {
         for (const m of editor.models ?? []) {
@@ -277,10 +147,7 @@ function parseCopilotMetrics(daily: Array<Record<string, unknown>>): QuotaBucket
       }
     }
 
-    // New /metrics shape — IDE chat
-    const ideChat = day.copilot_ide_chat as
-      | { editors?: Array<{ models?: Array<Record<string, unknown>> }> }
-      | undefined;
+    const ideChat = day.copilot_ide_chat as { editors?: Array<{ models?: Array<Record<string, unknown>> }> } | undefined;
     if (ideChat?.editors) {
       for (const editor of ideChat.editors) {
         for (const m of editor.models ?? []) {
@@ -289,34 +156,24 @@ function parseCopilotMetrics(daily: Array<Record<string, unknown>>): QuotaBucket
       }
     }
 
-    // New /metrics shape — dotcom chat
-    const dotcom = day.copilot_dotcom_chat as
-      | { models?: Array<Record<string, unknown>> }
-      | undefined;
+    const dotcom = day.copilot_dotcom_chat as { models?: Array<Record<string, unknown>> } | undefined;
     if (dotcom?.models) {
-      for (const m of dotcom.models) {
-        chatTurns += Number(m.total_chats ?? 0);
-      }
+      for (const m of dotcom.models) chatTurns += Number(m.total_chats ?? 0);
     }
 
-    // New /metrics shape — PR summaries
-    const prs = day.copilot_dotcom_pull_requests as
-      | { repositories?: Array<Record<string, unknown>> }
-      | undefined;
+    const prs = day.copilot_dotcom_pull_requests as { repositories?: Array<Record<string, unknown>> } | undefined;
     if (prs?.repositories) {
-      for (const r of prs.repositories) {
-        prSummaries += Number(r.total_pr_summaries_created ?? 0);
-      }
+      for (const r of prs.repositories) prSummaries += Number(r.total_pr_summaries_created ?? 0);
     }
   }
 
   const buckets: QuotaBucket[] = [];
-  if (activeUsersPeak) buckets.push(req('active-users-peak', 'Peak active users (period)', activeUsersPeak));
-  if (engagedUsersPeak) buckets.push(req('engaged-users-peak', 'Peak engaged users (period)', engagedUsersPeak));
+  if (activeUsersPeak) buckets.push(orgBucket('active-users-peak', 'Org: peak active users', activeUsersPeak));
+  if (engagedUsersPeak) buckets.push(orgBucket('engaged-users-peak', 'Org: peak engaged users', engagedUsersPeak));
   if (suggestionsTotal) {
     buckets.push({
-      id: 'suggestions',
-      label: 'Code suggestions (accepted / total)',
+      id: 'org-suggestions',
+      label: 'Org: code suggestions (accepted / total)',
       used: suggestionsAccepted,
       limit: suggestionsTotal,
       remaining: Math.max(0, suggestionsTotal - suggestionsAccepted),
@@ -324,29 +181,12 @@ function parseCopilotMetrics(daily: Array<Record<string, unknown>>): QuotaBucket
       enabled: true,
     });
   }
-  if (chatTurns) buckets.push(req('chat-turns', 'Copilot Chat turns', chatTurns));
-  if (prSummaries) buckets.push(req('pr-summaries', 'Pull request summaries', prSummaries));
+  if (chatTurns) buckets.push(orgBucket('org-chat-turns', 'Org: chat turns', chatTurns));
+  if (prSummaries) buckets.push(orgBucket('org-pr-summaries', 'Org: PR summaries', prSummaries));
   return buckets;
 }
 
-function parseSeatBreakdown(json: Record<string, unknown>): QuotaBucket | null {
-  const breakdown = json.seat_breakdown as Record<string, unknown> | undefined;
-  if (!breakdown) return null;
-  const total = Number(breakdown.total ?? 0);
-  const active = Number(breakdown.active_this_cycle ?? 0);
-  if (!Number.isFinite(total) || total <= 0) return null;
-  return {
-    id: 'seats-active',
-    label: 'Active Copilot seats',
-    used: Number.isFinite(active) ? active : 0,
-    limit: total,
-    remaining: Math.max(0, total - (Number.isFinite(active) ? active : 0)),
-    unit: 'requests',
-    enabled: true,
-  };
-}
-
-function req(id: string, label: string, used: number): QuotaBucket {
+function orgBucket(id: string, label: string, used: number): QuotaBucket {
   return { id, label, used, limit: null, remaining: null, unit: 'requests', enabled: true };
 }
 
@@ -356,6 +196,112 @@ function formatGhError(status: number, json: unknown): string {
     return obj.documentation_url ? `${obj.message} (${obj.documentation_url})` : obj.message;
   }
   return `HTTP ${status}`;
+}
+
+// ---- Provider ---------------------------------------------------------------
+
+class CopilotQuotaProvider implements QuotaProvider {
+  private cfg: Record<string, unknown> = {};
+  constructor(private readonly ctx: ConnectorContext) {}
+  setConfig(cfg: Record<string, unknown>): void {
+    this.cfg = cfg;
+  }
+
+  async fetch(): Promise<QuotaSnapshot> {
+    const fetchedAt = Date.now();
+    const oauthToken = this.ctx.secret('copilotOauthToken');
+
+    if (!oauthToken) {
+      return {
+        ok: false,
+        fetchedAt,
+        needsLogin: true,
+        error:
+          'Not signed in to GitHub Copilot. Click "Sign in to GitHub Copilot" below — ' +
+          'it opens a browser once and never asks again.',
+      };
+    }
+
+    // copilot_internal/user accepts the raw ghu_ OAuth token directly via the
+    // `token` scheme. It must NOT use the exchanged short-lived HMAC session
+    // token (that one is for inference endpoints only).
+    const personalHeaders = {
+      Authorization: `token ${oauthToken}`,
+      Accept: 'application/json',
+      ...EDITOR_HEADERS,
+    };
+
+    const res = await httpsGetJson(COPILOT_USER_URL, personalHeaders);
+
+    if (res.status === 401 || res.status === 403) {
+      return {
+        ok: false,
+        fetchedAt,
+        needsLogin: true,
+        error:
+          `GitHub Copilot returned ${res.status} — your session may have expired. ` +
+          `Click "Sign in to GitHub Copilot" to reconnect.`,
+      };
+    }
+    if (res.status >= 400) {
+      return {
+        ok: false,
+        fetchedAt,
+        error: `GitHub Copilot ${res.status} on ${COPILOT_USER_URL}: ${formatGhError(res.status, res.json)}`,
+      };
+    }
+
+    const personal = parsePersonalQuota(res.json as Record<string, unknown>);
+
+    // Optionally fetch org metrics if a slug was configured.
+    const orgSlug = (this.cfg.org as string | undefined)?.trim();
+    const orgBuckets = orgSlug ? await this.fetchOrgMetrics(orgSlug, oauthToken) : [];
+
+    const allBuckets = [...personal.buckets, ...orgBuckets];
+    if (allBuckets.length === 0) {
+      return {
+        ok: false,
+        fetchedAt,
+        error:
+          'GitHub Copilot returned no quota data (the internal endpoint may have changed shape). ' +
+          `Raw: ${String(res.raw).slice(0, 200)}`,
+        source: COPILOT_USER_URL,
+      };
+    }
+
+    return {
+      ok: true,
+      fetchedAt,
+      buckets: allBuckets,
+      membershipType: personal.membershipType,
+      billingCycleEnd: personal.billingCycleEnd,
+      displayMessages: personal.displayMessages,
+      authMethod: 'oauth',
+      source: COPILOT_USER_URL,
+    };
+  }
+
+  /** Fetches org-level usage metrics. Failures here are non-fatal — personal quota still shows. */
+  private async fetchOrgMetrics(slug: string, oauthToken: string): Promise<QuotaBucket[]> {
+    const orgHeaders = {
+      Authorization: `Bearer ${oauthToken}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'aioversight',
+    };
+
+    const metricsUrl = `https://api.github.com/orgs/${encodeURIComponent(slug)}/copilot/metrics`;
+    const metrics = await httpsGetJson(metricsUrl, orgHeaders).catch(() => null);
+    if (!metrics || metrics.status >= 400) return [];
+
+    const usageUrl = `https://api.github.com/orgs/${encodeURIComponent(slug)}/copilot/usage`;
+    const usage = metrics.status === 200
+      ? metrics
+      : await httpsGetJson(usageUrl, orgHeaders).catch(() => null);
+
+    if (!usage || usage.status >= 400) return [];
+    return parseOrgMetrics((usage.json ?? []) as Array<Record<string, unknown>>);
+  }
 }
 
 export function createCopilotQuotaProvider(
