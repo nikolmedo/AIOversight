@@ -6,7 +6,9 @@ release/
 .env
 .env.*
 .atl/
-.claude/
+.claude/*
+!.claude/commands/
+!.claude/commands/*.md
 assets/tray-icon.png
 assets/tray-icon@2x.png
 assets/icon.png

@@ -1,8 +1,10 @@
 # AIOversight
 
-![alt text](github-cover.png)
+![GitHub Cover](github-cover.png)
 
 AIOversight is a lightweight, framework-agnostic monitoring tool designed to give you full visibility over your autonomous AI agents. Stop constantly checking terminal logs—AIOversight acts as your agent's control tower, notifying you when tasks are complete or when a human-in-the-loop interaction is required, while keeping a strict eye on your API spend.
+
+![GitHub Pop-Up demo](popup-demo.jpg)
 
 
 ## Features
@@ -20,16 +22,16 @@ AIOversight is a lightweight, framework-agnostic monitoring tool designed to giv
 
 ## Built-in connectors
 
-| Connector | Notifications | Quota | Auth used for quota |
-| --- | --- | --- | --- |
-| **Cursor IDE** | Watches `~/.cursor/projects/**/agent-transcripts/**/*.jsonl`. | ✓ | IDE access token (`state.vscdb`) → `WorkosCursorSessionToken` cookie fallback. |
-| **Anthropic Console** | — | ✓ | Admin API key (`sk-ant-admin01-…`) → `claude.ai` session cookie fallback. |
-| **Claude Code** (Anthropic CLI) | Watches `~/.claude/projects/**/*.jsonl`. | — | (Use the Anthropic connector for usage.) |
-| **OpenAI / ChatGPT** | — | ✓ | Admin API key against `/v1/organization/usage/*` and `/costs`. |
-| **Codex CLI** (OpenAI) | Watches `~/.codex/sessions/**/*.jsonl`. | — | (Use the OpenAI connector for usage.) |
-| **GitHub Copilot** | — | ✓ | PAT + org slug against `/orgs/{org}/copilot/usage`. Org-admin only — individual plans are not exposed by GitHub. |
-| **Custom JSONL** | Glob paths you provide. | — | — |
-| **HTTP webhook** | Local `127.0.0.1:53127/notify` endpoint. Universal escape hatch for Copilot, Gemini / Antigravity, Aider, Cline, MCP servers, CI… | — | — |
+| Connector | Notifications | Quota |
+| --- | :---: | :---: |
+| **Cursor IDE** | ✓ | ✓ |
+| **Anthropic Console** | — | ✓ |
+| **Claude Code** | ✓ | — |
+| **OpenAI / ChatGPT** | — | ✓ |
+| **Codex CLI** | ✓ | — |
+| **GitHub Copilot** | — | ✓ |
+| **Custom JSONL** | ✓ | — |
+| **HTTP webhook** | ✓ | — |
 
 The app runs entirely on your machine. API keys / cookies / PATs are encrypted with Electron's `safeStorage` (Keychain on macOS, DPAPI on Windows) and stored in a `secrets.json` separate from the main settings.
 
@@ -194,27 +196,6 @@ Add `quota: { defaultIntervalMinutes, create }` to your `Connector` and a `quota
 Declare each credential as a `type: 'secret'` field in `configSchema` with `section: 'quota'`. The UI will render a masked password input with Save / Clear buttons; the secret never round-trips back to the renderer.
 
 `QuotaService` polls every enabled provider on its own interval (you set `defaultIntervalMinutes`; the user can override per-connector). The first bucket in your snapshot is the primary one shown both in the tray popup and in the menu-bar tooltip line.
-
-## Architecture
-
-```
-┌──────────────────┐   ┌──────────────────┐   ┌────────────┐
-│  Connectors      │──▶│  ConnectorRuntime│──▶│  Notifier  │──▶ OS
-│  cursor/         │   │  (start/stop +   │   │  (cooldown │   notifications
-│  anthropic/      │   │   event bus)     │   │  + quiet h.)│
-│  openai/ ...     │   └──────────────────┘   └────────────┘
-│                  │
-│                  │   ┌──────────────────┐   ┌────────────┐
-│                  │──▶│  QuotaService    │──▶│   Tray +   │
-│                  │   │  (per-connector  │   │   popup    │
-│                  │   │   polling cache) │   │            │
-└──────────────────┘   └──────────────────┘   └────────────┘
-        ▲                       ▲                  ▲
-        │                       │                  │
-   secrets via              IPC channels        Integrations
-   SecretStore              connectors:* /      tab
-   (safeStorage)            quota:*
-```
 
 ## License
 

@@ -1,5 +1,6 @@
 import { Connector } from '../types';
 import { createCopilotQuotaProvider } from './quota';
+import { startCopilotLogin } from './copilot-login';
 
 const CopilotConnector: Connector = {
   id: 'github-copilot',
@@ -38,6 +39,10 @@ const CopilotConnector: Connector = {
   quota: {
     defaultIntervalMinutes: 60,
     create: createCopilotQuotaProvider,
+  },
+  login: {
+    label: 'Sign in to GitHub Copilot',
+    handler: (ctx, cb) => startCopilotLogin(ctx, cb),
   },
 };
 

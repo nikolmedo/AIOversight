@@ -1,5 +1,6 @@
 import * as path from 'path';
 import { Tray, Menu, nativeImage, app } from 'electron';
+import { QuotaSnapshot } from './connectors/types';
 
 export interface TrayActions {
   openSettings: () => void;
@@ -15,6 +16,18 @@ export interface TrayHandle {
   /** Update the optional second line in the tray tooltip (Cursor quota). */
   setQuotaLine: (line: string | null) => void;
   rebuildMenu: () => void;
+}
+
+export function formatTrayLineFor(name: string, snap: QuotaSnapshot): string | null {
+  if (!snap.ok) return null;
+  if (snap.trayLine) return `${name}: ${snap.trayLine}`;
+  const primary = snap.buckets[0];
+  if (!primary) return `${name}: ${snap.membershipType ?? 'connected'}`;
+  if (primary.limit != null && primary.remaining != null) {
+    const pct = primary.limit > 0 ? Math.round((primary.used / primary.limit) * 100) : 0;
+    return `${name}: ${pct}% used`;
+  }
+  return `${name}: ${primary.used.toLocaleString()} ${primary.unit}`;
 }
 
 const BASE_TOOLTIP = 'AI Oversight — monitoring AI agents for approval prompts';

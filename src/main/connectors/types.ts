@@ -159,6 +159,32 @@ export interface ConnectorContext {
    * Secrets are namespaced as `<connectorId>::<key>`.
    */
   secret(key: string): string | null;
+  /**
+   * Persist a secret via SecretStore (encrypted).
+   * Secrets are namespaced as `<connectorId>::<key>`.
+   */
+  setSecret(key: string, value: string): void;
+}
+
+export interface ConnectorLogin {
+  /** Button label shown in the UI when `needsLogin: true` (e.g. "Sign in to Claude"). */
+  label: string;
+  /** Starts the interactive auth flow. Call `onComplete` when the user finishes. */
+  handler: (ctx: ConnectorContext, onComplete: () => void) => void;
+}
+
+/**
+ * Structured hint for the Integrate tab. The renderer uses this to build a
+ * connector-agnostic code example without knowing the connector id.
+ */
+export interface ConnectorIntegrateInfo {
+  type: 'http-notify';
+  /** Config key holding the server host (e.g. 'host'). */
+  hostKey: string;
+  /** Config key holding the server port (e.g. 'port'). */
+  portKey: string;
+  /** Config key holding the optional auth token (e.g. 'token'). */
+  tokenKey?: string;
 }
 
 export interface Connector {
@@ -182,6 +208,12 @@ export interface Connector {
     defaultIntervalMinutes: number;
     create(config: Record<string, unknown>, ctx: ConnectorContext): QuotaProvider;
   };
+  /** When true, the quota toggle is enabled by default for new installs. */
+  quotaEnabledByDefault?: boolean;
+  /** Interactive login flow. Declare when the quota provider can return `needsLogin: true`. */
+  login?: ConnectorLogin;
+  /** Hint for the Integrate tab. Declare when this connector acts as an HTTP server. */
+  integrateInfo?: ConnectorIntegrateInfo;
 }
 
 // --- Persisted shape (used by SettingsStore + IPC) --------------------------
@@ -212,4 +244,8 @@ export interface ConnectorMetadata {
   configSchema: ConnectorConfigField[];
   /** Which secret keys exist (so the UI can show "(set)" without value). */
   setSecretKeys?: string[];
+  /** Login button label; present only when the connector declares a login flow. */
+  loginLabel?: string;
+  /** Integrate tab hint; present only when the connector acts as an HTTP server. */
+  integrateInfo?: ConnectorIntegrateInfo;
 }

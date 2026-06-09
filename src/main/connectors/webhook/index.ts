@@ -136,6 +136,7 @@ const WebhookConnector: Connector = {
       return new WebhookDetector(host, port, tokenRaw.trim() || null, ctx);
     },
   },
+  integrateInfo: { type: 'http-notify', hostKey: 'host', portKey: 'port', tokenKey: 'token' },
 };
 
 export default WebhookConnector;

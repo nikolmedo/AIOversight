@@ -1,6 +1,7 @@
 import { Connector } from '../types';
 import { createClaudeCodeDetector } from './detector';
 import { createClaudeCodeQuotaProvider } from './quota';
+import { startClaudeLogin } from './browser-session';
 
 const ClaudeCodeConnector: Connector = {
   id: 'claude-code',
@@ -35,6 +36,10 @@ const ClaudeCodeConnector: Connector = {
   quota: {
     defaultIntervalMinutes: 30,
     create: createClaudeCodeQuotaProvider,
+  },
+  login: {
+    label: 'Sign in to Claude',
+    handler: (_ctx, cb) => startClaudeLogin(cb),
   },
 };
 

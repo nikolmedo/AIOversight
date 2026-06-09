@@ -1,4 +1,3 @@
-import * as path from 'path';
 import { Notification, shell } from 'electron';
 import { AgentEvent, EventKind } from './connectors/types';
 import { SettingsStore } from './settings-store';
@@ -31,14 +30,12 @@ type Logger = (
  */
 export class Notifier {
   private readonly recent = new Map<string, number>();
-  private readonly iconPath: string;
 
   constructor(
     private readonly settings: SettingsStore,
+    private readonly iconPath: string,
     private readonly log: Logger = () => {},
-  ) {
-    this.iconPath = path.join(__dirname, '..', '..', 'assets', 'icon.png');
-  }
+  ) {}
 
   handle(event: AgentEvent): NotifyResult {
     const cfg = this.settings.get();

@@ -1,16 +1,13 @@
 import * as path from 'path';
 import { app, BrowserWindow, ipcMain, Tray, Notification } from 'electron';
-import { SettingsStore } from './settings-store';
+import { SettingsStore, ConnectorDefaults } from './settings-store';
 import { Notifier } from './notifier';
-import { createTray, TrayHandle } from './tray';
+import { createTray, TrayHandle, formatTrayLineFor } from './tray';
 import { createTrayPopup, TrayPopupHandle } from './tray-popup';
 import { ConnectorRuntime, ALL_CONNECTORS } from './connectors/runtime';
 import { QuotaService } from './connectors/quota-service';
 import { SecretStore } from './connectors/secret-store';
-import { QuotaSnapshot } from './connectors/types';
-import { startClaudeLogin } from './connectors/claude-code/browser-session';
-import { startCopilotLogin } from './connectors/github-copilot/copilot-login';
-import CopilotConnector from './connectors/github-copilot';
+import { QuotaSnapshot, Connector, ConnectorEnabled } from './connectors/types';
 
 let tray: Tray | null = null;
 let trayHandle: TrayHandle | null = null;
@@ -38,12 +35,35 @@ if (process.platform === 'win32') {
   app.setAppUserModelId('com.agentwatcher.app');
 }
 
+function buildConnectorDefaults(connectors: Connector[]): ConnectorDefaults {
+  const enabled: Record<string, ConnectorEnabled> = {};
+  const config: Record<string, Record<string, unknown>> = {};
+  const quotaDefaultEnabled: Record<string, boolean> = {};
+  for (const def of connectors) {
+    enabled[def.id] = {
+      notifications: !!def.detector && def.enabledByDefault,
+      quota: !!def.quota && (def.quotaEnabledByDefault ?? false),
+    };
+    config[def.id] = {};
+    for (const f of def.configSchema) {
+      if (f.type === 'secret') continue;
+      config[def.id][f.key] = f.default;
+    }
+    quotaDefaultEnabled[def.id] = def.quotaEnabledByDefault ?? false;
+  }
+  return { enabled, config, quotaDefaultEnabled };
+}
+
 app.whenReady().then(async () => {
-  settings = new SettingsStore();
+  settings = new SettingsStore(buildConnectorDefaults(ALL_CONNECTORS));
   secretStore = new SecretStore();
   runtime = new ConnectorRuntime(secretStore);
   quotaService = new QuotaService(runtime);
-  notifier = new Notifier(settings, (lvl, msg, meta) => runtime!.log(lvl, msg, meta));
+  notifier = new Notifier(
+    settings,
+    path.join(__dirname, '..', '..', 'assets', 'icon.png'),
+    (lvl, msg, meta) => runtime!.log(lvl, msg, meta),
+  );
 
   runtime.onEvent(event => {
     if (paused) {
@@ -245,20 +265,14 @@ function registerIpc(): void {
     return await quotaService!.refreshAll();
   });
 
-  ipcMain.handle('claude:login', () => {
-    // Refresh the Claude quota as soon as the user finishes signing in, so the
-    // panel updates without waiting for the next poll.
-    startClaudeLogin(() => void quotaService!.refresh('claude-code'));
-    return true;
-  });
-
-  ipcMain.handle('copilot:login', () => {
-    // Same idea as claude:login — refresh the moment the device-flow completes.
-    startCopilotLogin(secretStore!, runtime!.contextFor(CopilotConnector), () =>
-      void quotaService!.refresh('github-copilot'),
-    );
-    return true;
-  });
+  for (const connector of ALL_CONNECTORS) {
+    if (!connector.login) continue;
+    ipcMain.handle(`connector:login:${connector.id}`, () => {
+      const ctx = runtime!.contextFor(connector);
+      connector.login!.handler(ctx, () => void quotaService!.refresh(connector.id));
+      return true;
+    });
+  }
 
   ipcMain.handle('trayPopup:openSettings', () => {
     openSettings();
@@ -286,18 +300,6 @@ function refreshTrayQuotaSummary(): void {
     if (line) lines.push(line);
   }
   trayHandle.setQuotaLine(lines.length ? lines.join('\n') : null);
-}
-
-function formatTrayLineFor(name: string, snap: QuotaSnapshot): string | null {
-  if (!snap.ok) return null;
-  if (snap.trayLine) return `${name}: ${snap.trayLine}`;
-  const primary = snap.buckets[0];
-  if (!primary) return `${name}: ${snap.membershipType ?? 'connected'}`;
-  if (primary.limit != null && primary.remaining != null) {
-    const pct = primary.limit > 0 ? Math.round((primary.used / primary.limit) * 100) : 0;
-    return `${name}: ${pct}% used`;
-  }
-  return `${name}: ${primary.used.toLocaleString()} ${primary.unit}`;
 }
 
 function sendTestNotification(): { ok: boolean; reason?: string } {

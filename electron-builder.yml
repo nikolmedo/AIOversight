@@ -40,5 +40,7 @@ nsis:
 linux:
   target:
     - AppImage
+    - deb
+    - tar.gz
   category: Development
   icon: assets/icon.png

@@ -64,6 +64,8 @@ export class ConnectorRuntime extends EventEmitter {
         .filter(f => f.type === 'secret')
         .map(f => f.key)
         .filter(k => allKeys.has(SecretStore.qualify(c.id, k))),
+      loginLabel: c.login?.label,
+      integrateInfo: c.integrateInfo,
     }));
   }
 
@@ -101,6 +103,7 @@ export class ConnectorRuntime extends EventEmitter {
       log: (level, message, meta) => this.pushLog(level, message, meta),
       resolvePath,
       secret: key => this.secrets.get(SecretStore.qualify(connector.id, key)),
+      setSecret: (key, value) => this.secrets.set(SecretStore.qualify(connector.id, key), value),
     };
   }
 

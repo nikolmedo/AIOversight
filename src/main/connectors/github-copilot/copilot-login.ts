@@ -13,7 +13,6 @@
  */
 
 import { ConnectorContext } from '../types';
-import { SecretStore } from '../secret-store';
 
 // OAuth app id of "GitHub Copilot CLI" — the one every working third-party
 // Copilot client (copilot.vim, litellm, avante.nvim) authenticates against.
@@ -97,15 +96,15 @@ let loginInFlight = false;
  * and polls for authorization. Persists the resulting token and calls
  * `onComplete` so the caller can refresh the quota immediately.
  */
-export function startCopilotLogin(secrets: SecretStore, ctx: ConnectorContext, onComplete?: () => void): void {
+export function startCopilotLogin(ctx: ConnectorContext, onComplete?: () => void): void {
   if (loginInFlight) return;
   loginInFlight = true;
-  runLogin(secrets, ctx, onComplete).finally(() => {
+  runLogin(ctx, onComplete).finally(() => {
     loginInFlight = false;
   });
 }
 
-async function runLogin(secrets: SecretStore, ctx: ConnectorContext, onComplete?: () => void): Promise<void> {
+async function runLogin(ctx: ConnectorContext, onComplete?: () => void): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { shell, dialog } = require('electron') as typeof import('electron');
 
@@ -136,7 +135,7 @@ async function runLogin(secrets: SecretStore, ctx: ConnectorContext, onComplete?
     const token = await pollForToken(device, ctx);
     if (!token) return;
 
-    secrets.set(SecretStore.qualify('github-copilot', 'copilotOauthToken'), token);
+    ctx.setSecret('copilotOauthToken', token);
     ctx.log('info', '[copilot-login] GitHub Copilot sign-in complete');
     onComplete?.();
   } catch (err) {

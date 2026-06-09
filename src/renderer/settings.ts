@@ -233,8 +233,7 @@ function renderConnectorCard(def: ConnectorMetadata): HTMLElement {
       btn.disabled = true;
       btn.textContent = 'Opening sign-in…';
       const id = btn.dataset.connectorId;
-      if (id === 'claude-code') await window.aw.claudeLogin();
-      else if (id === 'github-copilot') await window.aw.copilotLogin();
+      if (id) await window.aw.connectorLogin(id);
     });
 
     refreshQuotaCardFor(card, def);
@@ -363,25 +362,20 @@ function refreshQuotaCard(id: string): void {
 function refreshQuotaCardFor(card: HTMLElement, def: ConnectorMetadata): void {
   const panel = card.querySelector('[data-role="quota-snapshot"]') as HTMLElement;
   if (!panel) return;
-  panel.innerHTML = renderQuotaSnapshot(quotas[def.id], def.id, def.name);
+  panel.innerHTML = renderQuotaSnapshot(quotas[def.id], def);
 }
 
-const LOGIN_LABELS: Record<string, string> = {
-  'claude-code': 'Sign in to Claude',
-  'github-copilot': 'Sign in to GitHub Copilot',
-};
-
-function renderQuotaSnapshot(q: QuotaSnapshot | undefined, connectorId?: string, connectorName?: string): string {
+function renderQuotaSnapshot(q: QuotaSnapshot | undefined, def?: ConnectorMetadata): string {
   if (!q) {
     return '<p class="empty small">No data yet — click <em>Refresh now</em>.</p>';
   }
   if (!q.ok) {
-    const loginLabel = connectorId
-      ? (LOGIN_LABELS[connectorId] ?? `Sign in to ${connectorName ?? connectorId}`)
+    const loginLabel = def
+      ? (def.loginLabel ?? `Sign in to ${def.name}`)
       : '';
     const loginBtn =
-      q.needsLogin && connectorId
-        ? `<button class="primary small" data-role="connector-login" data-connector-id="${escapeHtml(connectorId)}">${escapeHtml(loginLabel)}</button>`
+      q.needsLogin && def
+        ? `<button class="primary small" data-role="connector-login" data-connector-id="${escapeHtml(def.id)}">${escapeHtml(loginLabel)}</button>`
         : '';
     return `
       <div class="quota-error">${escapeHtml(q.error)}</div>
@@ -540,10 +534,13 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
 }
 
 function renderIntegrate(): void {
-  const cfg = initial.settings.connectors.config['webhook'] ?? {};
-  const host = String(cfg.host ?? '127.0.0.1');
-  const port = Number(cfg.port ?? 53127);
-  const token = String(cfg.token ?? '');
+  const webhookDef = initial.connectors.find(c => c.integrateInfo?.type === 'http-notify');
+  if (!webhookDef) return;
+  const info = webhookDef.integrateInfo!;
+  const cfg = initial.settings.connectors.config[webhookDef.id] ?? {};
+  const host = String(cfg[info.hostKey] ?? '127.0.0.1');
+  const port = Number(cfg[info.portKey] ?? 53127);
+  const token = info.tokenKey ? String(cfg[info.tokenKey] ?? '') : '';
   const tokenLine = token ? `\\\n     -H "X-AI-Oversight-Token: ${token}" ` : '';
   $('#curlExample').textContent =
 `# 'waiting' (default): agent is paused on a tool / approval

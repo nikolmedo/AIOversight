@@ -1,12 +1,18 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
-import { ALL_CONNECTORS } from './connectors/registry';
 import {
   ConnectorEnabled,
   ConnectorRuntimeConfig,
   EventKind,
 } from './connectors/types';
+
+export interface ConnectorDefaults {
+  enabled: Record<string, ConnectorEnabled>;
+  config: Record<string, Record<string, unknown>>;
+  /** Whether quota is on by default per connector (used in legacy settings migration). */
+  quotaDefaultEnabled: Record<string, boolean>;
+}
 
 export interface RecentEventRecord {
   ts: number;
@@ -32,32 +38,7 @@ export interface AppSettings {
   recentEvents: RecentEventRecord[];
 }
 
-function defaultEnabled(): Record<string, ConnectorEnabled> {
-  const enabled: Record<string, ConnectorEnabled> = {};
-  for (const def of ALL_CONNECTORS) {
-    enabled[def.id] = {
-      // Detector defaults to the connector's enabledByDefault.
-      notifications: !!def.detector && def.enabledByDefault,
-      // Quota: only enable Cursor by default — everything else needs a key.
-      quota: !!def.quota && def.id === 'cursor',
-    };
-  }
-  return enabled;
-}
-
-function defaultConfig(): Record<string, Record<string, unknown>> {
-  const config: Record<string, Record<string, unknown>> = {};
-  for (const def of ALL_CONNECTORS) {
-    config[def.id] = {};
-    for (const f of def.configSchema) {
-      if (f.type === 'secret') continue;
-      config[def.id][f.key] = f.default;
-    }
-  }
-  return config;
-}
-
-function defaults(): AppSettings {
+function defaults(d: ConnectorDefaults): AppSettings {
   return {
     showNotifications: true,
     notifyOnWaiting: true,
@@ -67,8 +48,8 @@ function defaults(): AppSettings {
     quotaPollMinutes: 5,
     showQuotaInTray: true,
     connectors: {
-      enabled: defaultEnabled(),
-      config: defaultConfig(),
+      enabled: d.enabled,
+      config: d.config,
       pollOverrideMinutes: {},
     },
     recentEvents: [],
@@ -88,7 +69,7 @@ export class SettingsStore {
   private readonly file: string;
   private state: AppSettings;
 
-  constructor() {
+  constructor(private readonly connectorDefaults: ConnectorDefaults) {
     const dir = app.getPath('userData');
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     this.file = path.join(dir, 'settings.json');
@@ -96,7 +77,7 @@ export class SettingsStore {
   }
 
   private load(): AppSettings {
-    if (!fs.existsSync(this.file)) return defaults();
+    if (!fs.existsSync(this.file)) return defaults(this.connectorDefaults);
     try {
       const raw = JSON.parse(fs.readFileSync(this.file, 'utf8')) as
         & Partial<AppSettings>
@@ -104,9 +85,9 @@ export class SettingsStore {
         & {
           recentEvents?: Array<Partial<RecentEventRecord>>;
         };
-      const base = defaults();
+      const base = defaults(this.connectorDefaults);
 
-      const connectors = mergeConnectors(base.connectors, raw);
+      const connectors = mergeConnectors(base.connectors, raw, this.connectorDefaults.quotaDefaultEnabled);
 
       const recentEvents: RecentEventRecord[] = (raw.recentEvents ?? []).map(e => ({
         ts: typeof e?.ts === 'number' ? e.ts : Date.now(),
@@ -131,7 +112,7 @@ export class SettingsStore {
         recentEvents,
       };
     } catch {
-      return defaults();
+      return defaults(this.connectorDefaults);
     }
   }
 
@@ -198,6 +179,7 @@ export class SettingsStore {
 function mergeConnectors(
   base: ConnectorRuntimeConfig,
   raw: Partial<AppSettings> & LegacySettings,
+  quotaDefaultEnabled: Record<string, boolean>,
 ): ConnectorRuntimeConfig {
   const enabled: Record<string, ConnectorEnabled> = { ...base.enabled };
   const config: Record<string, Record<string, unknown>> = { ...base.config };
@@ -210,8 +192,7 @@ function mergeConnectors(
       enabled[id] = {
         ...cur,
         notifications: !!on,
-        // Cursor used to ship with quota always-on; preserve that.
-        quota: cur.quota || (id === 'cursor' && !!on),
+        quota: cur.quota || (!!(quotaDefaultEnabled[id]) && !!on),
       };
     }
   }

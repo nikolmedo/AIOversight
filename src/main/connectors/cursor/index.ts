@@ -9,6 +9,7 @@ const CursorConnector: Connector = {
   description:
     'Watches Cursor agent transcripts for sessions waiting on approval and finished turns, and reads your usage quota from Cursor.',
   enabledByDefault: true,
+  quotaEnabledByDefault: true,
   configSchema: [
     {
       key: 'paths',

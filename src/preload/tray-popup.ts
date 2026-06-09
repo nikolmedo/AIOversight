@@ -1,16 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron';
-
-type TrayPopupQuotas = Record<string, unknown>;
-type TrayPopupConnectors = Array<Record<string, unknown>>;
+import { QuotaSnapshot, ConnectorMetadata } from '../main/connectors/types';
 
 contextBridge.exposeInMainWorld('awPopup', {
-  getQuotas: () => ipcRenderer.invoke('trayPopup:getQuotas') as Promise<TrayPopupQuotas>,
+  getQuotas: () =>
+    ipcRenderer.invoke('trayPopup:getQuotas') as Promise<Record<string, QuotaSnapshot>>,
   getConnectors: () =>
-    ipcRenderer.invoke('trayPopup:getConnectors') as Promise<TrayPopupConnectors>,
+    ipcRenderer.invoke('trayPopup:getConnectors') as Promise<ConnectorMetadata[]>,
   openSettings: () => ipcRenderer.invoke('trayPopup:openSettings'),
   refresh: () => ipcRenderer.invoke('trayPopup:refresh'),
-  onQuotas: (cb: (q: TrayPopupQuotas) => void) => {
-    const listener = (_e: Electron.IpcRendererEvent, q: TrayPopupQuotas) => cb(q);
+  onQuotas: (cb: (q: Record<string, QuotaSnapshot>) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, q: Record<string, QuotaSnapshot>) => cb(q);
     ipcRenderer.on('trayPopup:quotas', listener);
     return () => ipcRenderer.removeListener('trayPopup:quotas', listener);
   },

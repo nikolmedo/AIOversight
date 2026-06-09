@@ -24,6 +24,13 @@ interface ConnectorConfigField {
   options?: Array<{ value: string; label: string }>;
 }
 
+interface ConnectorIntegrateInfo {
+  type: 'http-notify';
+  hostKey: string;
+  portKey: string;
+  tokenKey?: string;
+}
+
 interface ConnectorMetadata {
   id: string;
   name: string;
@@ -35,6 +42,8 @@ interface ConnectorMetadata {
   defaultIntervalMinutes?: number;
   configSchema: ConnectorConfigField[];
   setSecretKeys?: string[];
+  loginLabel?: string;
+  integrateInfo?: ConnectorIntegrateInfo;
 }
 
 interface ConnectorEnabled {
@@ -127,8 +136,7 @@ interface AgentWatcherAPI {
   logs(): Promise<LogEntry[]>;
   getQuotas(): Promise<Record<string, QuotaSnapshot>>;
   refreshQuota(id?: string): Promise<QuotaSnapshot | Record<string, QuotaSnapshot>>;
-  claudeLogin(): Promise<boolean>;
-  copilotLogin(): Promise<boolean>;
+  connectorLogin(id: string): Promise<boolean>;
   onEvent(cb: (e: RecentEvent) => void): () => void;
   onLog(cb: (e: LogEntry) => void): () => void;
   onPaused(cb: (paused: boolean) => void): () => void;
