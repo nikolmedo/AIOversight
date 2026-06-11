@@ -65,6 +65,7 @@ interface AppSettings {
   quietHours: { startHour: number; endHour: number } | null;
   quotaPollMinutes: number;
   showQuotaInTray: boolean;
+  launchAtLogin: boolean;
   connectors: ConnectorRuntimeConfig;
   recentEvents: RecentEvent[];
 }

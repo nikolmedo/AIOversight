@@ -3,11 +3,11 @@ import { QuotaProvider, QuotaSnapshot } from '../types';
 
 const TIMEOUT_MS = 5_000;
 
-function stripAnsi(s: string): string {
+export function stripAnsi(s: string): string {
   return s.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '').replace(/\x1B\([A-Za-z]/g, '');
 }
 
-function parseCliOutput(raw: string): QuotaSnapshot | null {
+export function parseCliOutput(raw: string): QuotaSnapshot | null {
   const text = stripAnsi(raw);
 
   // Match the first "Current session" block — non-greedy so it won't

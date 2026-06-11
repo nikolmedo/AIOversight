@@ -1,6 +1,6 @@
 {
   "name": "aioversight",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Lightweight, framework-agnostic monitoring tool for autonomous AI agents — execution alerts, human-in-the-loop interventions, and universal token/quota tracking.",
   "main": "dist/main/index.js",
@@ -17,11 +17,12 @@
     "start": "electron .",
     "rebuild": "npm run build && electron .",
     "smoke": "npm run build && node scripts/smoke.js",
+    "test": "tsc -p tsconfig.test.json && node --test \"dist-test/tests/**/*.test.js\"",
     "package": "npm run build && electron-builder",
     "package:mac": "npm run build && electron-builder --mac --publish never",
     "package:win": "npm run build && electron-builder --win --publish never",
     "package:linux": "npm run build && electron-builder --linux --publish never",
-    "clean": "rimraf dist release"
+    "clean": "rimraf dist dist-test release"
   },
   "devDependencies": {
     "@types/node": "^20.12.7",

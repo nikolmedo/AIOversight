@@ -34,6 +34,8 @@ export interface AppSettings {
   quotaPollMinutes: number;
   /** Show a quota summary in the menu-bar / tray tooltip. */
   showQuotaInTray: boolean;
+  /** Launch the app automatically at system startup / login. */
+  launchAtLogin: boolean;
   connectors: ConnectorRuntimeConfig;
   recentEvents: RecentEventRecord[];
 }
@@ -47,6 +49,7 @@ function defaults(d: ConnectorDefaults): AppSettings {
     quietHours: null,
     quotaPollMinutes: 5,
     showQuotaInTray: true,
+    launchAtLogin: false,
     connectors: {
       enabled: d.enabled,
       config: d.config,
@@ -108,6 +111,7 @@ export class SettingsStore {
           raw.quotaPollMinutes ?? raw.cursorQuotaPollMinutes ?? base.quotaPollMinutes,
         showQuotaInTray:
           raw.showQuotaInTray ?? raw.showCursorQuotaInTray ?? base.showQuotaInTray,
+        launchAtLogin: raw.launchAtLogin ?? base.launchAtLogin,
         connectors,
         recentEvents,
       };

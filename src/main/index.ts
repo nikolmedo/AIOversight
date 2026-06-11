@@ -1,6 +1,7 @@
 import * as path from 'path';
 import { app, BrowserWindow, ipcMain, Tray, Notification } from 'electron';
 import { SettingsStore, ConnectorDefaults } from './settings-store';
+import { applyAutoStart } from './autostart';
 import { Notifier } from './notifier';
 import { createTray, TrayHandle, formatTrayLineFor } from './tray';
 import { createTrayPopup, TrayPopupHandle } from './tray-popup';
@@ -88,6 +89,8 @@ app.whenReady().then(async () => {
     settings.get().connectors,
     settings.get().quotaPollMinutes,
   );
+
+  applyAutoStart(settings.get().launchAtLogin, (lvl, msg, meta) => runtime!.log(lvl, msg, meta));
 
   trayHandle = createTray({
     openSettings,
@@ -237,6 +240,9 @@ function registerIpc(): void {
     if ('quotaPollMinutes' in patch || 'showQuotaInTray' in patch) {
       await quotaService!.applyConfig(next.connectors, next.quotaPollMinutes);
       refreshTrayQuotaSummary();
+    }
+    if ('launchAtLogin' in patch) {
+      applyAutoStart(next.launchAtLogin, (lvl, msg, meta) => runtime!.log(lvl, msg, meta));
     }
     return next;
   });

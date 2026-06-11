@@ -482,6 +482,7 @@ function renderEvents(events: RecentEvent[]): void {
 // ---------------------------------------------------------------------------
 
 function renderGeneral(s: AppSettings, settingsPath: string): void {
+  const launchAtLogin = $('#launchAtLogin') as HTMLInputElement;
   const showNotif = $('#showNotifications') as HTMLInputElement;
   const notifyWaiting = $('#notifyOnWaiting') as HTMLInputElement;
   const notifyFinished = $('#notifyOnFinished') as HTMLInputElement;
@@ -492,6 +493,7 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
   const quietStart = $('#quietStart') as HTMLInputElement;
   const quietEnd = $('#quietEnd') as HTMLInputElement;
 
+  launchAtLogin.checked = s.launchAtLogin;
   showNotif.checked = s.showNotifications;
   notifyWaiting.checked = s.notifyOnWaiting !== false;
   notifyFinished.checked = s.notifyOnFinished !== false;
@@ -505,6 +507,7 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
 
   const persist = debounce(() => {
     void window.aw.update({
+      launchAtLogin: launchAtLogin.checked,
       showNotifications: showNotif.checked,
       notifyOnWaiting: notifyWaiting.checked,
       notifyOnFinished: notifyFinished.checked,
@@ -518,6 +521,7 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
   }, 250);
 
   for (const el of [
+    launchAtLogin,
     showNotif,
     notifyWaiting,
     notifyFinished,

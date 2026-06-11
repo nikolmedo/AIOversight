@@ -1,86 +1,101 @@
+<div align="center">
+
+<img src="assets/ai-icon-no-bkg.png" alt="AIOversight logo" width="96" />
+
 # AIOversight
 
-![GitHub Cover](github-cover.png)
+**The control tower for your AI coding agents.**
+Know the instant an agent finishes or needs you — and never get surprised by your API bill again.
 
-AIOversight is a lightweight, framework-agnostic monitoring tool designed to give you full visibility over your autonomous AI agents. Stop constantly checking terminal logs—AIOversight acts as your agent's control tower, notifying you when tasks are complete or when a human-in-the-loop interaction is required, while keeping a strict eye on your API spend.
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](#install-from-source)
+[![Built with Electron](https://img.shields.io/badge/built%20with-Electron-47848F.svg?logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6.svg?logo=typescript&logoColor=white)](tsconfig.json)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#extending-aioversight)
 
-![GitHub Pop-Up demo](popup-demo.jpg)
+![AIOversight cover](github-cover.png)
 
+</div>
+
+---
+
+You kick off Claude Code, Cursor, or Codex on a long task… and then what? You alt-tab every two minutes to check if it's done, or worse — it's been sitting there for twenty minutes waiting for *you* to approve a command.
+
+**AIOversight** is a lightweight desktop tray app that watches your AI agents for you. It fires a native notification the moment an agent **finishes** a task or is **waiting** for your input, and keeps a live summary of your **token quotas and spend** across providers — one click away in your menu bar.
+
+<div align="center">
+
+![Tray popup demo](popup-demo.jpg)
+
+</div>
 
 ## Features
 
-* **Instant Execution Alerts:** Get notified the exact moment your AI agents finish long-running tasks or background workflows.
-* **Human-in-the-Loop Interventions:** Receive real-time prompts whenever an agent pauses to request user approval, feedback, or manual input.
-* **Universal Token & Quota Tracking:** Monitor remaining credits, token consumption, and monthly quotas across any LLM provider or orchestration framework.
-* **Vendor-Agnostic Design:** Built to integrate seamlessly with any framework (LangChain, CrewAI, AutoGPT, custom scripts) and any model provider (OpenAI, Anthropic, Google Gemini, local models).
-
-## How it Works
-
-1. **Trigger:** Your agent script dispatches an event via webhook or SDK.
-2. **Notify:** AIOversight alerts you (via Desktop, Push, Slack, or Discord) if the agent finishes or needs input.
-3. **Track:** The dashboard updates your remaining AI quota and token budget dynamically.
+- 🔔 **Instant alerts** — native desktop notifications when an agent finishes a long-running task or pauses for human approval.
+- 📊 **Quota & spend tracking** — remaining credits, token usage, and billing-cycle spend for Anthropic, OpenAI, GitHub Copilot, Cursor, and Claude Code, polled on configurable intervals.
+- 🔌 **Universal HTTP webhook** — one `curl` line integrates *any* agent, script, or framework that can make an HTTP request.
+- 📄 **Generic JSONL watcher** — point it at any transcript file and get waiting/finished detection for custom tools.
+- 🔒 **Local-first & private** — runs entirely on your machine. No cloud, no telemetry. Credentials encrypted at rest with Electron `safeStorage` (Keychain on macOS, DPAPI on Windows).
+- 🪶 **Deliberately minimal** — vanilla TypeScript, two runtime dependencies, no bundler, no framework.
 
 ## Built-in connectors
 
 | Connector | Notifications | Quota |
 | --- | :---: | :---: |
-| **Cursor IDE** | ✓ | ✓ |
-| **Anthropic Console** | — | ✓ |
-| **Claude Code** | ✓ | — |
-| **OpenAI / ChatGPT** | — | ✓ |
-| **Codex CLI** | ✓ | — |
-| **GitHub Copilot** | — | ✓ |
-| **Custom JSONL** | ✓ | — |
-| **HTTP webhook** | ✓ | — |
+| **Cursor IDE** | ✅ | ✅ |
+| **Claude Code** | ✅ | ✅ |
+| **Codex CLI** | ✅ | — |
+| **Anthropic Console** | — | ✅ |
+| **OpenAI** | — | ✅ |
+| **GitHub Copilot** | — | ✅ |
+| **Custom JSONL** | ✅ | — |
+| **HTTP webhook** | ✅ | — |
 
-The app runs entirely on your machine. API keys / cookies / PATs are encrypted with Electron's `safeStorage` (Keychain on macOS, DPAPI on Windows) and stored in a `secrets.json` separate from the main settings.
+> Don't see your tool? The [HTTP webhook](#universal-webhook) covers anything that can `POST` JSON, and [adding a first-class connector](#extending-aioversight) is a single folder.
 
-## Why a heuristic for notifications?
-
-Each tool signals "I'm waiting on the human" or "I'm done" differently and most of them don't expose a stable API for it. The shared signal that *does* exist is: **the conversation log stops growing.** AIOversight tails the transcript and looks at the last line:
-
-- Assistant turn with a pending `tool_use` block → `waiting`.
-- Assistant turn with text only (a final answer) → `finished`.
-
-Both kinds have independent on/off toggles in **General → Notifications**. You can tune the idle threshold per connector.
-
-For tools whose state we can't see from disk (notably GitHub Copilot Chat in VS Code, and various IDE-embedded agents), the **HTTP webhook** is a one-line integration: register a hook in the agent and have it `POST` to the local endpoint, optionally with `"kind":"finished"`.
-
-## Install (from source)
+## Quick start
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/nikolmedo/AIOversight.git
 cd AIOversight
 npm install
 npm run dev          # builds + launches Electron
 ```
 
-Look for the bell icon in your menu bar (macOS) or system tray (Windows). **Left-click** opens a popup with one row per enabled quota integration plus an *Open settings…* button. **Right-click** (or secondary click) opens the context menu (pause / settings / quit).
+Look for the bell icon in your menu bar (macOS) or system tray (Windows):
 
-## Build distributable installers
+- **Left-click** → popup with one row per enabled quota integration plus *Open settings…*
+- **Right-click** → context menu (pause / settings / quit)
+
+Then open **Settings → Integrations** and flip on the connectors you use. That's it.
+
+### Build distributable installers
 
 ```bash
-npm run package:mac   # produces .dmg + .zip in release/
-npm run package:win   # produces .exe (NSIS) + portable .exe in release/
+npm run package:mac   # .dmg + .zip in release/
+npm run package:win   # .exe (NSIS) + portable .exe in release/
 ```
 
-Cross-compilation for Windows from macOS works only if Wine is installed; otherwise build on each target OS.
+> Cross-compiling for Windows from macOS requires Wine; otherwise build on each target OS.
 
-## Settings UI
+## How it works
 
-- **Integrations** — one card per connector grouped by vendor. Each card has independent collapsible **Notifications** and **Quota** subsections. The Notifications subsection only appears for connectors that have a detector; Quota only appears for connectors that have a provider. API key / PAT fields are masked, encrypted at rest, and never round-tripped to the renderer.
-- **Recent events** — last 50 fired notifications with a `waiting` / `finished` pill and source file.
-- **Logs** — diagnostic output from each connector, the runtime, and the notifier.
-- **General** — master notifications switch, independent waiting / finished toggles, per-session cooldown, default quota poll interval, "Show quota summary in tray" toggle, and quiet hours.
-- **Webhook recipe** — copy-paste curl example for the universal HTTP webhook, with your current host / port / token filled in.
+Each tool signals "I'm waiting on the human" or "I'm done" differently, and most don't expose a stable API for it. The shared signal that *does* exist: **the conversation log stops growing.**
 
-Settings are persisted in the OS-standard userData directory:
-- macOS: `~/Library/Application Support/AI Oversight/{settings,secrets}.json`
-- Windows: `%APPDATA%/AI Oversight/{settings,secrets}.json`
+AIOversight tails each agent's transcript and classifies the last line once it goes idle:
 
-`secrets.json` is encrypted; `settings.json` never contains keys, tokens, or cookies.
+| Last line in transcript | Verdict | Notification |
+| --- | --- | --- |
+| Assistant turn with a pending `tool_use` block | Agent is blocked on you | `waiting` 🔶 |
+| Assistant turn with text only (a final answer) | Task complete | `finished` ✅ |
 
-## Webhook protocol
+Both kinds have independent on/off toggles, a per-session cooldown, and quiet hours. The idle threshold is tunable per connector.
+
+For tools whose state can't be seen from disk (GitHub Copilot Chat in VS Code, IDE-embedded agents), the **HTTP webhook** fills the gap.
+
+## Universal webhook
+
+Any agent that can make an HTTP request can notify you:
 
 ```
 POST http://127.0.0.1:53127/notify
@@ -101,7 +116,10 @@ X-AI-Oversight-Token: <token>      # only if you set one in the UI
 
 Health check: `GET /health` → `{"ok":true,"service":"aioversight"}`.
 
-### Example: Claude Code hooks (waiting + finished)
+The **Webhook recipe** tab in Settings generates a copy-paste `curl` example with your current host / port / token already filled in.
+
+<details>
+<summary><b>Example: Claude Code hooks (waiting + finished)</b></summary>
 
 In `~/.claude/settings.json`:
 
@@ -125,7 +143,10 @@ In `~/.claude/settings.json`:
 }
 ```
 
-### Example: shell-script wrapper for any CLI agent (fires `finished` on exit)
+</details>
+
+<details>
+<summary><b>Example: shell wrapper for any CLI agent (fires <code>finished</code> on exit)</b></summary>
 
 ```bash
 #!/usr/bin/env bash
@@ -139,22 +160,53 @@ curl -sX POST http://127.0.0.1:53127/notify \
   -d "{\"agent\":\"$agent\",\"kind\":\"finished\",\"message\":\"exited with status $status\"}"
 ```
 
-## Adding a new connector
+</details>
 
-A connector is a single folder. Minimum viable example — a notifications-only watcher for tool *XYZ* that streams a JSONL transcript:
+## Settings at a glance
+
+| Tab | What you'll find |
+| --- | --- |
+| **Integrations** | One card per connector, grouped by vendor, with independent **Notifications** / **Quota** toggles. Secret fields are masked and encrypted at rest. |
+| **Recent events** | Last 50 fired notifications with a `waiting` / `finished` pill and source file. |
+| **Logs** | Diagnostic output from each connector, the runtime, and the notifier. |
+| **General** | Launch at system startup, master notification switch, per-kind toggles, cooldown, default quota poll interval, tray quota summary, quiet hours. |
+| **Webhook recipe** | Copy-paste `curl` example with your live host / port / token. |
+
+## Privacy & security
+
+- **Everything stays local.** No cloud service, no telemetry, no account.
+- API keys, cookies, and PATs are encrypted with Electron's `safeStorage` (Keychain on macOS, DPAPI on Windows) and stored in `secrets.json`, separate from `settings.json` — which never contains credentials.
+- Secrets never reach the UI process: the renderer can write a secret but can never read one back.
+
+Settings live in the OS-standard userData directory:
+
+- macOS: `~/Library/Application Support/AI Oversight/{settings,secrets}.json`
+- Windows: `%APPDATA%/AI Oversight/{settings,secrets}.json`
+
+## Development
+
+```bash
+npx tsc --noEmit      # type-check (strict mode is the linter)
+npm test              # unit test suite (node:test, zero extra deps)
+npm run smoke         # headless end-to-end tests (no Electron required)
+npm run dev           # build + launch Electron
+```
+
+The codebase is plain TypeScript compiled with `tsc` — no bundler, no UI framework, and only two runtime dependencies (`chokidar`, `sql.js`). See [CLAUDE.md](CLAUDE.md) for the full architecture overview and contribution conventions.
+
+## Extending AIOversight
+
+A connector is **a single self-contained folder** — declare it, register it once, done. The settings UI auto-discovers its card from `configSchema`; the runtime, notifier, and quota poller pick it up generically.
 
 ```
 src/main/connectors/xyz/
   index.ts        # default-exports a Connector definition
   detector.ts     # uses TranscriptWatcher with an extractStatus heuristic
+  quota.ts        # optional: returns a QuotaProvider
 ```
 
-**`index.ts`:**
-
 ```ts
-import { Connector } from '../types';
-import { createXyzDetector } from './detector';
-
+// index.ts — minimum viable notifications-only connector
 const XyzConnector: Connector = {
   id: 'xyz',
   name: 'XYZ Agent',
@@ -169,34 +221,10 @@ const XyzConnector: Connector = {
   ],
   detector: { create: createXyzDetector },
 };
-
-export default XyzConnector;
 ```
 
-Then register it once in `src/main/connectors/registry.ts`:
-
-```ts
-import XyzConnector from './xyz';
-export const ALL_CONNECTORS: Connector[] = [
-  // …existing entries…
-  XyzConnector,
-];
-```
-
-That's it. The settings UI auto-discovers the new card from `configSchema`, the runtime starts the detector when the user enables Notifications, and the notifier dispatches its events through the same cooldown / quiet-hours pipeline as everything else.
-
-### Adding a quota provider
-
-Add `quota: { defaultIntervalMinutes, create }` to your `Connector` and a `quota.ts` that returns a `QuotaProvider`. Inside `fetch()`:
-
-- Read non-secret config from the `config` argument.
-- Read API keys / tokens via `ctx.secret(key)` — they're encrypted by `SecretStore`.
-- Return a `QuotaSnapshot` (`buckets[]`, optional `billingCycleStart`/`End`, optional `displayMessages`).
-
-Declare each credential as a `type: 'secret'` field in `configSchema` with `section: 'quota'`. The UI will render a masked password input with Save / Clear buttons; the secret never round-trips back to the renderer.
-
-`QuotaService` polls every enabled provider on its own interval (you set `defaultIntervalMinutes`; the user can override per-connector). The first bucket in your snapshot is the primary one shown both in the tray popup and in the menu-bar tooltip line.
+Then add it to `ALL_CONNECTORS` in `src/main/connectors/registry.ts`. The full authoring guide — including quota providers, secrets, and login flows — lives in [`src/main/connectors/README.md`](src/main/connectors/README.md).
 
 ## License
 
-Apache License 2.0
+[Apache License 2.0](LICENSE)

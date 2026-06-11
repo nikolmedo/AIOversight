@@ -165,17 +165,17 @@ export class TranscriptWatcher implements Detector {
   }
 }
 
-function kindForStatus(s: LineStatus): EventKind | null {
+export function kindForStatus(s: LineStatus): EventKind | null {
   if (s === 'pending' || s === 'tool') return 'waiting';
   if (s === 'final') return 'finished';
   return null;
 }
 
-function truncate(s: string, max: number): string {
+export function truncate(s: string, max: number): string {
   const flat = s.replace(/\s+/g, ' ').trim();
   return flat.length <= max ? flat : flat.slice(0, max - 1) + '…';
 }
 
-function shortId(s: string): string {
+export function shortId(s: string): string {
   return s.length > 10 ? s.slice(0, 8) : s;
 }
