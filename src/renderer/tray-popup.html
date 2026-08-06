@@ -18,9 +18,13 @@
         <p class="tagline">Live quota across integrations</p>
       </div>
     </div>
+    <button id="openSettingsHeader" class="icon-btn" aria-label="Open settings" title="Settings">⚙</button>
   </header>
-  <main id="content">
-    <p class="empty">Loading…</p>
+  <main id="scroller">
+    <div id="totalSpendCard"></div>
+    <div id="content">
+      <p class="empty">Loading…</p>
+    </div>
   </main>
   <footer class="popup-footer">
     <div class="footer-row">
@@ -29,6 +33,8 @@
       <button id="openSettings" class="primary small">Settings…</button>
     </div>
   </footer>
+  <script src="quota-math.js"></script>
+  <script src="quota-view.js"></script>
   <script src="tray-popup.js"></script>
 </body>
 </html>

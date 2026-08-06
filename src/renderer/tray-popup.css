@@ -1,3 +1,4 @@
+@import url('tokens.css');
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
 
 /* =========================================================
@@ -5,54 +6,30 @@
    ========================================================= */
 
 :root {
-  /* Dark mode (default) */
-  --bg:       #101729;
-  --surface:  #1b2438;
-  --surface2: #222d44;
-  --border:   #2d3d58;
-  --border-2: #3a4f6e;
-  --text:     #e2eaf6;
-  --text-2:   #7d92b0;
-  --text-3:   #4a5e78;
-  --accent:   #5a8ef4;
-  --accent-bg: rgba(90,142,244,.1);
-  --green:    #4ade80;
-  --green-bg: rgba(74,222,128,.08);
-  --amber:    #fbbf24;
-  --amber-bg: rgba(251,191,36,.08);
-  --red:      #f87171;
-  --red-bg:   rgba(248,113,113,.08);
+  /* Tray-popup-specific tokens. Shared tokens (--bg, --surface, --accent,
+     --green/amber/red, --font, ...) live in tokens.css. */
   --r:        8px;
   --r-sm:     6px;
-  --font:     'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
-}
-
-@media (prefers-color-scheme: light) {
-  :root {
-    --bg:       #f6f8fb;
-    --surface:  #ffffff;
-    --surface2: #f0f4f9;
-    --border:   #dce4ef;
-    --border-2: #b8c8de;
-    --text:     #0f1a2e;
-    --text-2:   #6278a0;
-    --text-3:   #9aa8c0;
-    --accent:   #3b7bf0;
-    --accent-bg: rgba(59,123,240,.08);
-    --green:    #16a34a;
-    --green-bg: rgba(22,163,74,.08);
-    --amber:    #d97706;
-    --amber-bg: rgba(217,119,6,.08);
-    --red:      #dc2626;
-    --red-bg:   rgba(220,38,38,.08);
-  }
 }
 
 /* ── Reset ──────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* Global guarantee that the `hidden` attribute always wins over any
+   class's `display` declaration on the same element, regardless of
+   selector specificity/source order. Without this, any class that sets
+   `display` (e.g. `.row-menu { display: flex }`) can silently defeat
+   `el.hidden = true/false` toggled from JS — this exact bug made the row
+   context menu permanently stuck visible (see .row-menu[hidden] below for
+   the incident) and the same latent trap applies to `.row-menu-item`'s
+   `display: block`. */
+[hidden] { display: none !important; }
 
+/* No background on `html` — when the root has none, the BODY's background
+   propagates to the canvas (CSS spec), so `body.popup-transparent`'s
+   translucent background can actually reach the window surface. An opaque
+   `html` background here would paint over the native acrylic/vibrancy layer
+   and make the "Increase transparency" setting visually a no-op. */
 html, body {
-  background: var(--bg);
   color: var(--text);
   font-family: var(--font);
   font-size: 12.5px;
@@ -62,8 +39,16 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 body {
+  background: var(--bg);
   display: flex; flex-direction: column;
-  min-height: 100vh;
+  /* MUST be a fixed `height`, not `min-height`. With `min-height: 100vh`
+     the body silently GROWS past the viewport once content exceeds it, so
+     `main { flex: 1 }` is never smaller than its content, its
+     `overflow-y: auto` never activates, and everything past the window's
+     height clamp (POPUP_MAX_HEIGHT) is clipped by `html { overflow:
+     hidden }` with no way to scroll to it. Locking the body to the
+     viewport is what makes `main` the real scroll container. */
+  height: 100vh;
   border: 1px solid var(--border);
   border-radius: var(--r);
 }
@@ -88,6 +73,15 @@ body {
 h1 { font-size: 12.5px; font-weight: 700; }
 .tagline { font-size: 10.5px; color: var(--text-2); }
 
+/* Header settings gear — always reachable even if the scrollable content
+   below is long (the footer's Settings button can sit below the fold). */
+.icon-btn {
+  margin-left: auto; flex-shrink: 0;
+  padding: 4px 8px; font-size: 15px; line-height: 1;
+  background: transparent; border-color: transparent; color: var(--text-2);
+}
+.icon-btn:hover { color: var(--text); background: var(--surface2); border-color: var(--border); }
+
 /* ── Buttons ────────────────────────────────────────────── */
 button {
   font: inherit; cursor: pointer; border-radius: var(--r-sm);
@@ -108,12 +102,88 @@ button.primary:hover { filter: brightness(1.1); }
 button.small { padding: 4px 10px; font-size: 11px; }
 
 /* ── Main content ───────────────────────────────────────── */
+/* This window is height-clamped (POPUP_MAX_HEIGHT in tray-popup.ts) and
+   non-resizable. `main` used to be `overflow: hidden` with no scroll
+   fallback — once total content exceeded the clamp, everything past it
+   (including the footer's Settings button) was silently, invisibly cut
+   off with no way to reach it. `overflow-y: auto` here is the actual fix;
+   `body`/`html` stay `overflow: hidden` so only this region scrolls. */
 main {
-  flex: 1; overflow: hidden;
+  flex: 1; overflow-y: auto; overflow-x: hidden;
   padding: 10px;
   display: flex; flex-direction: column; gap: 8px;
   background: var(--bg);
 }
+/* Slim theme-matched scrollbar — the default Chromium bar is a wide light
+   track that clashes with the dark popup. */
+main::-webkit-scrollbar { width: 7px; }
+main::-webkit-scrollbar-track { background: transparent; }
+main::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 4px; }
+main::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+
+/* ── Total Spend card (Phase 2b) ───────────────────────────
+   Lives INSIDE `main#scroller` (first child, above #content) so it scrolls
+   away with the provider blocks instead of permanently pinning ~half the
+   viewport — openusage scrolls everything as one column. `:empty` collapses
+   it when hidden (showSpendCard off / no spend data yet). */
+#totalSpendCard:empty { display: none; }
+
+/* Provider blocks column inside the scroller (was `main` itself before the
+   spend card moved into the scroll flow). */
+#content { display: flex; flex-direction: column; gap: 8px; }
+
+.spend-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 10px 12px;
+}
+.spend-card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 6px; flex-wrap: wrap; margin-bottom: 10px;
+}
+.spend-card-title { font-size: 11.5px; font-weight: 600; }
+.spend-card-subtitle { font-size: 9.5px; color: var(--text-3); margin-top: 2px; }
+
+.spend-card-body { display: flex; align-items: center; gap: 12px; }
+.spend-donut-wrap { flex-shrink: 0; }
+.spend-donut { display: block; width: 52px; height: 52px; }
+.spend-donut-empty {
+  width: 52px; height: 52px; border-radius: 50%;
+  border: 8px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-3); font-size: 8px; text-align: center;
+}
+
+.spend-card-summary { display: flex; flex-direction: column; gap: 7px; min-width: 0; flex: 1; }
+.spend-headline {
+  font-size: 16px; font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.spend-switch-group { display: inline-flex; gap: 3px; flex-wrap: wrap; }
+.spend-switch {
+  padding: 3px 8px; font-size: 10px; font-weight: 500;
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text-2); border-radius: 999px;
+}
+.spend-switch:hover { background: var(--border); color: var(--text); }
+.spend-switch.active {
+  background: var(--accent-bg); border-color: var(--accent);
+  color: var(--accent);
+}
+
+.spend-legend {
+  list-style: none; margin-top: 9px; padding-top: 8px;
+  border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.spend-legend-row { display: flex; align-items: center; gap: 6px; font-size: 10.5px; }
+.spend-legend-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  background: var(--dot-color, var(--accent));
+}
+.spend-legend-name { color: var(--text); flex: 1; min-width: 0; }
+.spend-legend-value { color: var(--text-2); font-variant-numeric: tabular-nums; }
 
 /* ── Footer ─────────────────────────────────────────────── */
 .popup-footer {
@@ -149,67 +219,98 @@ main {
 .block-name { font-weight: 600; font-size: 12.5px; }
 .block-vendor { font-size: 10px; color: var(--text-2); }
 
-/* ── Quota buckets ──────────────────────────────────────── */
-.quota-bucket {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  padding: 9px 11px;
+/* ── Meter rows (renderMeterRow) ───────────────────────────
+   Flat rows inside the provider card (openusage-style) — no nested
+   card-in-card borders; hairline separators between rows instead. */
+.meter-row {
+  padding: 8px 1px;
 }
-.quota-bucket-header {
+.meter-row + .meter-row { border-top: 1px solid var(--border); }
+.meter-row.no-data { opacity: 0.7; }
+.meter-row-header {
   display: flex; justify-content: space-between; align-items: center;
-  gap: 6px; margin-bottom: 8px;
+  gap: 6px; margin-bottom: 6px;
 }
-.quota-bucket-title { font-size: 12px; font-weight: 600; }
-.quota-bucket-pct {
+.meter-row-title { font-size: 12px; font-weight: 600; }
+/* Right side of the header: optional inline reset chip + percent. */
+.meter-row-side { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
+.meter-pct {
   font-size: 12px; font-weight: 600; color: var(--text-2);
   font-variant-numeric: tabular-nums;
 }
-.quota-bucket-pct.warn     { color: var(--amber); }
-.quota-bucket-pct.critical { color: var(--red); }
-.quota-bucket-stats { font-size: 10.5px; color: var(--text-2); margin-top: 6px; }
+.meter-pct.warn     { color: var(--amber); }
+.meter-pct.critical { color: var(--red); }
 
 /* Smooth progress bar */
-.quota-bar {
+.meter-bar {
+  position: relative;
   height: 5px; border-radius: 999px;
-  background: var(--border); overflow: hidden;
+  background: var(--border);
 }
-.quota-bar-fill {
+.meter-bar-fill {
   height: 100%; border-radius: 999px; width: 0;
   background: var(--accent);
   animation: barFill 450ms ease 60ms both;
 }
-.quota-bar-fill.warn     { background: var(--amber); }
-.quota-bar-fill.critical { background: var(--red); }
+.meter-bar-fill.warn     { background: var(--amber); }
+.meter-bar-fill.critical { background: var(--red); }
 @keyframes barFill {
   from { width: 0; }
   to   { width: var(--fill, 0%); }
 }
 
-/* Collapsible secondary buckets */
-.quota-bucket-collapsible {
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  padding: 0;
+/* Even-pace tick. No `overflow: hidden` on `.meter-bar` (see settings.css)
+   so this can use the full bar height. */
+.pace-tick {
+  position: absolute; top: 0; bottom: 0; left: var(--tick, 0%);
+  width: 2px; background: var(--text); opacity: 0.55;
+  border-radius: 1px; pointer-events: none;
 }
-.quota-bucket-collapsible summary {
+
+.meter-row-stats {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 6px; margin-top: 6px; flex-wrap: wrap;
+}
+.meter-row-value { font-size: 10.5px; color: var(--text-2); }
+.meter-note { font-size: 10px; color: var(--text-3); margin-top: 5px; }
+
+/* Reset countdown chip — click toggles countdown <-> exact time */
+.reset-chip {
+  padding: 1px 7px; font-size: 9.5px; font-weight: 600;
+  color: var(--text-2); background: var(--surface); border: 1px solid var(--border-2);
+  border-radius: 999px; font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.reset-chip:hover { color: var(--text); background: var(--border); }
+
+/* On-demand metrics: a plain (non-collapsing) section — each row inside is
+   individually collapsible instead, so label+value stay visible without a
+   second click. */
+.meter-extras { border-top: 1px solid var(--border); margin-top: 6px; }
+.meter-extras-heading {
+  padding: 6px 0 2px; font-size: 10.5px; font-weight: 600; color: var(--text-3);
+  text-transform: uppercase; letter-spacing: 0.4px;
+}
+.meter-extras-body { display: flex; flex-direction: column; gap: 2px; }
+
+/* Individually-collapsible compact row (used inside .meter-extras) */
+.meter-row-compact { padding: 0; }
+.meter-row-compact summary {
   cursor: pointer; list-style: none;
   display: flex; justify-content: space-between; align-items: center;
-  gap: 8px; padding: 7px 11px;
+  gap: 6px; padding: 6px 4px;
   transition: background 80ms;
 }
-.quota-bucket-collapsible summary:hover { background: var(--border); border-radius: var(--r-sm); }
-.quota-bucket-collapsible summary::-webkit-details-marker { display: none; }
-.quota-bucket-collapsible summary::after {
+.meter-row-compact summary:hover { background: var(--border); border-radius: var(--r-sm); }
+.meter-row-compact summary::-webkit-details-marker { display: none; }
+.meter-row-compact summary::after {
   content: '▸'; color: var(--text-3); font-size: 9px; flex-shrink: 0;
   display: inline-block; transition: transform 150ms;
 }
-.quota-bucket-collapsible[open] summary::after { transform: rotate(90deg); }
-.quota-bucket-hint { font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
-.quota-bucket-hint.warn     { color: var(--amber); }
-.quota-bucket-hint.critical { color: var(--red); }
-.quota-bucket-body { padding: 4px 11px 9px; }
+.meter-row-compact[open] summary::after { transform: rotate(90deg); }
+.meter-row-compact-body { padding: 2px 4px 8px; }
+/* Flat-row separators don't apply between compact rows (their own section). */
+.meter-row-compact + .meter-row-compact { border-top: none; }
 
 /* Errors */
 .quota-error {
@@ -221,3 +322,66 @@ main {
 
 .empty { color: var(--text-2); text-align: center; padding: 16px 8px; margin: 0; font-size: 11px; }
 .empty.small { padding: 8px; font-size: 10.5px; }
+
+/* ── Row context menu (Phase 2c) ──────────────────────────
+   In-DOM popup, `position: fixed` + viewport clamping — see
+   quota-view.ts's bindRowMenu for why (this window is non-resizable,
+   `overflow: hidden`, with no scroll container). */
+.row-menu {
+  position: fixed; z-index: 1000;
+  background: var(--surface); border: 1px solid var(--border-2);
+  border-radius: var(--r-sm); box-shadow: 0 4px 16px rgba(0,0,0,.35);
+  padding: 4px; display: flex; flex-direction: column; min-width: 150px;
+}
+/* `.row-menu` and the `[hidden]` attribute both have specificity (0,1,0);
+   `.row-menu`'s `display: flex` above wins the tie by source order, so the
+   `hidden` attribute JS toggles (see quota-view.ts's bindRowMenu) had no
+   visual effect at all — the menu stayed permanently visible/stuck. This
+   selector's higher specificity (0,2,0) fixes that regardless of source
+   order. */
+.row-menu[hidden] { display: none; }
+.row-menu-item {
+  display: block; width: 100%; text-align: left;
+  background: transparent; border: none; border-radius: var(--r-sm);
+  padding: 6px 9px; font-size: 11.5px; color: var(--text); font-weight: 500;
+}
+.row-menu-item:hover { background: var(--surface2); }
+.row-menu-item:disabled { opacity: 0.45; pointer-events: none; }
+
+/* ── Density (Phase 2c) — modest spacing overrides only ──── */
+body.density-compact .meter-row { padding: 6px 1px; }
+body.density-compact .meter-row-header { margin-bottom: 4px; }
+body.density-compact .meter-row-stats { margin-top: 3px; }
+body.density-compact .quota-block { padding: 8px 10px; gap: 4px; }
+body.density-compact main { gap: 6px; padding: 8px; }
+
+/* ── Increase transparency (Phase 2c) ──────────────────────
+   Applied only when AppSettings.transparentPopup is on AND the native
+   window-level effect is available (Windows acrylic / macOS vibrancy — see
+   main/tray-popup.ts's setTransparent; no-op on Linux).
+
+   The native blur is only visible where the WEB pixels are translucent, so
+   every opaque full-surface layer must be overridden here, not just body:
+   `main` paints `--bg` across the whole scroll area, and the header/footer/
+   cards paint `--surface`. Missing any one of them makes the setting look
+   like a no-op (that was the original bug — only body was overridden, and
+   with a stale rgba from a pre-tokens.css palette).
+
+   The rgba values are the current tokens.css palette (--bg #101729,
+   --surface #1b2438 dark; #f6f8fb / #ffffff light) with an alpha chosen so
+   acrylic reads through while text stays legible. Keep in sync with
+   tokens.css if the palette changes. Visual result is platform-specific and
+   not promised to look identical everywhere. */
+body.popup-transparent { background: rgba(16, 23, 41, 0.55); }
+body.popup-transparent main { background: transparent; }
+body.popup-transparent .popup-header,
+body.popup-transparent .popup-footer { background: rgba(27, 36, 56, 0.55); }
+body.popup-transparent .quota-block,
+body.popup-transparent .spend-card { background: rgba(27, 36, 56, 0.5); }
+@media (prefers-color-scheme: light) {
+  body.popup-transparent { background: rgba(246, 248, 251, 0.55); }
+  body.popup-transparent .popup-header,
+  body.popup-transparent .popup-footer { background: rgba(255, 255, 255, 0.55); }
+  body.popup-transparent .quota-block,
+  body.popup-transparent .spend-card { background: rgba(255, 255, 255, 0.5); }
+}

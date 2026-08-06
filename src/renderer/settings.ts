@@ -15,13 +15,23 @@ async function main() {
   paused = initial.paused;
   quotas = initial.quotas ?? {};
 
+  document.body.insertAdjacentHTML('beforeend', renderRowMenu());
+
   setupTabs();
   renderConnectors();
+  renderTotalSpendCardPanel();
+  renderCustomizeTab();
   renderEvents(initial.settings.recentEvents);
   renderGeneral(initial.settings, initial.settingsPath);
   renderIntegrate();
   loadLogs();
   reflectPaused();
+
+  bindResetChips(document);
+  bindTotalSpendCard(document, renderTotalSpendCardPanel);
+  bindRowMenu(document, settingsRowMenuHandlers);
+  bindCustomizeTab();
+  setInterval(() => refreshResetChips(document), 30_000);
 
   $('#testBtn').addEventListener('click', () => window.aw.testNotification());
   $('#pauseBtn').addEventListener('click', async () => {
@@ -46,6 +56,270 @@ async function main() {
   window.aw.onQuotaUpdate(({ id, snapshot }) => {
     quotas[id] = snapshot;
     refreshQuotaCard(id);
+    renderTotalSpendCardPanel();
+    renderCustomizeTab();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Total Spend card (Phase 2b)
+// ---------------------------------------------------------------------------
+
+function renderTotalSpendCardPanel(): void {
+  const el = document.getElementById('totalSpendCard');
+  if (!el) return;
+  // `#totalSpendCard:empty { display: none }` collapses the hidden card.
+  // `initial.settings.showSpendCard` is kept current by renderGeneral's
+  // toggle handler, so re-renders triggered by quota pushes respect it.
+  el.innerHTML =
+    initial.settings.showSpendCard !== false
+      ? renderTotalSpendCard(quotas, initial.connectors)
+      : '';
+}
+
+// ---------------------------------------------------------------------------
+// Row context menu (Phase 2c) — shared markup/behavior from quota-view.ts;
+// this is the settings-window-specific wiring (bridge calls, tab switch).
+// ---------------------------------------------------------------------------
+
+function bucketPrefFor(connectorId: string, bucketId: string): BucketPref | undefined {
+  return initial.settings.connectors.bucketPrefs?.[connectorId]?.[bucketId];
+}
+
+/**
+ * Applies a bucket pref patch via the existing `connectors:setBucketPref` IPC
+ * channel (exposed on the bridge as `setConnectorBucketPref`), then refreshes
+ * `initial.settings` from the (authoritative) response — the star cap is
+ * enforced server-side in `SettingsStore.setBucketPref`, so a `starred: true`
+ * request past the cap comes back with `starred` still unset; callers that
+ * care about that (the row menu, the Customize tab's star button) compare
+ * before/after themselves.
+ */
+async function applyBucketPref(
+  connectorId: string,
+  bucketId: string,
+  patch: Partial<BucketPref>,
+): Promise<void> {
+  initial.settings = await window.aw.setConnectorBucketPref(connectorId, bucketId, patch);
+  refreshQuotaCard(connectorId);
+}
+
+const settingsRowMenuHandlers: RowMenuHandlers = {
+  isHidden: t => !!bucketPrefFor(t.connectorId, t.bucketId)?.hidden,
+  isStarred: t => !!bucketPrefFor(t.connectorId, t.bucketId)?.starred,
+  canStar: t => {
+    if (bucketPrefFor(t.connectorId, t.bucketId)?.starred) return true;
+    const perConnector = initial.settings.connectors.bucketPrefs?.[t.connectorId] ?? {};
+    const starredCount = Object.values(perConnector).filter(p => p.starred).length;
+    return starredCount < MAX_STARRED_PER_CONNECTOR;
+  },
+  toggleHidden: t => {
+    const hidden = !bucketPrefFor(t.connectorId, t.bucketId)?.hidden;
+    void applyBucketPref(t.connectorId, t.bucketId, { hidden }).then(renderCustomizeTab);
+  },
+  toggleStarred: t => {
+    const starred = !bucketPrefFor(t.connectorId, t.bucketId)?.starred;
+    void applyBucketPref(t.connectorId, t.bucketId, { starred }).then(renderCustomizeTab);
+  },
+  refreshConnector: t => {
+    void (async () => {
+      const snap = (await window.aw.refreshQuota(t.connectorId)) as QuotaSnapshot;
+      if (snap) {
+        quotas[t.connectorId] = snap;
+        refreshQuotaCard(t.connectorId);
+        renderCustomizeTab();
+      }
+    })();
+  },
+  openCustomize: () => activateTab('customize'),
+};
+
+// ---------------------------------------------------------------------------
+// Customize tab (Phase 2c)
+// ---------------------------------------------------------------------------
+
+/**
+ * Delegates to the shared `sortBucketsByDisplayOrder` (quota-math.ts) — the
+ * same baseline sort `renderMeterGroup` uses for the live meter's row
+ * groups. Deliberately NOT a locally-reimplemented sort: an earlier version
+ * of this function sorted unordered buckets by raw declaration order while
+ * `renderMeterGroup` sorted by usage-percentage descending, so a move click
+ * computed from this tab's (different) baseline could silently reorder
+ * buckets the user never touched relative to what they'd see in the live
+ * meter. Note this doesn't split main/on-demand the way `renderMeterGroup`
+ * does — the Customize tab intentionally lists every bucket in one list
+ * regardless of hidden/visibility state.
+ */
+function customizeDisplayOrder(buckets: QuotaBucket[], bucketPrefs?: Record<string, BucketPref>): string[] {
+  return sortBucketsByDisplayOrder(buckets, bucketPrefs).map(b => b.id);
+}
+
+function renderCustomizeTab(): void {
+  const root = document.getElementById('customizeList');
+  if (!root) return;
+  const parts: string[] = [];
+  for (const def of initial.connectors) {
+    if (!def.hasQuota) continue;
+    parts.push(renderCustomizeConnectorGroup(def, quotas[def.id]));
+  }
+  root.innerHTML = parts.join('') || '<p class="empty small">No quota integrations configured.</p>';
+}
+
+function renderCustomizeConnectorGroup(def: ConnectorMetadata, snap: QuotaSnapshot | undefined): string {
+  const header = `<h3 class="vendor-heading">${escapeHtml(def.name)}</h3>`;
+  if (!snap) {
+    return `<div class="customize-group">${header}<p class="empty small">Not loaded yet — enable quota for this integration under Integrations.</p></div>`;
+  }
+  if (!snap.ok) {
+    return `<div class="customize-group">${header}<p class="empty small">Last fetch failed: ${escapeHtml(snap.error)}</p></div>`;
+  }
+  if (snap.buckets.length === 0) {
+    return `<div class="customize-group">${header}<p class="empty small">No usage buckets yet.</p></div>`;
+  }
+
+  const bucketPrefs = initial.settings.connectors.bucketPrefs?.[def.id];
+  const orderedIds = customizeDisplayOrder(snap.buckets, bucketPrefs);
+  const rows = orderedIds
+    .map((id, i) => {
+      const b = snap.buckets.find(x => x.id === id);
+      if (!b) return '';
+      return renderCustomizeRow(def.id, b, bucketPrefs?.[id], i === 0, i === orderedIds.length - 1);
+    })
+    .join('');
+  return `<div class="customize-group" data-connector-id="${escapeHtml(def.id)}">${header}<div class="customize-rows">${rows}</div></div>`;
+}
+
+function renderCustomizeRow(
+  connectorId: string,
+  b: QuotaBucket,
+  pref: BucketPref | undefined,
+  isFirst: boolean,
+  isLast: boolean,
+): string {
+  const hidden = !!pref?.hidden;
+  const starred = !!pref?.starred;
+  const hasLimit = b.limit != null && b.limit > 0;
+  const effectiveVisibility = pref?.visibility ?? b.defaultVisibility ?? (hasLimit ? 'always' : 'onDemand');
+
+  return `
+    <div class="customize-row" data-connector-id="${escapeHtml(connectorId)}" data-bucket-id="${escapeHtml(b.id)}">
+      <div class="customize-row-main">
+        <span class="customize-row-label">${escapeHtml(b.label)}</span>
+      </div>
+      <div class="customize-row-controls">
+        <label class="toggle inline">
+          <input type="checkbox" class="switch" data-role="enabled" ${hidden ? '' : 'checked'} />
+          <span>Shown</span>
+        </label>
+        <select class="control control-select" data-role="visibility">
+          <option value="always" ${effectiveVisibility === 'always' ? 'selected' : ''}>Always Visible</option>
+          <option value="onDemand" ${effectiveVisibility === 'onDemand' ? 'selected' : ''}>On Demand</option>
+        </select>
+        <button type="button" class="ghost small" data-role="star" aria-pressed="${starred}">${starred ? '★ Starred' : '☆ Star'}</button>
+        <button type="button" class="ghost small" data-role="move-up" ${isFirst ? 'disabled' : ''} aria-label="Move up">↑</button>
+        <button type="button" class="ghost small" data-role="move-down" ${isLast ? 'disabled' : ''} aria-label="Move down">↓</button>
+      </div>
+    </div>
+  `;
+}
+
+function flashCustomizeMessage(row: HTMLElement, msg: string): void {
+  row.querySelector('.customize-row-note')?.remove();
+  const note = document.createElement('div');
+  note.className = 'customize-row-note';
+  note.textContent = msg;
+  row.appendChild(note);
+  setTimeout(() => note.remove(), 2500);
+}
+
+/**
+ * Connector ids with an in-flight reorder. `moveCustomizeBucket` computes its
+ * target order from `initial.settings`'s current bucketPrefs and then writes
+ * one `order` per bucket sequentially — a second reorder click on the same
+ * connector before that sequence finishes would read the same stale
+ * baseline and interleave writes with the first. The check-and-add below
+ * happens synchronously, before any `await` (a plain `async function` body
+ * runs synchronously up to its first `await`), so a rapid second click is a
+ * no-op even before the visual disable takes effect.
+ */
+const pendingReorders = new Set<string>();
+
+function setCustomizeGroupBusy(connectorId: string, busy: boolean): void {
+  const group = document.querySelector(`.customize-group[data-connector-id="${cssEscape(connectorId)}"]`);
+  if (!group) return;
+  group.querySelectorAll<HTMLButtonElement>('[data-role="move-up"], [data-role="move-down"]').forEach(btn => {
+    btn.disabled = busy;
+  });
+}
+
+async function moveCustomizeBucket(
+  connectorId: string,
+  bucketId: string,
+  direction: 'up' | 'down',
+): Promise<void> {
+  if (pendingReorders.has(connectorId)) return;
+  pendingReorders.add(connectorId);
+  setCustomizeGroupBusy(connectorId, true);
+  try {
+    const snap = quotas[connectorId];
+    if (!snap || !snap.ok) return;
+    const bucketPrefs = initial.settings.connectors.bucketPrefs?.[connectorId];
+    const orderedIds = customizeDisplayOrder(snap.buckets, bucketPrefs);
+    const next = computeReorderedOrders(orderedIds, bucketId, direction);
+    if (!next) return;
+    let latest = initial.settings;
+    for (const [id, order] of Object.entries(next)) {
+      latest = await window.aw.setConnectorBucketPref(connectorId, id, { order });
+    }
+    initial.settings = latest;
+    refreshQuotaCard(connectorId);
+  } finally {
+    pendingReorders.delete(connectorId);
+    // Full rebuild reflects the final state — and, on the no-op early-return
+    // paths above, simply undoes the busy-disable with correct
+    // per-row first/last disabled states, cheaper than tracking which
+    // branch ran.
+    renderCustomizeTab();
+  }
+}
+
+function bindCustomizeTab(): void {
+  const root = $('#customizeList');
+
+  root.addEventListener('change', e => {
+    const row = (e.target as HTMLElement).closest('.customize-row') as HTMLElement | null;
+    if (!row) return;
+    const connectorId = row.dataset.connectorId!;
+    const bucketId = row.dataset.bucketId!;
+    const target = e.target as HTMLElement;
+    if (target.matches('[data-role="enabled"]')) {
+      const hidden = !(target as HTMLInputElement).checked;
+      void applyBucketPref(connectorId, bucketId, { hidden }).then(renderCustomizeTab);
+    } else if (target.matches('[data-role="visibility"]')) {
+      const visibility = (target as HTMLSelectElement).value as 'always' | 'onDemand';
+      void applyBucketPref(connectorId, bucketId, { visibility }).then(renderCustomizeTab);
+    }
+  });
+
+  root.addEventListener('click', e => {
+    const btn = (e.target as HTMLElement).closest('button[data-role]') as HTMLButtonElement | null;
+    if (!btn) return;
+    const row = btn.closest('.customize-row') as HTMLElement;
+    const connectorId = row.dataset.connectorId!;
+    const bucketId = row.dataset.bucketId!;
+    if (btn.dataset.role === 'star') {
+      const wantStar = !bucketPrefFor(connectorId, bucketId)?.starred;
+      void applyBucketPref(connectorId, bucketId, { starred: wantStar }).then(() => {
+        const after = !!bucketPrefFor(connectorId, bucketId)?.starred;
+        if (wantStar && !after) {
+          flashCustomizeMessage(row, `Cap reached — max ${MAX_STARRED_PER_CONNECTOR} starred per integration.`);
+        } else {
+          renderCustomizeTab();
+        }
+      });
+    } else if (btn.dataset.role === 'move-up' || btn.dataset.role === 'move-down') {
+      void moveCustomizeBucket(connectorId, bucketId, btn.dataset.role === 'move-up' ? 'up' : 'down');
+    }
   });
 }
 
@@ -54,21 +328,22 @@ function reflectPaused(): void {
   ($('#pauseBtn') as HTMLButtonElement).textContent = paused ? 'Resume' : 'Pause';
 }
 
+function activateTab(name: string): void {
+  $$('.tab').forEach(t => t.classList.toggle('active', (t as HTMLElement).dataset.tab === name));
+  $$('.tab-panel').forEach(p => {
+    const isTarget = p.id === `tab-${name}`;
+    p.classList.toggle('active', isTarget);
+    if (isTarget) {
+      p.classList.remove('panel-enter');
+      void (p as HTMLElement).offsetWidth;
+      p.classList.add('panel-enter');
+    }
+  });
+}
+
 function setupTabs(): void {
   for (const tab of $$('.tab')) {
-    tab.addEventListener('click', () => {
-      $$('.tab').forEach(t => t.classList.toggle('active', t === tab));
-      const target = (tab as HTMLElement).dataset.tab!;
-      $$('.tab-panel').forEach(p => {
-        const isTarget = p.id === `tab-${target}`;
-        p.classList.toggle('active', isTarget);
-        if (isTarget) {
-          p.classList.remove('panel-enter');
-          void (p as HTMLElement).offsetWidth;
-          p.classList.add('panel-enter');
-        }
-      });
-    });
+    tab.addEventListener('click', () => activateTab((tab as HTMLElement).dataset.tab!));
   }
 }
 
@@ -121,7 +396,7 @@ function renderConnectorCard(def: ConnectorMetadata): HTMLElement {
         <summary>
           <span class="section-title">Notifications</span>
           <label class="toggle inline">
-            <input type="checkbox" data-role="enable-notifications" ${enabledState.notifications ? 'checked' : ''} />
+            <input type="checkbox" class="switch" data-role="enable-notifications" ${enabledState.notifications ? 'checked' : ''} />
           </label>
         </summary>
         <div class="connector-section-body" data-fields="notifications"></div>
@@ -134,7 +409,7 @@ function renderConnectorCard(def: ConnectorMetadata): HTMLElement {
         <summary>
           <span class="section-title">Quota</span>
           <label class="toggle inline">
-            <input type="checkbox" data-role="enable-quota" ${enabledState.quota ? 'checked' : ''} />
+            <input type="checkbox" class="switch" data-role="enable-quota" ${enabledState.quota ? 'checked' : ''} />
           </label>
         </summary>
         <div class="connector-section-body" data-fields="quota">
@@ -383,9 +658,11 @@ function renderQuotaSnapshot(q: QuotaSnapshot | undefined, def?: ConnectorMetada
       <p class="quota-footnote">Last attempt: ${formatDateTime(q.fetchedAt)}</p>
     `;
   }
+  const bucketPrefs = def ? initial.settings.connectors.bucketPrefs?.[def.id] : undefined;
   const buckets =
     q.buckets.length > 0
-      ? q.buckets.map(b => renderQuotaBucket(b)).join('')
+      ? renderMeterGroup(q.buckets, bucketPrefs, { connectorId: def?.id }) ||
+        '<p class="empty small">No usage buckets returned.</p>'
       : '<p class="empty small">No usage buckets returned.</p>';
   const messages =
     q.displayMessages.length > 0
@@ -399,39 +676,9 @@ function renderQuotaSnapshot(q: QuotaSnapshot | undefined, def?: ConnectorMetada
   return `${buckets}${messages}${metaLine}`;
 }
 
-function renderQuotaBucket(b: QuotaBucket): string {
-  const pct =
-    b.limit != null && b.limit > 0 ? Math.min(100, Math.round((b.used / b.limit) * 100)) : null;
-  const fillClass = pct == null ? '' : pct >= 90 ? 'critical' : pct >= 75 ? 'warn' : '';
-  const stats =
-    b.limit != null
-      ? `${formatQuotaNumber(b.used, b.unit)} / ${formatQuotaNumber(b.limit, b.unit)} ${b.unit}`
-      : `${formatQuotaNumber(b.used, b.unit)} ${b.unit} used`;
-  const remaining =
-    b.remaining != null ? ` · ${formatQuotaNumber(b.remaining, b.unit)} remaining` : '';
-  const pctEl = pct != null
-    ? `<span class="quota-bucket-pct ${fillClass}">${pct}%</span>`
-    : '';
-  const bar =
-    pct != null
-      ? `<div class="quota-bar"><div class="quota-bar-fill ${fillClass}" style="--fill:${pct}%"></div></div>`
-      : '';
-  return `
-    <div class="quota-bucket">
-      <div class="quota-bucket-header">
-        <div class="quota-bucket-title">${escapeHtml(b.label)}</div>
-        ${pctEl}
-      </div>
-      ${bar}
-      <div class="quota-bucket-stats">${escapeHtml(stats + remaining)}</div>
-    </div>
-  `;
-}
-
-function formatQuotaNumber(n: number, unit: QuotaBucket['unit']): string {
-  if (unit === 'usd') return `$${(n / 100).toFixed(2)}`;
-  return n.toLocaleString();
-}
+// renderQuotaBucket / formatQuotaNumber / formatDateTime moved to the shared
+// quota-math.ts / quota-view.ts (loaded as global scripts before this file) —
+// see renderMeterRow / formatQuotaValue / formatDateTime.
 
 function formatDate(iso: string): string {
   try {
@@ -443,10 +690,6 @@ function formatDate(iso: string): string {
   } catch {
     return iso;
   }
-}
-
-function formatDateTime(ts: number): string {
-  return new Date(ts).toLocaleString();
 }
 
 // ---------------------------------------------------------------------------
@@ -481,6 +724,10 @@ function renderEvents(events: RecentEvent[]): void {
 // General
 // ---------------------------------------------------------------------------
 
+function applyDensityClass(mode: 'default' | 'compact'): void {
+  document.body.classList.toggle('density-compact', mode === 'compact');
+}
+
 function renderGeneral(s: AppSettings, settingsPath: string): void {
   const launchAtLogin = $('#launchAtLogin') as HTMLInputElement;
   const showNotif = $('#showNotifications') as HTMLInputElement;
@@ -492,6 +739,14 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
   const quietEnabled = $('#quietEnabled') as HTMLInputElement;
   const quietStart = $('#quietStart') as HTMLInputElement;
   const quietEnd = $('#quietEnd') as HTMLInputElement;
+  const theme = $('#theme') as HTMLSelectElement;
+  const density = $('#density') as HTMLSelectElement;
+  const timeFormat = $('#timeFormat') as HTMLSelectElement;
+  const transparentPopup = $('#transparentPopup') as HTMLInputElement;
+  const transparentPopupHint = $('#transparentPopupHint');
+  const showSpendCard = $('#showSpendCard') as HTMLInputElement;
+  const popupShortcut = $('#popupShortcut') as HTMLInputElement;
+  const popupShortcutStatus = $('#popupShortcutStatus');
 
   launchAtLogin.checked = s.launchAtLogin;
   showNotif.checked = s.showNotifications;
@@ -503,7 +758,23 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
   quietEnabled.checked = !!s.quietHours;
   quietStart.value = String(s.quietHours?.startHour ?? 22);
   quietEnd.value = String(s.quietHours?.endHour ?? 8);
+  theme.value = s.theme ?? 'system';
+  density.value = s.density ?? 'default';
+  timeFormat.value = s.timeFormat ?? 'auto';
+  transparentPopup.checked = !!s.transparentPopup;
+  showSpendCard.checked = s.showSpendCard !== false;
+  popupShortcut.value = s.popupShortcut ?? '';
   $('#settingsPath').textContent = `Settings file: ${settingsPath}`;
+
+  applyDensityClass(density.value as 'default' | 'compact');
+  setTimeFormatPref(timeFormat.value as 'auto' | '12h' | '24h');
+
+  // Windows/macOS-only per main/tray-popup.ts's setTransparent — Linux has no
+  // implementation, so the control is disabled rather than silently no-op'd.
+  if (initial.platform === 'linux') {
+    transparentPopup.disabled = true;
+    transparentPopupHint.textContent = 'Not supported on Linux — this option is disabled here.';
+  }
 
   const persist = debounce(() => {
     void window.aw.update({
@@ -517,7 +788,18 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
       quietHours: quietEnabled.checked
         ? { startHour: clampHour(quietStart.value), endHour: clampHour(quietEnd.value) }
         : null,
+      theme: theme.value as AppSettings['theme'],
+      density: density.value as AppSettings['density'],
+      timeFormat: timeFormat.value as AppSettings['timeFormat'],
+      transparentPopup: transparentPopup.checked,
+      showSpendCard: showSpendCard.checked,
     });
+    applyDensityClass(density.value as 'default' | 'compact');
+    setTimeFormatPref(timeFormat.value as 'auto' | '12h' | '24h');
+    // Keep the module-level copy current and reflect the toggle immediately
+    // (renderTotalSpendCardPanel reads initial.settings.showSpendCard).
+    initial.settings.showSpendCard = showSpendCard.checked;
+    renderTotalSpendCardPanel();
   }, 250);
 
   for (const el of [
@@ -531,10 +813,30 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
     quietEnabled,
     quietStart,
     quietEnd,
+    theme,
+    density,
+    timeFormat,
+    transparentPopup,
+    showSpendCard,
   ]) {
     el.addEventListener('change', persist);
     el.addEventListener('input', persist);
   }
+
+  // The shortcut has its own IPC channel (settings:setPopupShortcut) rather
+  // than riding the debounced `update()` above, so a taken-accelerator
+  // failure can be attributed to this one field instead of the whole patch.
+  $('#popupShortcutSave').addEventListener('click', async () => {
+    const res = await window.aw.setPopupShortcut(popupShortcut.value.trim());
+    popupShortcutStatus.textContent = res.ok
+      ? 'Shortcut set.'
+      : `Could not set shortcut: ${res.reason ?? 'unknown error'}`;
+  });
+  $('#popupShortcutClear').addEventListener('click', async () => {
+    popupShortcut.value = '';
+    const res = await window.aw.setPopupShortcut('');
+    popupShortcutStatus.textContent = res.ok ? 'Shortcut cleared.' : `Failed to clear: ${res.reason ?? 'unknown error'}`;
+  });
 }
 
 function renderIntegrate(): void {
@@ -588,13 +890,7 @@ function debounce<F extends (...args: never[]) => void>(fn: F, ms: number): F {
   }) as F;
 }
 
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
+// escapeHtml moved to the shared quota-view.ts (global script).
 
 function cssEscape(s: string): string {
   return s.replace(/[^a-zA-Z0-9_-]/g, ch => `\\${ch}`);

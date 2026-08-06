@@ -27,6 +27,7 @@
 
   <nav class="tabs">
     <button class="tab active" data-tab="integrations">Integrations</button>
+    <button class="tab" data-tab="customize">Customize</button>
     <button class="tab" data-tab="events">Recent events</button>
     <button class="tab" data-tab="logs">Logs</button>
     <button class="tab" data-tab="general">General</button>
@@ -40,7 +41,20 @@
         <strong>notifications</strong> and <strong>quota</strong> sections. Toggle
         either independently. Credentials stay encrypted on this machine.
       </p>
+      <div id="totalSpendCard"></div>
       <div id="connectors"></div>
+    </section>
+
+    <section id="tab-customize" class="tab-panel">
+      <div class="section-header">
+        <h2>Customize</h2>
+      </div>
+      <p class="hint">
+        Choose which usage meters show by default, star up to 2 per
+        integration for the menu bar / tray tooltip, and reorder rows with
+        the arrow buttons.
+      </p>
+      <div id="customizeList"></div>
     </section>
 
     <section id="tab-events" class="tab-panel">
@@ -58,60 +72,146 @@
     </section>
 
     <section id="tab-general" class="tab-panel">
-      <h2>General</h2>
-      <fieldset class="quiet">
-        <legend>Startup</legend>
-        <label class="row">
-          <input type="checkbox" id="launchAtLogin" />
-          <span>Launch at system startup</span>
+      <section class="settings-group">
+        <h3 class="settings-group-title">Startup</h3>
+        <label class="setting-row">
+          <span class="setting-label">Launch at system startup</span>
+          <input type="checkbox" class="switch" id="launchAtLogin" />
         </label>
-      </fieldset>
-      <fieldset class="quiet">
-        <legend>Notifications</legend>
-        <label class="row">
-          <input type="checkbox" id="showNotifications" />
-          <span>Show desktop notifications (master switch)</span>
+      </section>
+
+      <section class="settings-group">
+        <h3 class="settings-group-title">Notifications</h3>
+        <label class="setting-row">
+          <span class="setting-label">
+            Show desktop notifications
+            <span class="setting-sub">Master switch for every notification below</span>
+          </span>
+          <input type="checkbox" class="switch" id="showNotifications" />
         </label>
-        <label class="row">
-          <input type="checkbox" id="notifyOnWaiting" />
-          <span>An agent is <strong>waiting on me</strong> (paused on a tool / approval prompt)</span>
+        <label class="setting-row dependent-notif">
+          <span class="setting-label">
+            An agent is waiting on me
+            <span class="setting-sub">Paused on a tool call or an approval prompt</span>
+          </span>
+          <input type="checkbox" class="switch" id="notifyOnWaiting" />
         </label>
-        <label class="row">
-          <input type="checkbox" id="notifyOnFinished" />
-          <span>An agent <strong>finished its turn</strong> (final answer, no pending tools)</span>
+        <label class="setting-row dependent-notif">
+          <span class="setting-label">
+            An agent finished its turn
+            <span class="setting-sub">Final answer delivered, no pending tools</span>
+          </span>
+          <input type="checkbox" class="switch" id="notifyOnFinished" />
         </label>
-        <label class="row">
-          <span>Per-session cooldown (seconds)</span>
-          <input type="number" min="1" max="3600" id="cooldown" class="num" />
+        <label class="setting-row">
+          <span class="setting-label">
+            Per-session cooldown
+            <span class="setting-sub">Seconds between repeat notifications for the same session</span>
+          </span>
+          <input type="number" class="control control-num" id="cooldown" min="1" max="3600" />
         </label>
-      </fieldset>
-      <fieldset class="quiet">
-        <legend>Quota</legend>
-        <label class="row">
-          <input type="checkbox" id="showQuotaInTray" />
-          <span>Show quota summary in menu bar / tray tooltip</span>
+      </section>
+
+      <section class="settings-group">
+        <h3 class="settings-group-title">Quota</h3>
+        <label class="setting-row">
+          <span class="setting-label">Show quota summary in menu bar / tray tooltip</span>
+          <input type="checkbox" class="switch" id="showQuotaInTray" />
         </label>
-        <label class="row">
-          <span>Default auto-refresh (minutes, 0 = manual only)</span>
-          <input type="number" min="0" max="1440" id="quotaPollMinutes" class="num" />
+        <label class="setting-row">
+          <span class="setting-label">
+            Default auto-refresh
+            <span class="setting-sub">Minutes between automatic refreshes — 0 means manual only</span>
+          </span>
+          <input type="number" class="control control-num" id="quotaPollMinutes" min="0" max="1440" />
         </label>
-        <p class="hint">
-          Each integration may override this in its own card. Connectors that
-          require an API key won't poll until you've set one.
-        </p>
-      </fieldset>
-      <fieldset class="quiet">
-        <legend>Quiet hours</legend>
-        <label class="row">
-          <input type="checkbox" id="quietEnabled" />
-          <span>Suppress notifications during a window</span>
-        </label>
-        <div class="row inline">
-          <label>From <input type="number" min="0" max="23" id="quietStart" class="num small" /></label>
-          <label>To <input type="number" min="0" max="23" id="quietEnd" class="num small" /></label>
-          <span class="hint">24-hour, local time</span>
+        <div class="setting-row setting-note">
+          <span class="setting-sub">
+            Each integration may override this in its own card. Connectors that
+            require an API key won't poll until you've set one.
+          </span>
         </div>
-      </fieldset>
+      </section>
+
+      <section class="settings-group">
+        <h3 class="settings-group-title">Quiet hours</h3>
+        <label class="setting-row">
+          <span class="setting-label">Suppress notifications during a window</span>
+          <input type="checkbox" class="switch" id="quietEnabled" />
+        </label>
+        <div class="setting-row dependent">
+          <span class="setting-label">
+            Window
+            <span class="setting-sub">24-hour, local time</span>
+          </span>
+          <span class="control-cluster">
+            <input type="number" class="control control-num" id="quietStart" min="0" max="23" aria-label="Quiet hours start" />
+            <span class="cluster-sep">–</span>
+            <input type="number" class="control control-num" id="quietEnd" min="0" max="23" aria-label="Quiet hours end" />
+          </span>
+        </div>
+      </section>
+
+      <section class="settings-group">
+        <h3 class="settings-group-title">Appearance</h3>
+        <label class="setting-row">
+          <span class="setting-label">Theme</span>
+          <select id="theme" class="control control-select">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+        <label class="setting-row">
+          <span class="setting-label">Density</span>
+          <select id="density" class="control control-select">
+            <option value="default">Default</option>
+            <option value="compact">Compact</option>
+          </select>
+        </label>
+        <label class="setting-row">
+          <span class="setting-label">Time format</span>
+          <select id="timeFormat" class="control control-select">
+            <option value="auto">Auto (system)</option>
+            <option value="12h">12-hour</option>
+            <option value="24h">24-hour</option>
+          </select>
+        </label>
+        <label class="setting-row">
+          <span class="setting-label">
+            Show estimated spend card
+            <span class="setting-sub">
+              Spend figures are estimates at public API rates, computed from local
+              usage logs — on a flat-rate subscription they are not your bill.
+              Unchecking hides the Total Spend card here and in the tray popup.
+            </span>
+          </span>
+          <input type="checkbox" class="switch" id="showSpendCard" />
+        </label>
+      </section>
+
+      <section class="settings-group">
+        <h3 class="settings-group-title">Tray popup</h3>
+        <label class="setting-row">
+          <span class="setting-label">
+            Increase transparency
+            <span class="setting-sub" id="transparentPopupHint">Windows: acrylic blur. macOS: vibrancy. Not supported on Linux. The visual result is platform-specific and not identical everywhere.</span>
+          </span>
+          <input type="checkbox" class="switch" id="transparentPopup" />
+        </label>
+        <div class="setting-row">
+          <span class="setting-label">
+            Toggle tray popup shortcut
+            <span class="setting-sub" id="popupShortcutStatus"></span>
+          </span>
+          <span class="control-cluster">
+            <input type="text" id="popupShortcut" class="control control-text" placeholder="e.g. CommandOrControl+Shift+U" />
+            <button id="popupShortcutSave" class="ghost small">Set</button>
+            <button id="popupShortcutClear" class="ghost small">Clear</button>
+          </span>
+        </div>
+      </section>
+
       <p class="hint" id="settingsPath"></p>
     </section>
 
@@ -142,6 +242,8 @@
     </section>
   </main>
 
+  <script src="quota-math.js" defer></script>
+  <script src="quota-view.js" defer></script>
   <script src="settings.js" defer></script>
 </body>
 </html>
