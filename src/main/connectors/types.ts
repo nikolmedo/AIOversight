@@ -61,15 +61,46 @@ export interface Detector {
 
 // --- Quota side -------------------------------------------------------------
 
+/** Unit a bucket's `used`/`limit` values are expressed in. */
+export type QuotaUnit = 'credits' | 'requests' | 'usd' | 'tokens' | 'percent';
+
 /** One usage bucket (e.g. individual credits, team pool, per-model requests). */
 export interface QuotaBucket {
+  /** Stable id. Permanent — keys persisted star/hide/order prefs (`BucketPref`). */
   id: string;
   label: string;
-  used: number;
+  /**
+   * `null` = not measured (this connector doesn't report the value) -> UI
+   * shows "No data". `0` = measured and genuinely zero -> UI shows "$0.00" /
+   * "0". Always populate a real number when the value is known, even if it's
+   * zero — do not default an unmeasured value to `0`.
+   */
+  used: number | null;
   limit: number | null;
   remaining: number | null;
-  unit: 'credits' | 'requests' | 'usd';
+  unit: QuotaUnit;
   enabled: boolean;
+  /** Epoch ms this bucket's window resets, when known. */
+  resetsAt?: number;
+  /** Length of the rolling window in ms (e.g. 5h = 18_000_000), when known. */
+  windowMs?: number;
+  /** Whether this bucket should render by default or only behind an on-demand toggle. */
+  defaultVisibility?: 'always' | 'onDemand';
+  /** Optional short annotation shown alongside the bucket (e.g. a caveat). */
+  note?: string;
+}
+
+/** A single period's spend/token summary. Not a meter — no `limit`, no pace coloring. */
+export type SpendPeriod = 'today' | 'yesterday' | 'last30d';
+
+export interface SpendTile {
+  period: SpendPeriod;
+  label: string;
+  /** Integer cents. `null` = not measured (never `0` for "no sessions this period"). */
+  costCents: number | null;
+  tokens: number | null;
+  /** Optional trailing daily series (oldest -> newest), same null-vs-zero convention. */
+  series?: Array<number | null>;
 }
 
 /**
@@ -92,6 +123,8 @@ export type QuotaSnapshot =
       trayLine?: string;
       /** Optional source path / URL for the UI's footnote. */
       source?: string;
+      /** Optional cross-provider spend summary (Total Spend card). */
+      spend?: SpendTile[];
     }
   | {
       ok: false;
@@ -155,6 +188,16 @@ export interface ConnectorContext {
   log(level: 'debug' | 'info' | 'warn' | 'error', message: string, meta?: Record<string, unknown>): void;
   resolvePath(p: string): string;
   /**
+   * Absolute path to a directory connectors may use for their own on-disk
+   * caches (e.g. `shared/jsonl-spend-scanner.ts`'s per-day rollup cache).
+   * Shared across all connectors (one directory), so a scanner instance
+   * keyed by this path is reused rather than duplicated per connector — see
+   * `JsonlSpendScanner.shared()`. The directory is created lazily by
+   * whichever consumer first writes to it; the runtime does not pre-create
+   * it.
+   */
+  cacheDir: string;
+  /**
    * Look up a secret stored via SecretStore. Returns null when missing.
    * Secrets are namespaced as `<connectorId>::<key>`.
    */
@@ -214,6 +257,8 @@ export interface Connector {
   login?: ConnectorLogin;
   /** Hint for the Integrate tab. Declare when this connector acts as an HTTP server. */
   integrateInfo?: ConnectorIntegrateInfo;
+  /** Optional brand accent color (hex). Falls back to an id-hash color in the renderer. */
+  brandColor?: string;
 }
 
 // --- Persisted shape (used by SettingsStore + IPC) --------------------------
@@ -223,11 +268,37 @@ export interface ConnectorEnabled {
   quota: boolean;
 }
 
+/**
+ * Per-bucket display prefs the user controls (star / hide / reorder). Lives
+ * keyed by connector id then bucket id — *not* on `QuotaBucket` itself, since
+ * buckets are rebuilt from scratch on every poll and prefs must survive that.
+ */
+export interface BucketPref {
+  hidden?: boolean;
+  starred?: boolean;
+  order?: number;
+  /**
+   * Explicit user override of a bucket's effective visibility classification
+   * (Customize tab's "Always Visible" / "On Demand" select). Distinct from
+   * `hidden` — `hidden` removes the row entirely, `visibility` only decides
+   * which section (main vs. on-demand) an otherwise-shown row lands in.
+   * When unset, `renderMeterGroup` falls back to
+   * `QuotaBucket.defaultVisibility ?? (hasLimit ? 'always' : 'onDemand')`,
+   * unchanged from Phase 2a.
+   */
+  visibility?: 'always' | 'onDemand';
+}
+
+/** openusage-parity cap: at most this many starred buckets per connector (tray tooltip is fixed-width). */
+export const MAX_STARRED_PER_CONNECTOR = 2;
+
 export interface ConnectorRuntimeConfig {
   enabled: Record<string, ConnectorEnabled>;
   config: Record<string, Record<string, unknown>>;
   /** Optional per-connector poll interval override (minutes). 0 = manual. */
   pollOverrideMinutes?: Record<string, number>;
+  /** Per-connector, per-bucket display prefs: bucketPrefs[connectorId][bucketId]. */
+  bucketPrefs?: Record<string, Record<string, BucketPref>>;
 }
 
 // --- Public metadata sent to the renderer (no secrets) ----------------------
@@ -248,4 +319,6 @@ export interface ConnectorMetadata {
   loginLabel?: string;
   /** Integrate tab hint; present only when the connector acts as an HTTP server. */
   integrateInfo?: ConnectorIntegrateInfo;
+  /** Optional brand accent color (hex). Falls back to an id-hash color in the renderer. */
+  brandColor?: string;
 }
