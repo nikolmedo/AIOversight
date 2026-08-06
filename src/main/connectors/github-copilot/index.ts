@@ -8,8 +8,9 @@ const CopilotConnector: Connector = {
   vendor: 'GitHub',
   description:
     'Shows your personal Copilot premium-request quota. Sign in once with your browser — ' +
-    'no PAT required. Optionally add an org slug to also surface team usage metrics ' +
-    '(requires manage_billing:copilot on that org).',
+    'no PAT required — or it auto-detects an existing VS Code Copilot Chat or `gh` CLI session. ' +
+    'Optionally add an org slug to also surface team usage + spend metrics ' +
+    '(requires manage_billing:copilot on that org); left blank, it tries your orgs automatically.',
   enabledByDefault: false,
   configSchema: [
     {
