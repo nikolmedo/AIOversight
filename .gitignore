@@ -12,6 +12,11 @@ release/
 !.claude/commands/*.md
 assets/tray-icon.png
 assets/tray-icon@2x.png
+assets/tray-icon-16.png
+assets/tray-icon-24.png
+assets/tray-icon-32.png
 assets/icon.png
 assets/icon.ico
 assets/icon.icns
+assets/ai-icon.png
+assets/ai-icon-no-bkg.png
