@@ -7,6 +7,12 @@ import WebhookConnector from './webhook';
 import AnthropicConnector from './anthropic';
 import OpenAIConnector from './openai';
 import GitHubCopilotConnector from './github-copilot';
+import OpenRouterConnector from './openrouter';
+import ZaiConnector from './zai';
+import OpencodeConnector from './opencode';
+import GrokConnector from './grok';
+import DevinConnector from './devin';
+import AntigravityConnector from './antigravity';
 
 /**
  * Built-in connector registry. Order is the display order in the
@@ -28,6 +34,12 @@ export const ALL_CONNECTORS: Connector[] = [
   OpenAIConnector,
   CodexCliConnector,
   GitHubCopilotConnector,
+  OpenRouterConnector,
+  ZaiConnector,
+  OpencodeConnector,
+  GrokConnector,
+  DevinConnector,
+  AntigravityConnector,
   GenericJsonlConnector,
   WebhookConnector,
 ];
