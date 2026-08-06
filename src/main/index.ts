@@ -1,5 +1,5 @@
 import * as path from 'path';
-import { app, BrowserWindow, ipcMain, Tray, Notification } from 'electron';
+import { app, BrowserWindow, ipcMain, Tray, Notification, nativeTheme, globalShortcut } from 'electron';
 import { SettingsStore, ConnectorDefaults } from './settings-store';
 import { applyAutoStart } from './autostart';
 import { Notifier } from './notifier';
@@ -8,7 +8,7 @@ import { createTrayPopup, TrayPopupHandle } from './tray-popup';
 import { ConnectorRuntime, ALL_CONNECTORS } from './connectors/runtime';
 import { QuotaService } from './connectors/quota-service';
 import { SecretStore } from './connectors/secret-store';
-import { QuotaSnapshot, Connector, ConnectorEnabled } from './connectors/types';
+import { QuotaSnapshot, Connector, ConnectorEnabled, BucketPref } from './connectors/types';
 
 let tray: Tray | null = null;
 let trayHandle: TrayHandle | null = null;
@@ -20,6 +20,11 @@ let secretStore: SecretStore | null = null;
 let notifier: Notifier | null = null;
 let settings: SettingsStore | null = null;
 let paused = false;
+/** Accelerator currently registered via `globalShortcut`, or `null` when none
+ * is. Tracked so `applyPopupShortcut` can unregister the old one before
+ * registering a new one — `globalShortcut.unregisterAll()` would also nuke
+ * any accelerator another part of the app might register in the future. */
+let registeredPopupShortcut: string | null = null;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -53,6 +58,36 @@ function buildConnectorDefaults(connectors: Connector[]): ConnectorDefaults {
     quotaDefaultEnabled[def.id] = def.quotaEnabledByDefault ?? false;
   }
   return { enabled, config, quotaDefaultEnabled };
+}
+
+/**
+ * Registers (or clears) the global accelerator that toggles the tray popup.
+ * Never throws — `globalShortcut.register` can both return `false` (already
+ * taken by another application) and, per its docs, throw on a malformed
+ * accelerator string; both are surfaced as `{ ok: false, reason }` so the
+ * Settings UI can show a concrete failure instead of silently no-op'ing.
+ */
+function applyPopupShortcut(accelerator: string | undefined): { ok: boolean; reason?: string } {
+  if (registeredPopupShortcut) {
+    try {
+      globalShortcut.unregister(registeredPopupShortcut);
+    } catch {
+      /* best-effort */
+    }
+    registeredPopupShortcut = null;
+  }
+  const trimmed = (accelerator ?? '').trim();
+  if (!trimmed) return { ok: true };
+  try {
+    const ok = globalShortcut.register(trimmed, () => {
+      if (tray && trayPopup) trayPopup.toggle(tray);
+    });
+    if (!ok) return { ok: false, reason: 'That shortcut is already in use by another application.' };
+    registeredPopupShortcut = trimmed;
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, reason: String(err) };
+  }
 }
 
 app.whenReady().then(async () => {
@@ -92,6 +127,8 @@ app.whenReady().then(async () => {
 
   applyAutoStart(settings.get().launchAtLogin, (lvl, msg, meta) => runtime!.log(lvl, msg, meta));
 
+  nativeTheme.themeSource = settings.get().theme ?? 'system';
+
   trayHandle = createTray({
     openSettings,
     togglePopup: () => {
@@ -111,11 +148,29 @@ app.whenReady().then(async () => {
   });
   tray = trayHandle.tray;
 
-  trayPopup = createTrayPopup({
-    openSettings,
-    getQuotas: () => quotaService!.state(),
-    getConnectors: () => runtime!.metadata(),
-  });
+  trayPopup = createTrayPopup(
+    {
+      openSettings,
+      getQuotas: () => quotaService!.state(),
+      getConnectors: () => runtime!.metadata(),
+    },
+    !!settings.get().transparentPopup,
+  );
+
+  // A previously-saved shortcut can fail to re-register at startup (another
+  // app claimed the accelerator since last run) with zero indication
+  // anywhere otherwise — settings.json and the Settings UI would both still
+  // show it as configured while nothing is actually registered. Log it and
+  // clear the persisted value so the UI doesn't lie about it being active.
+  const savedPopupShortcut = settings.get().popupShortcut;
+  const startupShortcutResult = applyPopupShortcut(savedPopupShortcut);
+  if (!startupShortcutResult.ok && savedPopupShortcut) {
+    runtime.log('warn', '[main] saved tray-popup shortcut failed to register at startup — clearing it', {
+      shortcut: savedPopupShortcut,
+      reason: startupShortcutResult.reason,
+    });
+    settings.update({ popupShortcut: '' });
+  }
 
   registerIpc();
   refreshTrayQuotaSummary();
@@ -135,6 +190,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', async () => {
+  globalShortcut.unregisterAll();
   quotaService?.destroy();
   trayPopup?.destroy();
   await runtime?.stopAllDetectors();
@@ -176,6 +232,7 @@ function registerIpc(): void {
     paused,
     settingsPath: settings!.filePath(),
     quotas: quotaService!.state(),
+    platform: process.platform,
   }));
 
   ipcMain.handle(
@@ -235,6 +292,18 @@ function registerIpc(): void {
     },
   );
 
+  ipcMain.handle(
+    'connectors:setBucketPref',
+    (_e, id: string, bucketId: string, patch: Partial<BucketPref>) => {
+      settings!.setBucketPref(id, bucketId, patch);
+      // Starring/unstarring a bucket changes what `formatTrayLineFor` shows —
+      // without this the menu bar / tray tooltip line only catches up on the
+      // next poll (or never, when polling is manual).
+      refreshTrayQuotaSummary();
+      return settings!.get();
+    },
+  );
+
   ipcMain.handle('settings:update', async (_e, patch: Record<string, unknown>) => {
     const next = settings!.update(patch);
     if ('quotaPollMinutes' in patch || 'showQuotaInTray' in patch) {
@@ -244,7 +313,46 @@ function registerIpc(): void {
     if ('launchAtLogin' in patch) {
       applyAutoStart(next.launchAtLogin, (lvl, msg, meta) => runtime!.log(lvl, msg, meta));
     }
+    if ('theme' in patch) {
+      nativeTheme.themeSource = next.theme ?? 'system';
+    }
+    if ('transparentPopup' in patch) {
+      trayPopup?.setTransparent(!!next.transparentPopup);
+    }
     return next;
+  });
+
+  // Separate from `settings:update` so a taken-accelerator failure is
+  // attributable to this one field instead of the whole General-tab patch.
+  ipcMain.handle('settings:setPopupShortcut', (_e, accelerator: string) => {
+    const previous = settings!.get().popupShortcut;
+    const result = applyPopupShortcut(accelerator);
+    if (result.ok) {
+      settings!.update({ popupShortcut: accelerator.trim() });
+    } else {
+      // applyPopupShortcut unregisters the current accelerator before trying
+      // the new one — on failure, re-register the old one so a rejected
+      // change doesn't silently leave the previously-working shortcut dead
+      // while settings.json still names it.
+      const rollback = applyPopupShortcut(previous);
+      if (!rollback.ok) {
+        // Re-registering the *previous* accelerator also failed — nothing is
+        // actually registered now, so clear the persisted value rather than
+        // leaving the UI showing a shortcut that isn't active.
+        runtime!.log('error', '[main] failed to restore previous tray-popup shortcut after a rejected change — clearing it', {
+          previous,
+          attempted: accelerator,
+          reason: rollback.reason,
+        });
+        settings!.update({ popupShortcut: '' });
+      } else {
+        runtime!.log('warn', '[main] rejected tray-popup shortcut change, kept the previous shortcut active', {
+          attempted: accelerator,
+          reason: result.reason,
+        });
+      }
+    }
+    return result;
   });
 
   ipcMain.handle('settings:clearEvents', () => {
@@ -286,9 +394,41 @@ function registerIpc(): void {
 
   ipcMain.handle('trayPopup:getQuotas', () => quotaService!.state());
   ipcMain.handle('trayPopup:getConnectors', () => runtime!.metadata());
-  ipcMain.handle('trayPopup:refresh', async () => {
+  ipcMain.handle('trayPopup:getBucketPrefs', () => settings!.get().connectors.bucketPrefs ?? {});
+  ipcMain.handle('trayPopup:getUiPrefs', () => {
+    const s = settings!.get();
+    return {
+      theme: s.theme ?? 'system',
+      density: s.density ?? 'default',
+      timeFormat: s.timeFormat ?? 'auto',
+      transparentPopup: !!s.transparentPopup,
+      // Missing (pre-upgrade settings.json) defaults to shown.
+      showSpendCard: s.showSpendCard !== false,
+    };
+  });
+  ipcMain.handle('trayPopup:refresh', async (_e, id?: string) => {
+    // A single-id refresh resolves to `{ [id]: snapshot }`, not the full map
+    // — the renderer merges it onto its own last-known state (see
+    // tray-popup.ts's row-menu "Refresh this provider" handler).
+    if (id) {
+      const snap = await quotaService!.refresh(id);
+      return { [id]: snap };
+    }
     return await quotaService!.refreshAll();
   });
+  ipcMain.handle(
+    'trayPopup:setBucketPref',
+    (_e, id: string, bucketId: string, patch: Partial<BucketPref>) => {
+      settings!.setBucketPref(id, bucketId, patch);
+      refreshTrayQuotaSummary();
+      // Narrower than `connectors:setBucketPref`'s full-AppSettings return —
+      // the popup only ever reads `bucketPrefs` out of the response (see
+      // tray-popup.ts's `applyRowMenuBucketPref`), so there's no reason to
+      // hand it `recentEvents` (transcript excerpts) or every connector's
+      // config. Matches the shape `trayPopup:getBucketPrefs` already returns.
+      return settings!.get().connectors.bucketPrefs ?? {};
+    },
+  );
 }
 
 function refreshTrayQuotaSummary(): void {
@@ -298,11 +438,12 @@ function refreshTrayQuotaSummary(): void {
     return;
   }
   const snapshots = quotaService?.state() ?? {};
+  const bucketPrefs = settings.get().connectors.bucketPrefs ?? {};
   const lines: string[] = [];
   for (const def of ALL_CONNECTORS) {
     const snap: QuotaSnapshot | undefined = snapshots[def.id];
     if (!snap || !snap.ok) continue;
-    const line = formatTrayLineFor(def.name, snap);
+    const line = formatTrayLineFor(def.name, snap, bucketPrefs[def.id]);
     if (line) lines.push(line);
   }
   trayHandle.setQuotaLine(lines.length ? lines.join('\n') : null);

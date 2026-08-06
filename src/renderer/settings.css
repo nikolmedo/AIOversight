@@ -1,3 +1,4 @@
+@import url('tokens.css');
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
 
 /* =========================================================
@@ -5,49 +6,20 @@
    ========================================================= */
 
 :root {
-  /* Dark mode (default) */
-  --bg:       #101729;
-  --surface:  #1b2438;
-  --surface2: #222d44;
-  --border:   #2d3d58;
-  --border-2: #3a4f6e;
-  --text:     #e2eaf6;
-  --text-2:   #7d92b0;
-  --text-3:   #4a5e78;
-  --accent:   #5a8ef4;
-  --accent-bg: rgba(90,142,244,.1);
+  /* Settings-window-specific tokens. Shared tokens (--bg, --surface,
+     --accent, --green/amber/red, --font, ...) live in tokens.css. */
   --accent-border: rgba(90,142,244,.25);
-  --green:    #4ade80;
-  --green-bg: rgba(74,222,128,.08);
-  --amber:    #fbbf24;
-  --amber-bg: rgba(251,191,36,.08);
-  --red:      #f87171;
-  --red-bg:   rgba(248,113,113,.08);
   --shadow:   0 1px 3px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
   --r:        10px;
   --r-sm:     7px;
-  --font:     'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  /* Single focus-ring recipe, reused by every interactive surface. Theme-aware
+     because both layers resolve through --accent / --accent-bg. */
+  --ring:     0 0 0 3px var(--accent-bg), 0 0 0 1.5px var(--accent);
 }
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg:       #f6f8fb;
-    --surface:  #ffffff;
-    --surface2: #f0f4f9;
-    --border:   #dce4ef;
-    --border-2: #b8c8de;
-    --text:     #0f1a2e;
-    --text-2:   #6278a0;
-    --text-3:   #9aa8c0;
-    --accent:   #3b7bf0;
-    --accent-bg: rgba(59,123,240,.08);
     --accent-border: rgba(59,123,240,.2);
-    --green:    #16a34a;
-    --green-bg: rgba(22,163,74,.08);
-    --amber:    #d97706;
-    --amber-bg: rgba(217,119,6,.08);
-    --red:      #dc2626;
-    --red-bg:   rgba(220,38,38,.08);
     --shadow:   0 1px 3px rgba(0,0,0,.06), 0 4px 12px rgba(0,0,0,.05);
   }
 }
@@ -63,7 +35,35 @@ html, body {
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
 }
-body { display: flex; flex-direction: column; min-height: 100vh; }
+/* Safety net: any native control we haven't styled explicitly (e.g. the plain
+   checkbox `renderField` emits for boolean connector config) still picks up
+   the brand accent instead of the OS default blue. */
+html { accent-color: var(--accent); }
+/* MUST be a fixed `height`, not `min-height`. With `min-height: 100vh` the
+   body grows past the viewport once content exceeds it, so `main { flex: 1 }`
+   is never shorter than its content, its `overflow-y: auto` never activates,
+   and the whole DOCUMENT scrolls instead — dragging the topbar and the tab
+   bar off-screen. Locking the body to the viewport makes `main` the real
+   scroll container and keeps the chrome pinned. (Same failure mode fixed in
+   tray-popup.css.) */
+body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+/* ── Themed scrollbars ──────────────────────────────────── */
+::-webkit-scrollbar { width: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-2); border-radius: 999px;
+  border: 2px solid transparent; background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background-color: var(--text-3); }
+
+/* ── Reduced motion ─────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    transition-duration: 1ms !important;
+  }
+}
 
 h2 { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 14px; }
 h3 { font-size: 12px; font-weight: 600; color: var(--text-2); margin: 18px 0 10px; }
@@ -95,7 +95,9 @@ h3 { font-size: 12px; font-weight: 600; color: var(--text-2); margin: 18px 0 10p
 .live-badge::before {
   content: ''; width: 6px; height: 6px; border-radius: 50%;
   background: currentColor;
+  animation: pulse 2.4s ease-in-out infinite;
 }
+@keyframes pulse { 50% { opacity: .35; } }
 
 .topbar-actions { display: flex; gap: 8px; -webkit-app-region: no-drag; align-items: center; }
 
@@ -109,6 +111,14 @@ button {
 button:hover { background: var(--border); border-color: var(--border-2); }
 button:active { transform: scale(0.97); }
 button:disabled { opacity: 0.45; pointer-events: none; }
+
+/* App-wide keyboard focus. `:focus-visible` (never `:focus`) so a mouse click
+   doesn't leave a ring behind. */
+button:focus-visible,
+summary:focus-visible,
+.reset-chip:focus-visible {
+  outline: none; box-shadow: var(--ring);
+}
 
 button.primary {
   background: var(--accent); border-color: var(--accent); color: #fff;
@@ -127,6 +137,15 @@ button.small { padding: 5px 11px; font-size: 12px; }
   font-size: 11px; font-weight: 600;
 }
 .hidden { display: none !important; }
+/* Global guarantee that the native `hidden` ATTRIBUTE (distinct from the
+   `.hidden` class above) always wins over any class's `display`
+   declaration on the same element. Without this, any class that sets
+   `display` (e.g. `.row-menu { display: flex }`) can silently defeat
+   `el.hidden = true/false` toggled from JS — this exact bug made the row
+   context menu permanently stuck visible (see .row-menu[hidden] below for
+   the incident) and the same latent trap applies to `.row-menu-item`'s
+   `display: block`. */
+[hidden] { display: none !important; }
 
 /* ── Tabs ───────────────────────────────────────────────── */
 .tabs {
@@ -141,11 +160,14 @@ button.small { padding: 5px 11px; font-size: 12px; }
   transform: none;
 }
 .tab:hover { color: var(--text); background: transparent; border-color: transparent; }
+.tab:focus-visible { outline: none; box-shadow: inset var(--ring); }
 .tab.active { color: var(--text); }
 .tab.active::after {
   content: ''; position: absolute; left: 8px; right: 8px; bottom: -1px;
   height: 2px; background: var(--accent); border-radius: 2px;
+  animation: tabIn 180ms cubic-bezier(.2,.8,.3,1) both;
 }
+@keyframes tabIn { from { transform: scaleX(.4); opacity: 0; } }
 
 /* ── Main / panels ──────────────────────────────────────── */
 main { flex: 1; padding: 20px; overflow-y: auto; }
@@ -161,6 +183,67 @@ main { flex: 1; padding: 20px; overflow-y: auto; }
 .hint { color: var(--text-2); font-size: 12px; line-height: 1.6; }
 .empty { color: var(--text-2); padding: 24px; text-align: center; font-size: 13px; }
 .empty.small { padding: 10px; font-size: 12px; }
+
+/* ── Total Spend card (Phase 2b) ───────────────────────────
+   Empty until a connector populates QuotaSnapshot.spend[] (Phase 4) — the
+   container collapses to zero height via :empty so it doesn't reserve
+   layout space while unused. */
+#totalSpendCard:empty { display: none; }
+
+.spend-card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r); box-shadow: var(--shadow);
+  padding: 16px; margin-bottom: 18px;
+}
+.spend-card-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap; margin-bottom: 14px;
+}
+.spend-card-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.spend-card-subtitle { font-size: 10.5px; color: var(--text-3); margin-top: 2px; }
+
+.spend-card-body { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+.spend-donut-wrap { flex-shrink: 0; }
+.spend-donut { display: block; }
+.spend-donut circle { transition: stroke-dasharray 200ms ease, stroke-dashoffset 200ms ease; }
+.spend-donut-empty {
+  width: 72px; height: 72px; border-radius: 50%;
+  border: 10px solid var(--border);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-3); font-size: 9px; text-align: center;
+}
+
+.spend-card-summary { display: flex; flex-direction: column; gap: 10px; min-width: 0; flex: 1; }
+.spend-headline {
+  font-size: 22px; font-weight: 700; color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.spend-switch-group { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.spend-switch {
+  padding: 4px 10px; font-size: 11.5px; font-weight: 500;
+  background: var(--surface2); border: 1px solid var(--border);
+  color: var(--text-2); border-radius: 999px;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+.spend-switch:hover { background: var(--border); color: var(--text); }
+.spend-switch.active {
+  background: var(--accent-bg); border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.spend-legend {
+  list-style: none; margin-top: 14px; padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.spend-legend-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.spend-legend-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0;
+  background: var(--dot-color, var(--accent));
+}
+.spend-legend-name { color: var(--text); flex: 1; min-width: 0; }
+.spend-legend-value { color: var(--text-2); font-variant-numeric: tabular-nums; }
 
 /* ── Vendor groups ──────────────────────────────────────── */
 .vendor-group { margin-bottom: 24px; }
@@ -207,21 +290,42 @@ main { flex: 1; padding: 20px; overflow-y: auto; }
 .section-title { flex: 1; font-size: 12px; font-weight: 600; color: var(--text-2); }
 .connector-section-body { padding: 4px 16px 16px; display: flex; flex-direction: column; gap: 12px; }
 
-/* ── Toggle switches ────────────────────────────────────── */
+/* ── Toggle switch ──────────────────────────────────────────
+   ONE switch implementation, applied directly to the checkbox
+   (`<input type="checkbox" class="switch">`). Used by the General tab's
+   setting rows AND by the Integrations / Customize tabs' connector toggles
+   (emitted from settings.ts's renderConnectorCard / renderCustomizeRow), so
+   there is no second copy to drift. `.toggle.inline` below survives only as
+   the inline flex wrapper for the labelled variant. */
 .toggle.inline { display: inline-flex; align-items: center; gap: 6px; }
-.toggle.inline input {
-  appearance: none; width: 30px; height: 17px;
+
+.switch {
+  appearance: none; box-sizing: border-box;
+  width: 34px; height: 18px; border-radius: 999px;
   background: var(--surface2); border: 1px solid var(--border-2);
-  border-radius: 999px; position: relative; cursor: pointer;
-  transition: background 150ms, border-color 150ms;
+  position: relative; cursor: pointer; flex-shrink: 0;
+  transition: background 150ms ease, border-color 150ms ease, filter 150ms ease;
 }
-.toggle.inline input::after {
+.switch::after {
   content: ''; position: absolute; top: 2px; left: 2px;
-  width: 11px; height: 11px; border-radius: 50%;
-  background: var(--text-2); transition: left 150ms ease, background 150ms;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: var(--text-2); transform: translateX(0);
+  transition: transform 180ms cubic-bezier(.2,.9,.3,1.2), background 150ms, width 120ms ease;
 }
-.toggle.inline input:checked { background: var(--accent); border-color: var(--accent); }
-.toggle.inline input:checked::after { left: 15px; background: #fff; }
+.switch:hover { background: var(--border); border-color: var(--text-3); }
+.switch:hover::after { background: var(--text); }
+
+.switch:checked { background: var(--accent); border-color: var(--accent); }
+.switch:checked::after { background: #fff; transform: translateX(16px); }
+.switch:checked:hover { background: var(--accent); border-color: var(--accent); filter: brightness(1.08); }
+.switch:checked:hover::after { background: #fff; }
+
+/* Knob squashes on press, the way a physical switch resists. */
+.switch:active::after { width: 14px; }
+.switch:checked:active::after { transform: translateX(14px); }
+
+.switch:focus-visible { outline: none; box-shadow: var(--ring); }
+.switch:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ── Form fields ────────────────────────────────────────── */
 .field { display: flex; flex-direction: column; gap: 6px; }
@@ -249,41 +353,99 @@ main { flex: 1; padding: 20px; overflow-y: auto; }
 /* ── Quota snapshot ─────────────────────────────────────── */
 .quota-snapshot { display: flex; flex-direction: column; gap: 8px; }
 
-/* Buckets */
-.quota-bucket {
+/* Meter rows (renderMeterRow, shared with tray-popup.css's own copy of the
+   layout — token values differ slightly per surface so this isn't factored
+   into tokens.css) */
+.meter-row {
   background: var(--surface2); border: 1px solid var(--border);
   border-radius: var(--r-sm); padding: 12px 14px;
 }
-.quota-bucket-header {
+.meter-row.no-data { opacity: 0.7; }
+.meter-row-header {
   display: flex; justify-content: space-between; align-items: center;
   gap: 8px; margin-bottom: 8px;
 }
-.quota-bucket-title { font-size: 13px; font-weight: 600; color: var(--text); }
-.quota-bucket-pct {
+.meter-row-title { font-size: 13px; font-weight: 600; color: var(--text); }
+/* Right side of the header: optional inline reset chip + percent
+   (renderMeterRow moves the chip up here for plain percent buckets). */
+.meter-row-side { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.meter-pct {
   font-size: 13px; font-weight: 600; color: var(--text-2);
   font-variant-numeric: tabular-nums;
 }
-.quota-bucket-pct.warn     { color: var(--amber); }
-.quota-bucket-pct.critical { color: var(--red); }
+.meter-pct.warn     { color: var(--amber); }
+.meter-pct.critical { color: var(--red); }
 
 /* Smooth progress bar */
-.quota-bar {
+.meter-bar {
+  position: relative;
   height: 6px; border-radius: 999px;
-  background: var(--border); overflow: hidden;
+  background: var(--border);
 }
-.quota-bar-fill {
+.meter-bar-fill {
   height: 100%; border-radius: 999px; width: 0;
   background: var(--accent);
   animation: barFill 500ms ease 60ms both;
 }
-.quota-bar-fill.warn     { background: var(--amber); }
-.quota-bar-fill.critical { background: var(--red); }
+.meter-bar-fill.warn     { background: var(--amber); }
+.meter-bar-fill.critical { background: var(--red); }
 @keyframes barFill {
   from { width: 0; }
   to   { width: var(--fill, 0%); }
 }
 
-.quota-bucket-stats { font-size: 11.5px; color: var(--text-2); margin-top: 7px; }
+/* Even-pace tick: marks where usage "should" be if burning the window at a
+   constant rate. `.meter-bar` deliberately has no `overflow: hidden` (the
+   fill's own border-radius keeps its corners rounded without it), so this
+   can span the full bar height and stay visible over any fill color. */
+.pace-tick {
+  position: absolute; top: 0; bottom: 0; left: var(--tick, 0%);
+  width: 2px; background: var(--text); opacity: 0.55;
+  border-radius: 1px; pointer-events: none;
+}
+
+.meter-row-stats {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin-top: 7px; flex-wrap: wrap;
+}
+.meter-row-value { font-size: 11.5px; color: var(--text-2); }
+.meter-note { font-size: 11px; color: var(--text-3); margin-top: 6px; }
+
+/* Reset countdown chip — click toggles countdown <-> exact time */
+.reset-chip {
+  padding: 2px 8px; font-size: 10.5px; font-weight: 600;
+  color: var(--text-2); background: var(--surface); border: 1px solid var(--border-2);
+  border-radius: 999px; font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.reset-chip:hover { color: var(--text); background: var(--border); }
+
+/* On-demand metrics: a plain (non-collapsing) section — each row inside is
+   individually collapsible instead, so label+value stay visible without a
+   second click. */
+.meter-extras { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 4px; }
+.meter-extras-heading {
+  padding: 6px 0; font-size: 12px; font-weight: 600; color: var(--text-2);
+}
+.meter-extras-body { display: flex; flex-direction: column; gap: 8px; padding-top: 4px; }
+
+/* Individually-collapsible compact row (used inside .meter-extras): label +
+   hint visible in the summary even while collapsed. */
+.meter-row-compact { padding: 0; }
+.meter-row-compact summary {
+  cursor: pointer; list-style: none;
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 8px; padding: 9px 11px;
+  transition: background 80ms;
+}
+.meter-row-compact summary:hover { background: var(--border); border-radius: var(--r-sm); }
+.meter-row-compact summary::-webkit-details-marker { display: none; }
+.meter-row-compact summary::after {
+  content: '▸'; color: var(--text-3); font-size: 9px; flex-shrink: 0;
+  display: inline-block; transition: transform 150ms;
+}
+.meter-row-compact[open] summary::after { transform: rotate(90deg); }
+.meter-row-compact-body { padding: 4px 11px 12px; }
 
 /* Quiet meta line */
 .quota-meta-line {
@@ -346,22 +508,89 @@ main { flex: 1; padding: 20px; overflow-y: auto; }
   color: var(--text-2); line-height: 1.7;
 }
 
-/* ── General settings ───────────────────────────────────── */
-.row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-.row.inline { gap: 16px; flex-wrap: wrap; }
-.row input.num {
-  width: 78px; background: var(--surface2); color: var(--text);
+/* ── General settings ─────────────────────────────────────
+   A group is one flat card; rhythm comes ONLY from row padding and the
+   `+` separator below. Deliberately no margins on rows — the previous
+   `.row { margin-bottom }` left dead space under the last row of every
+   card, which is what made the old General tab look loose. */
+.settings-group {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r); box-shadow: none;
+  padding: 0; margin-bottom: 16px; overflow: hidden;
+}
+.settings-group-title {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.07em; color: var(--text-3);
+  padding: 12px 16px 4px;
+  margin: 0;
+}
+
+.setting-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 16px; padding: 11px 16px; min-height: 46px; cursor: default;
+}
+label.setting-row:has(.switch) { cursor: pointer; }
+.setting-row + .setting-row { border-top: 1px solid var(--border); }
+.setting-row > .control,
+.setting-row > .switch,
+.setting-row > .control-cluster { flex-shrink: 0; }
+label.setting-row:hover { background: var(--surface2); }
+
+.setting-label {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  font-size: 13px; font-weight: 500; color: var(--text);
+}
+.setting-sub {
+  font-size: 11.5px; font-weight: 400; color: var(--text-2);
+  line-height: 1.45; max-width: 52ch;
+}
+/* A note describing the whole group, not one control: no control column and
+   no 46px control-sized minimum. */
+.setting-note { min-height: 0; }
+
+/* Rows whose control is meaningless while its gate is off. Pure CSS — no JS
+   has to keep this in sync with the toggle. */
+.settings-group:has(#quietEnabled:not(:checked)) .setting-row.dependent {
+  opacity: .5; pointer-events: none;
+}
+.settings-group:has(#showNotifications:not(:checked)) .setting-row.dependent-notif {
+  opacity: .5; pointer-events: none;
+}
+
+.control-cluster { display: inline-flex; align-items: center; gap: 8px; }
+.cluster-sep { color: var(--text-3); }
+
+/* ── Form controls ──────────────────────────────────────── */
+.control {
+  height: 30px; background: var(--surface2); color: var(--text);
   border: 1px solid var(--border); border-radius: var(--r-sm);
-  padding: 6px 9px; font: inherit; font-size: 13px;
-  transition: border-color 120ms;
+  padding: 0 10px; font: inherit; font-size: 13px;
+  transition: border-color 120ms, box-shadow 120ms, background 120ms;
 }
-.row input.num:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
-.row input.num.small { width: 58px; }
-.quiet {
-  border: 1px solid var(--border); border-radius: var(--r);
-  padding: 14px 16px; margin-bottom: 14px; background: var(--surface);
+.control:hover { border-color: var(--border-2); }
+.control:focus-visible {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
 }
-.quiet legend { padding: 0 6px; color: var(--text-2); font-size: 12px; font-weight: 600; }
+/* One width for every number field so they form a single right-aligned
+   column down the tab. */
+.control-num { width: 76px; text-align: right; font-variant-numeric: tabular-nums; }
+.control-select { min-width: 132px; width: auto; }
+.control-text { width: 240px; max-width: 100%; }
+
+/* Own chevron instead of the OS-native select arrow, which ignores the
+   theme. The stroke is the one hardcoded color here besides the knob's
+   #fff — it sits between the dark and light --text-2 so it reads in both. */
+.control-select {
+  appearance: none; padding-right: 26px;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' fill='none' stroke='%23748bab' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat; background-position: right 9px center;
+}
+
+/* Spinners stay out of the way until the field is engaged. */
+.control-num::-webkit-inner-spin-button { opacity: 0; }
+.control-num:hover::-webkit-inner-spin-button,
+.control-num:focus::-webkit-inner-spin-button { opacity: 1; }
 
 /* ── Code blocks ────────────────────────────────────────── */
 .code {
@@ -375,6 +604,72 @@ code {
   font-size: 12px; color: var(--accent);
   font-family: ui-monospace, 'Cascadia Code', 'Fira Code', monospace;
 }
+
+/* ── Row context menu (Phase 2c) ──────────────────────────
+   In-DOM popup, not a native Menu — see quota-view.ts's renderRowMenu/bindRowMenu. */
+.row-menu {
+  position: fixed; z-index: 1000;
+  background: var(--surface); border: 1px solid var(--border-2);
+  border-radius: var(--r-sm); box-shadow: var(--shadow);
+  padding: 4px; display: flex; flex-direction: column; min-width: 168px;
+}
+/* `.row-menu` and `[hidden]` tie in specificity (0,1,0); source order let
+   `.row-menu`'s `display: flex` win over `[hidden]`'s `display: none`, so
+   the menu never actually hid. This selector's higher specificity (0,2,0)
+   fixes that regardless of source order — see tray-popup.css for the same
+   bug and full explanation. */
+.row-menu[hidden] { display: none; }
+.row-menu-item {
+  display: block; width: 100%; text-align: left;
+  background: transparent; border: none; border-radius: var(--r-sm);
+  padding: 7px 10px; font-size: 12.5px; color: var(--text); font-weight: 500;
+}
+.row-menu-item:hover { background: var(--surface2); }
+.row-menu-item:disabled { opacity: 0.45; pointer-events: none; }
+
+/* ── Customize tab (Phase 2c) ──────────────────────────────── */
+.customize-group { margin-bottom: 20px; }
+.customize-rows { display: flex; flex-direction: column; gap: 8px; }
+.customize-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  flex-wrap: wrap;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--r-sm); padding: 10px 12px;
+}
+.customize-row-main { min-width: 0; flex: 1; }
+.customize-row-label { font-size: 13px; font-weight: 600; color: var(--text); }
+.customize-row-controls { display: flex; align-items: center; gap: 8px; }
+/* Every control gets a fixed width so the cluster forms a true right-hand
+   column. Without this the widths track their own content — the star button
+   is "☆ Star" vs "★ Starred" and the select is "On Demand" vs "Always
+   Visible" — so each row's controls landed at a different x and the column
+   read as ragged. */
+.customize-row-controls > * { flex-shrink: 0; }
+.customize-row-controls .toggle.inline { width: 92px; }
+.customize-row-controls .control-select { width: 136px; }
+.customize-row-controls [data-role="star"] { width: 94px; text-align: left; }
+.customize-row-controls [data-role="move-up"],
+.customize-row-controls [data-role="move-down"] {
+  width: 32px; padding-left: 0; padding-right: 0; text-align: center;
+}
+/* In-flow, not absolutely positioned. It used to be `position: absolute;
+   bottom: -22px`, which painted it OUTSIDE its own row and straight over the
+   next one (the row gap is only 8px). Being transient (2.5s, only at the
+   star cap) made it easy to miss. `flex-basis: 100%` makes it wrap onto its
+   own line inside the row instead. */
+.customize-row-note {
+  flex-basis: 100%; margin-top: 6px;
+  font-size: 11px; color: var(--amber);
+}
+
+/* ── Density (Phase 2c) — modest spacing overrides only ──── */
+body.density-compact .meter-row { padding: 8px 10px; }
+body.density-compact .meter-row-header { margin-bottom: 5px; }
+body.density-compact .meter-row-stats { margin-top: 4px; }
+body.density-compact .connector { margin-bottom: 6px; }
+body.density-compact .connector-section-body { padding: 4px 16px 10px; gap: 8px; }
+body.density-compact .customize-row { padding: 7px 10px; }
+body.density-compact .setting-row { padding: 7px 16px; min-height: 38px; }
 
 /* ── Connector card collapse ────────────────────────────── */
 summary.connector-header {

@@ -2,6 +2,8 @@ import { spawn } from 'child_process';
 import { QuotaProvider, QuotaSnapshot } from '../types';
 
 const TIMEOUT_MS = 5_000;
+const FIVE_HOUR_MS = 18_000_000;
+const SEVEN_DAY_MS = 604_800_000;
 
 export function stripAnsi(s: string): string {
   return s.replace(/\x1B\[[0-9;]*[A-Za-z]/g, '').replace(/\x1B\([A-Za-z]/g, '');
@@ -38,20 +40,29 @@ export function parseCliOutput(raw: string): QuotaSnapshot | null {
       {
         id: 'five-hour',
         label: '5-Hour Limit',
-        unit: 'requests',
+        unit: 'percent',
         used: sessionPct,
         limit: 100,
         remaining: 100 - sessionPct,
         enabled: true,
+        // The CLI's `/usage` output only gives a human string ("Resets 3am"),
+        // not a timestamp — no `resetsAt` to parse. `windowMs` alone isn't
+        // enough for paceStateFor's projection branch (it also needs
+        // `resetsAt`), so this still renders with the static thresholds. This
+        // is intentionally different from quota.ts's browser-session path
+        // (Phase 3), which sets both because its API response carries a real
+        // `resets_at` timestamp — do not synthesize one here from the string.
+        windowMs: FIVE_HOUR_MS,
       },
       {
         id: 'seven-day',
         label: '7-Day Limit',
-        unit: 'requests',
+        unit: 'percent',
         used: weekPct,
         limit: 100,
         remaining: 100 - weekPct,
         enabled: true,
+        windowMs: SEVEN_DAY_MS,
       },
     ],
     displayMessages: [

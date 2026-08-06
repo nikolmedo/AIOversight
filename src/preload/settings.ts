@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron';
+import { BucketPref } from '../main/connectors/types';
 
 const api = {
   getInitial: () => ipcRenderer.invoke('settings:get'),
@@ -12,6 +13,10 @@ const api = {
     ipcRenderer.invoke('connectors:setSecret', id, key, value),
   setConnectorPollOverride: (id: string, minutes: number | null) =>
     ipcRenderer.invoke('connectors:setPollOverride', id, minutes),
+  setConnectorBucketPref: (id: string, bucketId: string, patch: Partial<BucketPref>) =>
+    ipcRenderer.invoke('connectors:setBucketPref', id, bucketId, patch),
+  setPopupShortcut: (accelerator: string) =>
+    ipcRenderer.invoke('settings:setPopupShortcut', accelerator),
   update: (patch: Record<string, unknown>) => ipcRenderer.invoke('settings:update', patch),
   clearEvents: () => ipcRenderer.invoke('settings:clearEvents'),
   togglePause: () => ipcRenderer.invoke('settings:togglePause'),

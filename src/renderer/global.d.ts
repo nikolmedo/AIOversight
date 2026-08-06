@@ -13,94 +13,10 @@ interface RecentEvent {
   source?: string;
 }
 
-interface ConnectorConfigField {
-  key: string;
-  label: string;
-  type: 'string' | 'number' | 'boolean' | 'paths' | 'secret' | 'enum';
-  default: string | number | boolean | string[];
-  help?: string;
-  section?: 'notifications' | 'quota' | 'general';
-  requiresEnabled?: 'notifications' | 'quota';
-  options?: Array<{ value: string; label: string }>;
-}
+// ConnectorConfigField / ConnectorIntegrateInfo / ConnectorMetadata /
+// ConnectorEnabled / ConnectorRuntimeConfig / AppSettings live in `quota-types.d.ts`.
 
-interface ConnectorIntegrateInfo {
-  type: 'http-notify';
-  hostKey: string;
-  portKey: string;
-  tokenKey?: string;
-}
-
-interface ConnectorMetadata {
-  id: string;
-  name: string;
-  vendor: string;
-  description: string;
-  enabledByDefault: boolean;
-  hasDetector: boolean;
-  hasQuota: boolean;
-  defaultIntervalMinutes?: number;
-  configSchema: ConnectorConfigField[];
-  setSecretKeys?: string[];
-  loginLabel?: string;
-  integrateInfo?: ConnectorIntegrateInfo;
-}
-
-interface ConnectorEnabled {
-  notifications: boolean;
-  quota: boolean;
-}
-
-interface ConnectorRuntimeConfig {
-  enabled: Record<string, ConnectorEnabled>;
-  config: Record<string, Record<string, unknown>>;
-  pollOverrideMinutes?: Record<string, number>;
-}
-
-interface AppSettings {
-  showNotifications: boolean;
-  notifyOnWaiting: boolean;
-  notifyOnFinished: boolean;
-  perSessionCooldownMs: number;
-  quietHours: { startHour: number; endHour: number } | null;
-  quotaPollMinutes: number;
-  showQuotaInTray: boolean;
-  launchAtLogin: boolean;
-  connectors: ConnectorRuntimeConfig;
-  recentEvents: RecentEvent[];
-}
-
-interface QuotaBucket {
-  id: string;
-  label: string;
-  used: number;
-  limit: number | null;
-  remaining: number | null;
-  unit: 'credits' | 'requests' | 'usd';
-  enabled: boolean;
-}
-
-type QuotaSnapshot =
-  | {
-      ok: true;
-      fetchedAt: number;
-      buckets: QuotaBucket[];
-      membershipType?: string;
-      limitType?: string;
-      billingCycleStart?: string;
-      billingCycleEnd?: string;
-      displayMessages: string[];
-      authMethod?: string;
-      trayLine?: string;
-      source?: string;
-    }
-  | {
-      ok: false;
-      fetchedAt: number;
-      error: string;
-      source?: string;
-      needsLogin?: boolean;
-    };
+// QuotaBucket / QuotaSnapshot / SpendTile / BucketPref live in `quota-types.d.ts`.
 
 interface InitialPayload {
   connectors: ConnectorMetadata[];
@@ -108,6 +24,9 @@ interface InitialPayload {
   paused: boolean;
   settingsPath: string;
   quotas: Record<string, QuotaSnapshot>;
+  /** `process.platform` from the main process — used to disable platform-conditional
+   * settings (e.g. tray transparency has no Linux implementation). */
+  platform: string;
 }
 
 interface LogEntry {
@@ -130,7 +49,13 @@ interface AgentWatcherAPI {
     value: string | null,
   ): Promise<ConnectorMetadata[]>;
   setConnectorPollOverride(id: string, minutes: number | null): Promise<AppSettings>;
+  setConnectorBucketPref(
+    id: string,
+    bucketId: string,
+    patch: Partial<BucketPref>,
+  ): Promise<AppSettings>;
   update(patch: Partial<AppSettings>): Promise<AppSettings>;
+  setPopupShortcut(accelerator: string): Promise<{ ok: boolean; reason?: string }>;
   clearEvents(): Promise<AppSettings>;
   togglePause(): Promise<boolean>;
   testNotification(): Promise<void>;

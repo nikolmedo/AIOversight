@@ -7,7 +7,8 @@ const CursorConnector: Connector = {
   name: 'Cursor IDE',
   vendor: 'Anysphere',
   description:
-    'Watches Cursor agent transcripts for sessions waiting on approval and finished turns, and reads your usage quota from Cursor.',
+    'Watches Cursor agent transcripts for sessions waiting on approval and finished turns, and reads your ' +
+    'usage quota, credit balances, and per-day spend from Cursor.',
   enabledByDefault: true,
   quotaEnabledByDefault: true,
   configSchema: [

@@ -34,6 +34,20 @@ function resolvePath(p: string): string {
 }
 
 /**
+ * Shared on-disk cache root for every connector (see `ConnectorContext.cacheDir`).
+ * Lazily `require()`s electron rather than importing it at module top level —
+ * this file isn't part of `scripts/smoke.js`'s headless require graph today,
+ * but the lazy pattern matches every other connector-adjacent file that
+ * touches `electron` (e.g. `quota.ts`'s `httpJson` helpers) so it stays safe
+ * even if that ever changes.
+ */
+function connectorCacheDir(): string {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { app } = require('electron') as typeof import('electron');
+  return path.join(app.getPath('userData'), 'connector-cache');
+}
+
+/**
  * ConnectorRuntime owns the lifecycle of every connector's detector. It
  * replaces the older DetectorManager. Quota providers are owned by the
  * `QuotaService` (separate file) so the polling logic stays orthogonal to
@@ -66,6 +80,7 @@ export class ConnectorRuntime extends EventEmitter {
         .filter(k => allKeys.has(SecretStore.qualify(c.id, k))),
       loginLabel: c.login?.label,
       integrateInfo: c.integrateInfo,
+      brandColor: c.brandColor,
     }));
   }
 
@@ -104,6 +119,7 @@ export class ConnectorRuntime extends EventEmitter {
       resolvePath,
       secret: key => this.secrets.get(SecretStore.qualify(connector.id, key)),
       setSecret: (key, value) => this.secrets.set(SecretStore.qualify(connector.id, key), value),
+      cacheDir: connectorCacheDir(),
     };
   }
 
