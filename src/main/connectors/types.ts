@@ -147,6 +147,18 @@ export type QuotaSnapshot =
        * refresh still goes through — see `QuotaService.refresh`.
        */
       retryAfterMs?: number;
+      /**
+       * The only data source is a desktop app that isn't running right now.
+       * This is an expected, non-error state, and `error` carries the notice
+       * text (e.g. "Open Antigravity to see its quota."). Set it only when the
+       * app is genuinely absent: an app that is found but fails to answer is
+       * a real error. Effects: the tray popup and tray tooltip omit the
+       * connector, the settings window shows `error` as a neutral notice
+       * instead of an error, and `QuotaService` does not count it as a
+       * failure, so polling continues at the normal interval and picks the
+       * data up soon after the app opens.
+       */
+      appNotRunning?: boolean;
     };
 
 export interface QuotaProvider {
@@ -334,4 +346,15 @@ export interface ConnectorMetadata {
   integrateInfo?: ConnectorIntegrateInfo;
   /** Optional brand accent color (hex). Falls back to an id-hash color in the renderer. */
   brandColor?: string;
+  /**
+   * Whether this connector's quota polling is currently enabled per user
+   * settings (`ConnectorRuntimeConfig.enabled[id].quota`) — independent of
+   * whether a snapshot has been fetched yet. The tray popup's `planTrayPopup`
+   * uses this (not "does a `QuotaSnapshot` already exist") to decide which
+   * connectors it should show: the first fetch after enabling quota runs
+   * asynchronously and can take a while, so presence-in-`quotas` would fold a
+   * just-enabled, still-loading connector into the "nothing enabled" empty
+   * state instead of a "not loaded yet" row.
+   */
+  quotaEnabled?: boolean;
 }

@@ -9,9 +9,9 @@ const AntigravityConnector: Connector = {
     'Off by default: unlike every other connector here, this one only works while the Antigravity app is ' +
     'open on this machine — it locates the running language-server process, reads its port and CSRF token ' +
     'from the process arguments, and queries quota over that connection. There is no documented file-based ' +
-    '(or keychain) way to read quota when the app is closed, so this connector deliberately does not try — ' +
-    'it just reports plainly when Antigravity is not running. Enable it only if you keep Antigravity ' +
-    'running locally.',
+    '(or keychain) way to read quota when the app is closed, so this connector deliberately does not try. ' +
+    'While Antigravity is closed it is left out of the tray popup and shown here as "not running". Enable ' +
+    'it only if you use Antigravity on this machine.',
   enabledByDefault: false,
   quotaEnabledByDefault: false,
   configSchema: [
@@ -30,7 +30,10 @@ const AntigravityConnector: Connector = {
     },
   ],
   quota: {
-    defaultIntervalMinutes: 15,
+    // Short, so quota shows up soon after the user opens Antigravity. Each
+    // poll is local only: one PowerShell/`ps` process listing, plus a
+    // loopback port scan capped at 4s when no process is found.
+    defaultIntervalMinutes: 5,
     create: createAntigravityQuotaProvider,
   },
 };

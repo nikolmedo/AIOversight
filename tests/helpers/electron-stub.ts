@@ -18,6 +18,7 @@
 // to redefine on the copy. The `= require(...)` form gives us the real
 // `node:module` exports object, whose `_load` is writable & configurable.
 import Module = require('node:module');
+import * as fs from 'node:fs';
 
 // --- app --------------------------------------------------------------------
 
@@ -102,6 +103,8 @@ export function resetElectronStub(): void {
   dialogCalls.length = 0;
   encryptionAvailable = true;
   resetLoginItemSettings();
+  nativeImageThrowsFor = null;
+  shouldUseDarkColorsForSystemIntegratedUI = false;
 }
 
 class StubNotification {
@@ -194,6 +197,51 @@ const net = {
   },
 };
 
+// --- nativeImage / nativeTheme (tray.ts's loadTrayImage) ----------------------
+
+/**
+ * Test-only hook: makes the stub's `createFromPath` throw for paths matching
+ * `predicate`, so a test can simulate a malformed/corrupt image file without
+ * needing a real one that reliably crashes real Electron's (fail-soft)
+ * `nativeImage` -- see `tray.ts`'s `loadTrayImage` WARNING fix.
+ */
+let nativeImageThrowsFor: ((p: string) => boolean) | null = null;
+export function setNativeImageThrowsFor(predicate: ((p: string) => boolean) | null): void {
+  nativeImageThrowsFor = predicate;
+}
+
+const nativeImage = {
+  createFromPath(p: string): { isEmpty(): boolean; addRepresentation(): void } {
+    if (nativeImageThrowsFor?.(p)) {
+      throw new Error(`stub nativeImage: simulated failure loading ${p}`);
+    }
+    let nonEmpty = false;
+    try {
+      nonEmpty = fs.statSync(p).size > 0;
+    } catch {
+      nonEmpty = false;
+    }
+    return {
+      isEmpty: () => !nonEmpty,
+      addRepresentation: () => undefined,
+    };
+  },
+};
+
+let shouldUseDarkColorsForSystemIntegratedUI = false;
+export function setShouldUseDarkColorsForSystemIntegratedUI(value: boolean): void {
+  shouldUseDarkColorsForSystemIntegratedUI = value;
+}
+
+const nativeTheme = {
+  get shouldUseDarkColorsForSystemIntegratedUI(): boolean {
+    return shouldUseDarkColorsForSystemIntegratedUI;
+  },
+  on(): void {
+    /* tray.ts only wires this listener in createTray(), not loadTrayImage() */
+  },
+};
+
 // --- electron module shape ------------------------------------------------------
 
 const electronStub = {
@@ -203,6 +251,8 @@ const electronStub = {
   shell,
   dialog,
   net,
+  nativeImage,
+  nativeTheme,
 };
 
 // --- Module._load patch -----------------------------------------------------

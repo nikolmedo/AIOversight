@@ -355,6 +355,70 @@ describe('QuotaService', () => {
     assert.equal(entry.nextAllowedFetchAt, 0);
   });
 
+  it('does not back off for an appNotRunning snapshot and clears an earlier failure streak', async () => {
+    // Arrange
+    const rt = rtConfig({ pollOverrideMinutes: { openai: 1 } });
+    await service.applyConfig(rt, 0);
+    await service.refresh('openai'); // fails: no admin key configured
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entry = (service as any).providers.get('openai');
+    assert.ok(entry.consecutiveFailures >= 1);
+    assert.ok(entry.nextAllowedFetchAt > Date.now());
+    const closed: QuotaSnapshot = {
+      ok: false,
+      fetchedAt: Date.now(),
+      error: 'Open the app to see its quota.',
+      appNotRunning: true,
+    };
+    entry.provider.fetch = () => Promise.resolve(closed);
+
+    // Act
+    const snapshot = await service.refresh('openai');
+
+    // Assert
+    assert.equal(snapshot, closed);
+    assert.equal(service.get('openai'), closed);
+    assert.equal(entry.consecutiveFailures, 0);
+    assert.equal(entry.nextAllowedFetchAt, 0);
+  });
+
+  it('keeps polling at the normal interval while the app is not running, and picks up data once it opens', async () => {
+    // Arrange
+    mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+    await service.applyConfig(rtConfig({ pollOverrideMinutes: { openai: 1 } }), 0);
+    await service.refresh('openai');
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entry = (service as any).providers.get('openai');
+    let appOpen = false;
+    let providerCalls = 0;
+    const data: QuotaSnapshot = { ok: true, fetchedAt: Date.now(), buckets: [], displayMessages: [] };
+    entry.provider.fetch = () => {
+      providerCalls++;
+      return Promise.resolve<QuotaSnapshot>(
+        appOpen ? data : { ok: false, fetchedAt: Date.now(), error: 'closed', appNotRunning: true },
+      );
+    };
+    await service.refresh('openai');
+    const settle = async () => {
+      for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve));
+    };
+
+    // Act: two ticks with the app closed, then the user opens it.
+    mock.timers.tick(60_000);
+    await settle();
+    mock.timers.tick(60_000);
+    await settle();
+    appOpen = true;
+    mock.timers.tick(60_000);
+    await settle();
+
+    // Assert: every tick fetched (1 explicit refresh + 3 ticks); none was gated.
+    assert.equal(providerCalls, 4);
+    assert.equal(service.get('openai'), data);
+  });
+
   it('removes a connector and emits "removed" when quota is disabled in a later applyConfig', async () => {
     // Arrange
     const rt = rtConfig();

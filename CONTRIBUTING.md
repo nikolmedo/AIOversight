@@ -37,10 +37,13 @@ npm run build
 npm run start        # from existing dist/ (no recompile)
 npm run dev          # recompile then launch
 
+# Run unit tests
+npm test
+
 # Run headless integration tests
 npm run smoke
 
-# Clean build output
+# Clean build output (dist/, dist-test/, release/)
 npm run clean
 ```
 
@@ -55,33 +58,43 @@ src/
   main/
     index.ts              Electron entry point, IPC handlers, tray, settings window
     settings-store.ts     Disk persistence
-    secret-store.ts       Encrypted credential storage (Electron safeStorage)
     notifier.ts           Notification policy (cooldown, quiet hours, kind filter)
+    autostart.ts          Launch at login
     tray.ts               System tray icon and context menu
     tray-popup.ts         Floating quota popup window
     connectors/
       registry.ts         ALL_CONNECTORS array — the only place to register connectors
       runtime.ts          Detector lifecycle + ConnectorContext factory
-      quota-service.ts    Quota polling loop
-      secret-store.ts     (see above)
+      quota-service.ts    Quota polling loop (backoff, Retry-After, fetch timeout)
+      secret-store.ts     Encrypted credential storage (Electron safeStorage)
       types.ts            All shared TypeScript interfaces
-      shared/             Reusable helpers (TranscriptWatcher, chromium-cookies)
+      types-parity.ts     Compile-time guard: renderer quota types stay assignable to types.ts
+      shared/             Reusable helpers (TranscriptWatcher, JSONL spend scanner, model pricing, chromium-cookies)
       <id>/               One folder per connector
   preload/
     settings.ts           Context bridge for the settings window
     tray-popup.ts         Context bridge for the tray popup
   renderer/
-    settings.ts           Settings window renderer (vanilla TypeScript)
-    tray-popup.ts         Tray popup renderer (vanilla TypeScript)
+    settings.ts/.html/.css    Settings window (vanilla TypeScript)
+    tray-popup.ts/.html/.css  Tray popup (vanilla TypeScript)
+    quota-view.ts         Meter / spend-card markup shared by both windows
+    quota-math.ts         Pace and formatting math shared by both windows
+    tokens.css            Design tokens imported by both stylesheets
     global.d.ts           Ambient type declarations for the settings renderer
     tray-popup-global.d.ts Ambient types for the tray popup renderer
+    quota-types.d.ts      Ambient quota/connector types shared by both renderers
+
+tests/
+  unit/                   node:test unit tests (quota provider tests in quota-providers/<id>.test.ts)
+  helpers/                Electron stub, fake ConnectorContext, fixtures, temp dirs
 
 scripts/
-  generate-icons.js       Generates PNG icon files at npm install time
-  copy-renderer.js        Copies HTML/assets from src/ to dist/ after tsc
+  generate-icons.js       Generates PNG and Windows tray .ico files at npm install time
+  copy-renderer.js        Copies HTML/CSS and assets/ from src/ to dist/ after tsc
   smoke.js                Headless integration test suite
+  electron-quota-test.js  Manual check: fetches every quota provider with your stored settings (run with `electron`)
 
-assets/                   Build resources (entitlements, installer config)
+assets/                   App and tray icons written by generate-icons.js (electron-builder buildResources)
 build/                    macOS entitlements
 ```
 
@@ -93,8 +106,8 @@ Read `src/main/connectors/README.md` for the complete guide. The short version:
 
 1. Create `src/main/connectors/<id>/index.ts` with a `Connector` object.
 2. Add it to `ALL_CONNECTORS` in `src/main/connectors/registry.ts`.
-3. If the connector has a detector, add classifier test cases in `scripts/smoke.js`.
-4. Run `npm run smoke` to verify.
+3. If the connector has a detector, add classifier test cases in `scripts/smoke.js`. If it has a quota provider, add `tests/unit/quota-providers/<id>.test.ts`.
+4. Run `npm test` and `npm run smoke` to verify.
 
 No other file needs to know the connector exists.
 
@@ -102,22 +115,34 @@ No other file needs to know the connector exists.
 
 ## Testing
 
-There is no test framework. The test suite is a single Node.js script:
+There are two suites, neither of which requires Electron or any extra test dependency.
+
+**Unit tests** — Node's built-in `node:test` runner:
+
+```bash
+npm test
+```
+
+This compiles `src/` and `tests/` with `tsconfig.test.json` into `dist-test/`, then runs every `*.test.js`. Tests live in `tests/unit/` (quota providers under `tests/unit/quota-providers/<id>.test.ts`); shared helpers in `tests/helpers/` include an Electron stub that must be imported first in any test touching Electron-dependent code, and a fake `ConnectorContext`.
+
+**Smoke tests** — a single headless Node.js script:
 
 ```bash
 npm run smoke
 ```
 
-This runs against the compiled `dist/` output (call `npm run build` first). It does **not** require Electron. It covers:
+This builds, then runs against the compiled `dist/` output. It covers:
 
 - Registry integrity — all connectors present, all `configSchema` field types valid
+- Renderer quota math, meter/spend-card markup, and the tray line formatter
+- Per-connector quota parsers, model pricing, and the JSONL spend scanner
 - `TranscriptWatcher` — idle detection, `waiting`/`finished` dispatch, mtime-based dedup
 - JSONL classifiers — Cursor, Claude Code, Codex CLI `extractStatus` functions
 - `WebhookDetector` — HTTP server, token auth, kind mapping, `/health` endpoint
 
 When adding or changing a connector detector, add corresponding test cases in the smoke script.
 
-**CI gap:** the release workflow (`release.yml`) does not run the smoke test. It goes straight from build to package. Run `npm run smoke` locally before opening a PR.
+**CI gap:** the release workflow (`release.yml`) runs neither `npm test` nor the smoke test. It goes straight from install to package. Run both locally before opening a PR.
 
 ---
 
@@ -151,7 +176,7 @@ Do not add `Co-Authored-By` lines.
 ## Pull request process
 
 1. Fork the repo and create a branch: `git checkout -b feat/my-connector`
-2. Make your changes, run `npx tsc --noEmit` and `npm run smoke`
+2. Make your changes, run `npx tsc --noEmit`, `npm test` and `npm run smoke`
 3. Open a PR against `main` with a clear description of what and why
 4. Connector PRs should include an entry in the connector table in `README.md`
 
@@ -172,11 +197,34 @@ The workflow triggers on `v*` tags, builds for all three platforms (macOS, Windo
 
 | Platform | Files |
 |---|---|
-| macOS | `.dmg` (x64, arm64), `.zip` (x64, arm64) |
+| macOS | `.dmg` (x64, arm64) |
 | Windows | NSIS installer `.exe`, portable `.exe` (x64) |
-| Linux | AppImage |
+| Linux | AppImage, `.deb`, `.tar.gz` |
+
+`electron-builder.yml` also builds macOS `.zip` files, but the workflow only uploads `release/*.dmg`.
 
 To build locally for the current platform: `npm run package`. Platform-specific: `npm run package:mac`, `npm run package:win`, `npm run package:linux`.
+
+---
+
+## Running and capturing the app from an automated/agent shell
+
+Verified on a Windows dev machine while driving the app from Claude Code's shell. A normal interactive terminal may not need any of this.
+
+- **`ELECTRON_RUN_AS_NODE`**: the shell had `ELECTRON_RUN_AS_NODE=1` set, which makes Electron run as plain Node. `require('electron')` then returns a path string, `app` is undefined, and the app crashes at `app.requestSingleInstanceLock()`. Launch with `env -u ELECTRON_RUN_AS_NODE`.
+- **userData not writable**: the default userData directory was not writable from the sandboxed shell (GPU cache "Access denied"), and the app then exited silently with code 0 before `whenReady` (single-instance lock). Pass `--user-data-dir=<temp dir>`.
+- **`npx electron .`** also ran as Node there. On Windows, use `./node_modules/.bin/electron.cmd .`.
+- **Capturing pages** without clicking the tray: use `webContents.capturePage()` from a temporary, env-gated block inside `app.whenReady()` in `src/main/index.ts`. Always back up and restore `src/main/index.ts` and rebuild `dist/` afterwards. The README screenshot block and steps are in `scripts/readme-assets/README.md`.
+- **Locale and scale**: pass `--lang=en-US` so numbers don't render in the OS locale (a Spanish locale printed `20.000`), and `--force-device-scale-factor=2` for 2x images.
+- **`gh api` in Git Bash**: `gh api /path` gets rewritten to a filesystem path. Omit the leading slash (`gh api user`) or set `MSYS_NO_PATHCONV=1`.
+- **Unit tests that exercise credential discovery** must isolate `PATH`, `APPDATA`, `USERPROFILE` and `HOME` (see `tests/unit/quota-providers/github-copilot.test.ts`). `node:child_process` exports are read-only getters, so stubbing `execFileSync` does not work; set `PATH` to an empty string so the spawn fails instead.
+
+Example launch:
+
+```bash
+npm run build
+env -u ELECTRON_RUN_AS_NODE ./node_modules/.bin/electron.cmd . --user-data-dir="$(mktemp -d)" --lang=en-US
+```
 
 ---
 
@@ -184,6 +232,6 @@ To build locally for the current platform: `npm run package`. Platform-specific:
 
 See `docs/ARCHITECTURE.md` for the internal architecture (process model, IPC contract, data flows).
 
-The connector framework is documented in `src/main/connectors/README.md`.
+The connector framework is documented in `src/main/connectors/README.md`. Vendor endpoints and their evidence are recorded in `docs/CONNECTOR-SOURCES.md`, and the UI design system in `docs/DESIGN.md`.
 
 Agent instructions for Claude Code are in `CLAUDE.md`.

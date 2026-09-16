@@ -74,6 +74,7 @@ const {
   queryQuotaData,
   queryQuotaDataWithBudget,
   createAntigravityQuotaProvider,
+  APP_NOT_RUNNING_NOTICE,
 } = require('../dist/main/connectors/antigravity/quota.js');
 
 let failures = 0;
@@ -221,6 +222,38 @@ function testQuotaMath() {
   check("formatCountdown(3 * 3_600_000 + 25 * 60_000) === '3h 25m'",
         sandbox.formatCountdown(3 * 3_600_000 + 25 * 60_000) === '3h 25m',
         sandbox.formatCountdown(3 * 3_600_000 + 25 * 60_000));
+
+  // --- formatResetsIn / formatRelativeTime -------------------------------
+  check("formatResetsIn(3h 25m) === 'resets in 3h 25m'",
+        sandbox.formatResetsIn(3 * 3_600_000 + 25 * 60_000) === 'resets in 3h 25m',
+        sandbox.formatResetsIn(3 * 3_600_000 + 25 * 60_000));
+  check("formatResetsIn(0) === 'resets now'", sandbox.formatResetsIn(0) === 'resets now');
+  const relNow = 1_700_000_000_000;
+  check("formatRelativeTime: <1m -> 'just now'", sandbox.formatRelativeTime(relNow - 59_000, relNow) === 'just now');
+  check("formatRelativeTime: 12m -> '12m ago'", sandbox.formatRelativeTime(relNow - 12 * 60_000, relNow) === '12m ago');
+  check("formatRelativeTime: 3h -> '3h ago'", sandbox.formatRelativeTime(relNow - 3 * 3_600_000 - 5, relNow) === '3h ago');
+  check("formatRelativeTime: 49h -> '2d ago'", sandbox.formatRelativeTime(relNow - 49 * 3_600_000, relNow) === '2d ago');
+  check("formatRelativeTime: future ts -> 'just now'", sandbox.formatRelativeTime(relNow + 5_000, relNow) === 'just now');
+
+  // --- connectorStatusFor ---------------------------------------------------
+  const on = { notifications: false, quota: true };
+  check("connectorStatusFor: nothing enabled -> 'off'",
+        sandbox.connectorStatusFor({ notifications: false, quota: false }, { ok: false }) === 'off');
+  check("connectorStatusFor: missing enabled entry -> 'off'", sandbox.connectorStatusFor(undefined, undefined) === 'off');
+  check("connectorStatusFor: quota on, no snapshot yet -> 'active'", sandbox.connectorStatusFor(on, undefined) === 'active');
+  check("connectorStatusFor: quota on, failed snapshot -> 'error'", sandbox.connectorStatusFor(on, { ok: false }) === 'error');
+  check("connectorStatusFor: quota on, needsLogin -> 'needs-login'",
+        sandbox.connectorStatusFor(on, { ok: false, needsLogin: true }) === 'needs-login');
+  check("connectorStatusFor: stale failure with quota off -> 'active'",
+        sandbox.connectorStatusFor({ notifications: true, quota: false }, { ok: false }) === 'active');
+  check("connectorStatusFor: quota on, appNotRunning -> 'app-not-running' (neutral, not 'error')",
+        sandbox.connectorStatusFor(on, { ok: false, appNotRunning: true }) === 'app-not-running');
+  check("connectorStatusFor: stale appNotRunning with quota off -> 'active'",
+        sandbox.connectorStatusFor({ notifications: true, quota: false }, { ok: false, appNotRunning: true }) === 'active');
+  check('isAppNotRunning: only a failed snapshot carrying the flag',
+        sandbox.isAppNotRunning({ ok: false, error: 'x', appNotRunning: true }) === true &&
+          sandbox.isAppNotRunning({ ok: false, error: 'x' }) === false &&
+          sandbox.isAppNotRunning(undefined) === false);
 
   // --- paceStateFor: static-threshold boundaries (no resetsAt/windowMs) -----
   const staticBucket = used => ({ used, limit: 100 });
@@ -559,6 +592,60 @@ function testQuotaView() {
   check('renderMeterGroup: all-on-demand -> no bare count-only "More metrics (N)" summary',
         !/More metrics \(\d+\)/.test(allOnDemandHtml), allOnDemandHtml);
 
+  // --- planTrayPopup / renderAppNotRunningNotice (appNotRunning) ------------
+  // `quotaEnabled` defaults to `hasQuota` so existing call sites below (which
+  // meant "this connector is on") keep working; pass it explicitly to build
+  // an "off" connector (WARNING FIX: "enabled" is now the persisted setting,
+  // not "a snapshot happens to exist" -- see planTrayPopup's doc comment).
+  const popupDef = (id, name, hasQuota = true, quotaEnabled = hasQuota) =>
+    ({ id, name, vendor: 'V', description: '', enabledByDefault: false, hasDetector: false, hasQuota, quotaEnabled, configSchema: [] });
+  const closedApp = { ok: false, fetchedAt: now, error: 'Open it to see its quota.', appNotRunning: true };
+  const okSnap = { ok: true, fetchedAt: now, buckets: [], displayMessages: [] };
+  const errSnap = { ok: false, fetchedAt: now, error: 'boom' };
+  const popupDefs = [popupDef('live', 'Live'), popupDef('broken', 'Broken'), popupDef('desk', 'Desk App'), popupDef('off', 'Off', true, false)];
+
+  const mixedPlan = sandbox.planTrayPopup(popupDefs, { live: okSnap, broken: errSnap, desk: closedApp });
+  check('planTrayPopup: omits appNotRunning and not-enabled connectors, keeps real errors, in registry order',
+        JSON.stringify(mixedPlan.visible.map(d => d.id)) === JSON.stringify(['live', 'broken']) && mixedPlan.emptyMessage === null,
+        JSON.stringify(mixedPlan));
+  const onlyClosedPlan = sandbox.planTrayPopup([popupDef('desk', 'Desk App')], { desk: closedApp });
+  check('planTrayPopup: every enabled connector is a closed app -> empty state names it',
+        onlyClosedPlan.visible.length === 0 && onlyClosedPlan.emptyMessage === "Nothing to show. Desk App isn't running.",
+        JSON.stringify(onlyClosedPlan));
+  const twoClosedPlan = sandbox.planTrayPopup(
+    [popupDef('a', 'Alpha'), popupDef('b', 'Beta'), popupDef('c', 'Gamma')],
+    { a: closedApp, b: closedApp, c: closedApp },
+  );
+  check('planTrayPopup: several closed apps -> "A, B and C aren\'t running"',
+        twoClosedPlan.emptyMessage === "Nothing to show. Alpha, Beta and Gamma aren't running.", twoClosedPlan.emptyMessage);
+  const nonePlan = sandbox.planTrayPopup(
+    [popupDef('live', 'Live', true, false), popupDef('broken', 'Broken', true, false)],
+    {},
+  );
+  check('planTrayPopup: nothing enabled -> the "open settings to add one" empty state',
+        nonePlan.emptyMessage === 'No quota integrations enabled. Open settings to add one.', nonePlan.emptyMessage);
+  check('planTrayPopup: no connectors at all -> "No integrations configured."',
+        sandbox.planTrayPopup([], {}).emptyMessage === 'No integrations configured.');
+
+  // WARNING FIX: a connector that's quota-enabled but hasn't returned its
+  // first (async) snapshot yet must be treated as "enabled, not loaded yet",
+  // not folded into the "nothing enabled" empty state.
+  const loadingDef = popupDef('loading', 'Loading Co');
+  const loadingPlan = sandbox.planTrayPopup([loadingDef], {});
+  check('planTrayPopup: quota-enabled connector with no snapshot yet stays visible (not the empty state)',
+        JSON.stringify(loadingPlan.visible.map(d => d.id)) === JSON.stringify(['loading']) && loadingPlan.emptyMessage === null,
+        JSON.stringify(loadingPlan));
+  const loadingHtml = sandbox.renderProviderBlock(loadingDef, undefined);
+  check('renderProviderBlock: no snapshot yet -> "Not loaded yet." note is reachable',
+        loadingHtml.includes('Not loaded yet.'), loadingHtml);
+
+  const noticeHtml = sandbox.renderAppNotRunningNotice('Open <App> to see its quota.', '<button>Configure</button>');
+  check('renderAppNotRunningNotice: neutral notice markup with info icon, escaped text and trailing actions',
+        noticeHtml.includes('class="inline-notice"') && noticeHtml.includes('<svg class="icon"') &&
+          noticeHtml.includes('Open &lt;App&gt; to see its quota.') && noticeHtml.includes('<button>Configure</button>') &&
+          !noticeHtml.includes('error'),
+        noticeHtml);
+
   // --- renderTotalSpendCard (Phase 2b) --------------------------------------
   const spendConnectors = [
     { id: 'a', name: 'Connector A', vendor: 'V', description: '', enabledByDefault: true,
@@ -579,6 +666,16 @@ function testQuotaView() {
   check('renderTotalSpendCard: empty string when no snapshot has spend[]',
         sandbox.renderTotalSpendCard(noSpendSnapshots, spendConnectors) === '',
         JSON.stringify(sandbox.renderTotalSpendCard(noSpendSnapshots, spendConnectors)));
+
+  check('renderSpendSummary: single muted line when no snapshot has spend[]',
+        sandbox.renderSpendSummary(noSpendSnapshots, spendConnectors).startsWith('<p class="spend-empty"'));
+
+  const allNullSpend = {
+    a: { ok: true, fetchedAt: now, buckets: [], displayMessages: [],
+         spend: [{ period: 'today', label: 'Today', costCents: null, tokens: null }] },
+  };
+  check('renderSpendSummary: single muted line when every spend tile is unmeasured',
+        sandbox.renderSpendSummary(allNullSpend, spendConnectors).startsWith('<p class="spend-empty"'));
 
   // (b) Aggregation across 2+ connectors, mixing measured and null costCents
   // for the same period -- null must be excluded from the sum, not coerced
@@ -659,6 +756,16 @@ function testQuotaView() {
   check('renderTotalSpendCard: costPerMtok mode end-to-end shows "No data" when no connector has measured tokens',
         costPerMtokGuardHtml.includes('No data') && !/NaN|Infinity/.test(costPerMtokGuardHtml),
         costPerMtokGuardHtml);
+
+  const summaryHtml = sandbox.renderSpendSummary(mixedSnapshots, spendConnectors, { mode: 'cost', period: 'today' });
+  check('renderSpendSummary: one switch per period (today/yesterday/last30d)',
+        ['today', 'yesterday', 'last30d'].every(p => summaryHtml.includes(`data-spend-period="${p}"`)), summaryHtml);
+  check('renderSpendSummary: today total is the summed measured cost ($7.50)',
+        summaryHtml.includes('$7.50'), summaryHtml);
+  check('renderSpendSummary: active period marked aria-pressed',
+        /data-spend-period="today" aria-pressed="true"/.test(summaryHtml), summaryHtml);
+  check('renderSpendSummary: periods without tiles show No data, never NaN',
+        summaryHtml.includes('No data') && !/NaN|Infinity/.test(summaryHtml), summaryHtml);
 
   // (c) Minimum-arc-length + renormalization: a tiny-share slice must not
   // disappear, and the full arc set must still sum to a whole circle (1.0).
@@ -2228,10 +2335,9 @@ function testAntigravityQuota() {
     // createXQuotaProvider().fetch() directly under Node.
     const provider = createAntigravityQuotaProvider({}, makeCtx([]));
     const snap = await provider.fetch();
-    check('fetch(): no language-server process and nothing listening -> ok:false with a message that says the app must be running',
-          snap.ok === false && typeof snap.error === 'string' &&
-          snap.error.includes('does not appear to be running') &&
-          snap.error.includes('open Antigravity'),
+    check('fetch(): no language-server process and nothing listening -> ok:false, appNotRunning, with the "open it" notice',
+          snap.ok === false && snap.appNotRunning === true &&
+          snap.error === APP_NOT_RUNNING_NOTICE,
           JSON.stringify(snap));
     check('fetch(): the not-running case is NOT needsLogin -- there is no login flow for this connector',
           snap.ok === false && snap.needsLogin === undefined);
@@ -2239,9 +2345,11 @@ function testAntigravityQuota() {
     console.log('antigravity/quota.ts: fetch() truncation-aware error message (WARNING fix -- a pathologically wide range no longer just says "not running" with no explanation)');
     const truncatedProvider = createAntigravityQuotaProvider({ portRange: '1-65000' }, makeCtx([]));
     const truncatedSnap = await truncatedProvider.fetch();
-    check('fetch(): a configured range wider than MAX_PORT_RANGE_SPAN surfaces an honest truncation note instead of a bare "not running"',
+    check('fetch(): a configured range wider than MAX_PORT_RANGE_SPAN surfaces an honest truncation note as a REAL error, not appNotRunning (WARNING fix: a truncated scan is inconclusive -- Antigravity could be running on an unscanned port -- not confirmation the app is closed)',
           truncatedSnap.ok === false &&
-          truncatedSnap.error.includes('your configured range requested 65000 ports') &&
+          truncatedSnap.appNotRunning === undefined &&
+          truncatedSnap.error.includes('port scan was truncated') &&
+          truncatedSnap.error.includes('configured port range requested 65000 ports') &&
           truncatedSnap.error.includes(`only the first ${MAX_PORT_RANGE_SPAN} were scanned`),
           truncatedSnap.error);
   })();
@@ -2343,6 +2451,46 @@ function testIcons() {
         JSON.stringify(trackRingPx));
 }
 
+/** Frames of an ICO file whose images are PNG-compressed, as written by
+ * `encodeICO` in scripts/generate-icons.js. */
+function decodeICOFrames(buf) {
+  const frames = [];
+  const reserved = buf.readUInt16LE(0);
+  const type = buf.readUInt16LE(2);
+  if (reserved !== 0 || type !== 1) return { valid: false, frames };
+  const count = buf.readUInt16LE(4);
+  for (let i = 0; i < count; i++) {
+    const e = 6 + 16 * i;
+    const size = buf.readUInt8(e) || 256;
+    const length = buf.readUInt32LE(e + 8);
+    const offset = buf.readUInt32LE(e + 12);
+    frames.push({ size, bpp: buf.readUInt16LE(e + 6), png: decodePNG(buf.subarray(offset, offset + length)) });
+  }
+  return { valid: true, frames };
+}
+
+function testTrayICO() {
+  console.log('Icons: Windows tray .ico files carry one PNG frame per notification-area DPI');
+  const expectedSizes = [16, 20, 24, 28, 32, 40, 48];
+  for (const [file, blackGlyph] of [['tray-icon.ico', true], ['tray-icon-white.ico', false]]) {
+    const p = path.join(__dirname, '..', 'assets', file);
+    if (!fs.existsSync(p)) {
+      check(`${file} exists`, false);
+      continue;
+    }
+    const { valid, frames } = decodeICOFrames(fs.readFileSync(p));
+    check(`${file}: ICONDIR header is a type-1 icon`, valid);
+    check(`${file}: frame sizes are ${expectedSizes.join('/')}`,
+          JSON.stringify(frames.map(f => f.size)) === JSON.stringify(expectedSizes),
+          JSON.stringify(frames.map(f => f.size)));
+    check(`${file}: every frame is 32bpp and decodes to its declared size`,
+          frames.every(f => f.bpp === 32 && f.png.width === f.size && f.png.height === f.size));
+    const ring = pixelAt(frames.find(f => f.size === 32).png, 0.5, 0.17);
+    check(`${file}: 32px frame ring pixel is opaque ${blackGlyph ? 'black' : 'white'}`,
+          ring[3] > 200 && (blackGlyph ? ring[0] < 40 : ring[0] > 215), JSON.stringify(ring));
+  }
+}
+
 function testTrayRepresentations() {
   console.log('tray.ts: trayRepresentationsToLoad -- win32 DPI-representation degradation logic');
   check('both files present -> both representations attempted',
@@ -2357,6 +2505,7 @@ function testTrayRepresentations() {
 
 (async () => {
   testIcons();
+  testTrayICO();
   testTrayRepresentations();
   testRegistry();
   testSettingsStore();

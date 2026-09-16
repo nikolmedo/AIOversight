@@ -17,6 +17,8 @@
 //   assets/tray-icon-16-white.png  16x16  Windows tray, 100% DPI (white, dark taskbar)
 //   assets/tray-icon-24-white.png  24x24  Windows tray, 150% DPI (white, dark taskbar)
 //   assets/tray-icon-32-white.png  32x32  Windows tray, 200% DPI (white, dark taskbar)
+//   assets/tray-icon.ico       16..48  Windows tray, all DPIs (black, light taskbar)
+//   assets/tray-icon-white.ico 16..48  Windows tray, all DPIs (white, dark taskbar)
 //   assets/tray-icon.png       22x22  macOS/Linux tray (template image on macOS)
 //   assets/tray-icon@2x.png    44x44  macOS/Linux retina (Electron's @2x convention)
 //   assets/icon.png            512x512  app icon (installer/dock/notifications)
@@ -27,6 +29,12 @@
 // image and tints it to match the menu bar; we name explicitly via
 // nativeImage.setTemplateImage in tray.ts instead, so the filenames here stay
 // plain.
+//
+// The .ico outputs are a second container for the same tray glyph, not a
+// glyph change. Electron's Windows Tray builds its icon from the 1x bitmap of
+// a nativeImage, so the 24/32px PNG representations never reach the taskbar
+// and Windows upscales the 16px one at 150%/200% scaling. Loaded from an .ico
+// path, the shell picks the frame matching the display DPI instead.
 
 const fs = require('fs');
 const path = require('path');
@@ -315,6 +323,45 @@ function write(name, w, h, buf) {
   process.stdout.write(`generated ${name} (${w}x${h})\n`);
 }
 
+/**
+ * ICO container with one PNG-compressed frame per size (supported by the
+ * Windows shell since Vista). Layout: 6-byte ICONDIR, one 16-byte
+ * ICONDIRENTRY per frame, then the PNG blobs in the same order.
+ */
+function encodeICO(frames) {
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0); // reserved
+  header.writeUInt16LE(1, 2); // type 1 = icon
+  header.writeUInt16LE(frames.length, 4);
+
+  const entries = [];
+  let offset = 6 + 16 * frames.length;
+  for (const { size, png } of frames) {
+    const entry = Buffer.alloc(16);
+    entry.writeUInt8(size >= 256 ? 0 : size, 0); // width, 0 means 256
+    entry.writeUInt8(size >= 256 ? 0 : size, 1); // height
+    entry.writeUInt8(0, 2); // palette colours
+    entry.writeUInt8(0, 3); // reserved
+    entry.writeUInt16LE(1, 4); // colour planes
+    entry.writeUInt16LE(32, 6); // bits per pixel
+    entry.writeUInt32LE(png.length, 8);
+    entry.writeUInt32LE(offset, 12);
+    entries.push(entry);
+    offset += png.length;
+  }
+  return Buffer.concat([header, ...entries, ...frames.map(f => f.png)]);
+}
+
+// 100% .. 250% notification-area scaling (16 * 1.25 = 20, 1.5 = 24, 1.75 = 28,
+// 2 = 32, 2.5 = 40) plus 48 for 300%.
+const TRAY_ICO_SIZES = [16, 20, 24, 28, 32, 40, 48];
+
+function writeTrayICO(name, rgb) {
+  const frames = TRAY_ICO_SIZES.map(size => ({ size, png: encodePNG(size, size, renderTrayIcon(size, rgb)) }));
+  fs.writeFileSync(path.join(OUT_DIR, name), encodeICO(frames));
+  process.stdout.write(`generated ${name} (${TRAY_ICO_SIZES.join('/')})\n`);
+}
+
 if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
 
 // Windows tray (16/24/32 -- 100%/150%/200% DPI). Black glyph for light
@@ -325,6 +372,8 @@ write('tray-icon-32.png', 32, 32, renderTrayIcon(32));
 write('tray-icon-16-white.png', 16, 16, renderTrayIcon(16, WHITE));
 write('tray-icon-24-white.png', 24, 24, renderTrayIcon(24, WHITE));
 write('tray-icon-32-white.png', 32, 32, renderTrayIcon(32, WHITE));
+writeTrayICO('tray-icon.ico', [0, 0, 0]);
+writeTrayICO('tray-icon-white.ico', WHITE);
 
 // macOS/Linux tray (template image on macOS) + Electron's @2x convention.
 write('tray-icon.png', 22, 22, renderTrayIcon(22));

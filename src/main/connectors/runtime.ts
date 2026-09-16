@@ -5,6 +5,7 @@ import {
   AgentEvent,
   Connector,
   ConnectorContext,
+  ConnectorEnabled,
   ConnectorMetadata,
   ConnectorRuntimeConfig,
   Detector,
@@ -62,7 +63,15 @@ export class ConnectorRuntime extends EventEmitter {
     super();
   }
 
-  metadata(): ConnectorMetadata[] {
+  /**
+   * `enabled` is the persisted per-connector enabled state
+   * (`AppSettings.connectors.enabled`), so `ConnectorMetadata.quotaEnabled`
+   * can be populated for callers that don't otherwise see settings — the
+   * tray popup, notably (see `quota-view.ts`'s `planTrayPopup`). Optional so
+   * existing no-arg callers/tests keep working; every field just comes back
+   * `quotaEnabled: false` when omitted.
+   */
+  metadata(enabled?: Record<string, ConnectorEnabled>): ConnectorMetadata[] {
     const allKeys = new Set(this.secrets.qualifiedKeys());
     return ALL_CONNECTORS.map(c => ({
       id: c.id,
@@ -81,6 +90,7 @@ export class ConnectorRuntime extends EventEmitter {
       loginLabel: c.login?.label,
       integrateInfo: c.integrateInfo,
       brandColor: c.brandColor,
+      quotaEnabled: !!c.quota && !!enabled?.[c.id]?.quota,
     }));
   }
 

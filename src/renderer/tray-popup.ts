@@ -99,25 +99,12 @@
     lastQuotas = quotas;
     renderTotalSpendCardPanel();
     const panel = $('#content');
-    if (connectors.length === 0) {
-      panel.innerHTML = '<p class="empty">No integrations configured.</p>';
+    const plan = planTrayPopup(connectors, quotas);
+    if (plan.emptyMessage != null) {
+      panel.innerHTML = `<p class="empty">${escapeHtml(plan.emptyMessage)}</p>`;
       return;
     }
-    const blocks: string[] = [];
-    let any = false;
-    for (const def of connectors) {
-      if (!def.hasQuota) continue;
-      const snap = quotas[def.id];
-      if (!snap) continue; // not enabled
-      any = true;
-      blocks.push(renderProviderBlock(def, snap, bucketPrefs[def.id]));
-    }
-    if (!any) {
-      panel.innerHTML =
-        '<p class="empty">No quota integrations enabled. Open settings to add one.</p>';
-      return;
-    }
-    panel.innerHTML = blocks.join('');
+    panel.innerHTML = plan.visible.map(def => renderProviderBlock(def, quotas[def.id], bucketPrefs[def.id])).join('');
   }
 
   function reportSize(): void {
@@ -187,6 +174,25 @@
     requestAnimationFrame(() => requestAnimationFrame(reportSize));
   }
 
+  /**
+   * Re-fetches `connectors` and re-renders with it. `ConnectorMetadata.quotaEnabled`
+   * (WARNING FIX: planTrayPopup's source of truth for "should this connector
+   * show here") is a snapshot of settings taken at fetch time -- unlike
+   * `quotas`, which main pushes on every show/update, `connectors` was
+   * previously fetched exactly once in `bootstrap()`. Since the popup window
+   * is hidden, not destroyed, between shows (see `applyUiPrefs`'s own
+   * comment), that left `quotaEnabled` frozen at whatever it was when the
+   * popup first opened: a connector disabled while the popup sat hidden
+   * would keep rendering as "Not loaded yet." forever, and one enabled while
+   * hidden wouldn't appear even after its snapshot arrived. Called on every
+   * show, same rationale as `applyUiPrefs` re-fetching prefs on every show.
+   */
+  async function refreshConnectors(): Promise<void> {
+    connectors = (await window.awPopup.getConnectors()) as ConnectorMetadata[];
+    render(lastQuotas);
+    requestAnimationFrame(() => requestAnimationFrame(reportSize));
+  }
+
   async function bootstrap(): Promise<void> {
     connectors = (await window.awPopup.getConnectors()) as ConnectorMetadata[];
     bucketPrefs = (await window.awPopup.getBucketPrefs()) as Record<string, Record<string, BucketPref>>;
@@ -200,6 +206,7 @@
     if (visible) {
       startAutoRefresh();
       void applyUiPrefs();
+      void refreshConnectors();
     } else {
       stopAutoRefresh();
     }
@@ -238,10 +245,16 @@
     void window.awPopup.openSettings();
   });
 
-  // Header gear — same action as the footer button, but always visible
-  // regardless of how long the scrollable content is.
   $('#openSettingsHeader').addEventListener('click', () => {
     void window.awPopup.openSettings();
+  });
+
+  // Error sections render an "Open settings" link (renderProviderBlock);
+  // delegated because the content is replaced on every render.
+  $('#content').addEventListener('click', e => {
+    if ((e.target as HTMLElement).closest('[data-role="open-settings"]')) {
+      void window.awPopup.openSettings();
+    }
   });
 
   $('#refreshAll').addEventListener('click', async () => {

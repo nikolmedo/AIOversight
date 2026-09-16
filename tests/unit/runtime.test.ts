@@ -225,6 +225,19 @@ describe('ConnectorRuntime', () => {
       // Assert
       assert.deepEqual(openai.setSecretKeys, []);
     });
+
+    it('WARNING FIX: quotaEnabled reflects the passed-in enabled config, defaulting to false with no argument', () => {
+      // Arrange / Act -- the tray popup relies on this (not "does a snapshot
+      // exist") to distinguish "enabled, still loading" from "not enabled".
+      const withEnabled = runtime.metadata({ anthropic: { notifications: false, quota: true } });
+      const withDisabled = runtime.metadata({ anthropic: { notifications: false, quota: false } });
+      const withNoArg = runtime.metadata();
+
+      // Assert
+      assert.equal(withEnabled.find(m => m.id === 'anthropic')!.quotaEnabled, true);
+      assert.equal(withDisabled.find(m => m.id === 'anthropic')!.quotaEnabled, false);
+      assert.equal(withNoArg.find(m => m.id === 'anthropic')!.quotaEnabled, false);
+    });
   });
 
   describe('log ring buffer', () => {

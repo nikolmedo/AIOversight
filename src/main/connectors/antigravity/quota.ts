@@ -40,8 +40,21 @@ import { ConnectorContext, QuotaBucket, QuotaProvider, QuotaSnapshot } from '../
  *
  * Deliberately NOT implemented: any OS-credential-store fallback for when
  * Antigravity is closed. There is no login flow for this connector, so a
- * failure to find the server is never `needsLogin: true` — it is reported
- * plainly, telling the user the app has to be running.
+ * failure to find the server is never `needsLogin: true`; it is reported as
+ * `appNotRunning: true` (see `notFoundSnapshot`), a neutral notice rather
+ * than an error.
+ *
+ * WARNING FIX: `fetch()`'s outcome is now three-way, not two-way. A missing
+ * process (discovery ran cleanly and found nothing, and the port scan -- if
+ * it ran -- completed and found nothing either) is the only case that
+ * reports `appNotRunning: true`. A discovery MECHANISM that itself failed --
+ * `powershell.exe`/`ps`/`lsof` missing, erroring, timing out, or blocked by
+ * policy, or a port scan truncated by `MAX_PORT_RANGE_SPAN` -- is inconclusive,
+ * not evidence the app is closed, and is reported as a real `ok: false` error
+ * instead (see `runCommand`'s discriminated result and `notFoundSnapshot`).
+ * Collapsing "couldn't tell" into "confirmed closed" would silently hide a
+ * real environment problem forever: no error, no backoff, and nothing shown
+ * in the tray popup.
  */
 
 // --- Port range parsing ------------------------------------------------------
@@ -353,34 +366,87 @@ export function parseWin32ProcessJson(text: string): ProcessEntry[] {
 
 const SHELL_TIMEOUT_MS = 3000;
 
-function runCommand(file: string, args: string[]): string | null {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { execFileSync } = require('child_process') as typeof import('child_process');
-    return execFileSync(file, args, {
-      encoding: 'utf8',
-      timeout: SHELL_TIMEOUT_MS,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'ignore'],
+/**
+ * `runCommand`'s outcome, discriminating WHICH way it failed -- collapsing
+ * these into a single `null` (as the old `execFileSync`-based version did)
+ * is exactly the WARNING bug this file's header note now calls out: a
+ * missing tool is not evidence Antigravity is closed, but a non-zero exit or
+ * timeout is a real, worth-surfacing problem. `'not-found'` is ENOENT
+ * specifically (this platform's tool isn't installed, which itself doesn't
+ * mean the app is closed on every setup); anything else (non-zero exit,
+ * timeout, permission denial) is `'failed'`. Exported for test coverage.
+ */
+export type RunCommandResult =
+  | { ok: true; stdout: string }
+  | { ok: false; reason: 'not-found' | 'failed'; detail?: string };
+
+/**
+ * RESILIENCE FIX: was `execFileSync`, which blocks Node's single event loop
+ * for up to `SHELL_TIMEOUT_MS` per call -- and `fetch()` can reach this twice
+ * per poll (`listProcesses` + `listeningPortsFor`), freezing every other
+ * connector's poll and all tray/window IPC for up to ~2x that. `execFile` is
+ * the same command/timeout/stdio behavior without blocking the thread while
+ * it runs. Exported for test coverage.
+ */
+export function runCommand(file: string, args: string[]): Promise<RunCommandResult> {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { execFile } = require('child_process') as typeof import('child_process');
+  return new Promise<RunCommandResult>(resolve => {
+    execFile(file, args, { encoding: 'utf8', timeout: SHELL_TIMEOUT_MS, windowsHide: true }, (err, stdout) => {
+      if (err) {
+        const e = err as NodeJS.ErrnoException & { killed?: boolean; code?: string | number };
+        if (e.code === 'ENOENT') {
+          resolve({ ok: false, reason: 'not-found' });
+          return;
+        }
+        // Diagnostic shape only -- never the raw stdout/stderr content (see
+        // `fetch()`'s warn log, which must not dump full command output).
+        const detail = e.killed ? `timed out after ${SHELL_TIMEOUT_MS}ms` : e.code != null ? `exit code ${e.code}` : e.message;
+        resolve({ ok: false, reason: 'failed', detail });
+        return;
+      }
+      resolve({ ok: true, stdout: stdout as string });
     });
-  } catch {
-    // A missing tool, a non-zero exit, or a timeout all mean "no answer".
-    return null;
-  }
+  });
+}
+
+/** Running processes, per platform, plus whether discovery was inconclusive. */
+export interface ProcessListResult {
+  processes: ProcessEntry[];
+  /**
+   * True when EVERY invocation this platform needed to enumerate processes
+   * failed with `runCommand`'s `'failed'` reason -- as opposed to a clean run
+   * that simply found no matches, or a `'not-found'` tool (which is treated
+   * the same as "ran cleanly, found nothing" -- see `RunCommandResult`'s doc
+   * comment). Threaded up to `fetch()` so a blocked/erroring discovery
+   * mechanism is reported as a real error instead of being folded into
+   * `appNotRunning`.
+   */
+  inconclusive: boolean;
+  /** Diagnostic detail for the `inconclusive` case (which command failed and
+   * how) -- never raw stdout/stderr content. Used by `fetch()`'s warn log. */
+  failureDetail?: string;
 }
 
 /** Running processes, per platform. Returns `[]` when nothing can be listed. */
-function listProcesses(): ProcessEntry[] {
+async function listProcesses(): Promise<ProcessListResult> {
   if (process.platform === 'win32') {
     // `tasklist` alone does not report command lines, so CIM is used. A
     // single call returns the whole command line, which is all we need.
-    const out = runCommand('powershell.exe', [
+    const res = await runCommand('powershell.exe', [
       '-NoProfile',
       '-Command',
       "Get-CimInstance Win32_Process -Filter \"Name like 'language_server%'\" | " +
         'Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress',
     ]);
-    return out ? parseWin32ProcessJson(out) : [];
+    if (!res.ok) {
+      return {
+        processes: [],
+        inconclusive: res.reason === 'failed',
+        failureDetail: res.reason === 'failed' ? `powershell.exe Get-CimInstance ${res.detail ?? 'failed'}` : undefined,
+      };
+    }
+    return { processes: parseWin32ProcessJson(res.stdout), inconclusive: false };
   }
 
   if (process.platform === 'linux') {
@@ -390,8 +456,11 @@ function listProcesses(): ProcessEntry[] {
     let pids: string[];
     try {
       pids = fs.readdirSync('/proc').filter(n => /^\d+$/.test(n));
-    } catch {
-      return [];
+    } catch (err) {
+      // No /proc to read (e.g. a locked-down container) is a genuinely
+      // inconclusive discovery, not evidence the app is closed.
+      const detail = err instanceof Error ? err.message : String(err);
+      return { processes: [], inconclusive: true, failureDetail: `/proc read failed: ${detail}` };
     }
     for (const pid of pids) {
       try {
@@ -400,40 +469,55 @@ function listProcesses(): ProcessEntry[] {
         if (!raw) continue;
         out.push({ pid: Number(pid), cmdline: raw.replace(/\0/g, ' ').trim() });
       } catch {
-        // Process exited between readdir and read, or is not ours to read.
+        // Process exited between readdir and read, or is not ours to read --
+        // per-process noise, doesn't invalidate the whole scan.
       }
     }
-    return out;
+    return { processes: out, inconclusive: false };
   }
 
-  const out = runCommand('ps', ['-Ao', 'pid=,command=']);
-  if (!out) return [];
+  const res = await runCommand('ps', ['-Ao', 'pid=,command=']);
+  if (!res.ok) {
+    return {
+      processes: [],
+      inconclusive: res.reason === 'failed',
+      failureDetail: res.reason === 'failed' ? `ps ${res.detail ?? 'failed'}` : undefined,
+    };
+  }
   const entries: ProcessEntry[] = [];
-  for (const line of out.split(/\r?\n/)) {
+  for (const line of res.stdout.split(/\r?\n/)) {
     const m = line.trim().match(/^(\d+)\s+(.*)$/);
     if (!m) continue;
     entries.push({ pid: Number(m[1]), cmdline: m[2] });
   }
-  return entries;
+  return { processes: entries, inconclusive: false };
+}
+
+export interface ListeningPortsResult {
+  ports: number[];
+  inconclusive: boolean;
 }
 
 /** Listening ports for a pid, used when the command line carries no port. */
-function listeningPortsFor(pid: number): number[] {
+async function listeningPortsFor(pid: number): Promise<ListeningPortsResult> {
   if (process.platform === 'win32') {
-    const out = runCommand('netstat', ['-ano', '-p', 'TCP']);
-    return out ? parseNetstatListeningPorts(out, pid) : [];
+    const res = await runCommand('netstat', ['-ano', '-p', 'TCP']);
+    if (!res.ok) return { ports: [], inconclusive: res.reason === 'failed' };
+    return { ports: parseNetstatListeningPorts(res.stdout, pid), inconclusive: false };
   }
-  const out = runCommand('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', String(pid)]);
-  return out ? parseLsofListeningPorts(out) : [];
+  const res = await runCommand('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', String(pid)]);
+  if (!res.ok) return { ports: [], inconclusive: res.reason === 'failed' };
+  return { ports: parseLsofListeningPorts(res.stdout), inconclusive: false };
 }
 
 /**
- * Finds the running Antigravity language server. `listProcesses` is
- * injectable so tests never spawn a real process. Exported for test coverage.
+ * Finds the running Antigravity language server. `processes` is an explicit
+ * list (defaulting to none) rather than a `listProcesses()` call, so tests
+ * never spawn a real process; production callers (`fetch()`) await
+ * `listProcesses()` themselves first, since they also need its `inconclusive`
+ * flag. Exported for test coverage.
  */
-export function discoverLanguageServer(
-  processes: ProcessEntry[] = listProcesses(),
-): LanguageServerInfo | null {
+export function discoverLanguageServer(processes: ProcessEntry[] = []): LanguageServerInfo | null {
   for (const entry of processes) {
     const info = parseLanguageServerCmdline(entry);
     if (info) return info;
@@ -1011,9 +1095,84 @@ export async function queryQuotaDataWithBudget(
 
 // --- Provider ------------------------------------------------------------------
 
+/** Notice shown while Antigravity is closed (`appNotRunning`). */
+export const APP_NOT_RUNNING_NOTICE = "Antigravity isn't running. Open it to see its quota.";
+
+/**
+ * The snapshot for "neither process discovery nor the port scan reached a
+ * server". Three-way outcome (see the file header's WARNING FIX note):
+ *
+ * 1. A process was found but never answered -- a real error.
+ * 2. Discovery was INCONCLUSIVE -- the process-listing mechanism itself
+ *    failed (`inconclusive: true`), or the port scan was truncated
+ *    (`portInfo`'s span was capped) -- also a real error, never
+ *    `appNotRunning`: neither case is evidence the app is closed, and both
+ *    are worth surfacing (they arm backoff and show in the tray popup)
+ *    rather than being silently misdiagnosed as "just open the app" forever.
+ * 3. Discovery genuinely ran clean and found nothing, and the port scan (if
+ *    it ran) completed and found nothing either -- the one case that's
+ *    `appNotRunning: true`.
+ *
+ * Exported for test coverage.
+ */
+export function notFoundSnapshot(
+  discovered: LanguageServerInfo | null,
+  portInfo: ParsedPortRange,
+  fetchedAt: number,
+  inconclusive = false,
+): QuotaSnapshot {
+  if (discovered) {
+    return {
+      ok: false,
+      fetchedAt,
+      error:
+        `Found Antigravity's language server (pid ${discovered.pid}), but it did not answer any quota ` +
+        'request. Restart Antigravity, or set the real port in "Fallback port range to scan".',
+    };
+  }
+
+  if (inconclusive) {
+    return {
+      ok: false,
+      fetchedAt,
+      error:
+        "Couldn't check whether Antigravity is running (process listing failed). This isn't evidence the app " +
+        'is closed -- check that PowerShell/ps/lsof is installed and not blocked by policy, then try again.',
+    };
+  }
+
+  // WARNING FIX: previously silent -- if the configured range's raw span was
+  // wider than what actually got scanned (only possible via the generous
+  // MAX_PORT_RANGE_SPAN ceiling, since realistic ranges scan in full), say so
+  // explicitly rather than letting the user believe Antigravity truly isn't
+  // running. A truncated scan is inconclusive too -- Antigravity could be
+  // running on an unscanned port within the user's own widened range -- so
+  // this is a real error, not `appNotRunning`.
+  if (portInfo.requestedSpan > portInfo.ports.length) {
+    return {
+      ok: false,
+      fetchedAt,
+      error:
+        "Couldn't confirm Antigravity is running: the port scan was truncated. Your configured port range " +
+        `requested ${portInfo.requestedSpan} ports; only the first ${portInfo.ports.length} were scanned.`,
+    };
+  }
+
+  return {
+    ok: false,
+    fetchedAt,
+    error: APP_NOT_RUNNING_NOTICE,
+    appNotRunning: true,
+  };
+}
+
 class AntigravityQuotaProvider implements QuotaProvider {
   private cfg: Record<string, unknown> = {};
-  constructor(_ctx: ConnectorContext) {}
+  private readonly log: ConnectorContext['log'];
+
+  constructor(ctx: ConnectorContext) {
+    this.log = ctx.log;
+  }
 
   setConfig(cfg: Record<string, unknown>): void {
     this.cfg = cfg;
@@ -1028,7 +1187,11 @@ class AntigravityQuotaProvider implements QuotaProvider {
     info: LanguageServerInfo,
     fetchedAt: number,
   ): Promise<QuotaSnapshot | null> {
-    const extraPorts = info.extensionServerPort == null ? listeningPortsFor(info.pid) : [];
+    // A failed listening-ports lookup here just means fewer candidate ports
+    // to try -- the process was already found, so the failure path this
+    // falls into is `notFoundSnapshot`'s "found but never answered" branch,
+    // which is already a real error regardless (never `appNotRunning`).
+    const extraPorts = info.extensionServerPort == null ? (await listeningPortsFor(info.pid)).ports : [];
     const bases = candidateBaseUrls(info, extraPorts);
     if (bases.length === 0) return null;
 
@@ -1068,7 +1231,8 @@ class AntigravityQuotaProvider implements QuotaProvider {
 
     // Process discovery first (file-header note 1) — the port is ephemeral,
     // so the scan below is only a fallback.
-    const discovered = discoverLanguageServer();
+    const processResult = await listProcesses();
+    const discovered = discoverLanguageServer(processResult.processes);
     if (discovered) {
       const viaProcess = await this.fetchFromDiscovered(discovered, fetchedAt);
       if (viaProcess) return viaProcess;
@@ -1078,23 +1242,16 @@ class AntigravityQuotaProvider implements QuotaProvider {
     const match = await scanForLanguageServer(portInfo.ports);
 
     if (match == null) {
-      // WARNING FIX: previously silent -- if the configured range's raw span
-      // was wider than what actually got scanned (only possible now via the
-      // generous MAX_PORT_RANGE_SPAN ceiling, since realistic ranges scan in
-      // full), say so explicitly rather than letting the user believe
-      // Antigravity truly isn't running.
-      const truncationNote =
-        portInfo.requestedSpan > portInfo.ports.length
-          ? ` (your configured range requested ${portInfo.requestedSpan} ports; only the first ` +
-            `${portInfo.ports.length} were scanned -- narrow the range if the real port falls outside that.)`
-          : '';
-      return {
-        ok: false,
-        fetchedAt,
-        error:
-          'Antigravity does not appear to be running. Its quota is only readable from the local language ' +
-          `server that the app starts, so open Antigravity and try again.${truncationNote}`,
-      };
+      // A failed/blocked discovery mechanism is a real, worth-fixing problem
+      // -- surfaced at `warn` (not `debug`) so it doesn't silently disappear
+      // at default log verbosity, unlike the genuinely-closed-app case.
+      if (processResult.inconclusive) {
+        this.log(
+          'warn',
+          `[antigravity] process discovery failed -- cannot confirm whether Antigravity is running: ${processResult.failureDetail ?? 'unknown reason'}`,
+        );
+      }
+      return notFoundSnapshot(discovered, portInfo, fetchedAt, processResult.inconclusive);
     }
 
     const { port, csrfToken } = match;

@@ -124,6 +124,46 @@ function formatCountdown(msRemaining: number): string {
   return '<1m';
 }
 
+/** e.g. "resets in 3h 25m", "resets now" for <=0. */
+function formatResetsIn(msRemaining: number): string {
+  return msRemaining <= 0 ? 'resets now' : `resets in ${formatCountdown(msRemaining)}`;
+}
+
+/** Coarse past-time label for event lists: "just now", "12m ago", "3h ago", "2d ago". */
+function formatRelativeTime(ts: number, now: number): string {
+  const diff = now - ts;
+  if (diff < 60_000) return 'just now';
+  const m = Math.floor(diff / 60_000);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+type ConnectorStatus = 'off' | 'active' | 'error' | 'needs-login' | 'app-not-running';
+
+/**
+ * One status per connector for the Integrations list. A quota error only
+ * counts while quota is enabled — a stale failed snapshot from before the
+ * user switched quota off must not keep the row red.
+ */
+function connectorStatusFor(
+  enabled: { notifications: boolean; quota: boolean } | undefined,
+  snap: { ok: boolean; needsLogin?: boolean; appNotRunning?: boolean } | undefined,
+): ConnectorStatus {
+  if (!enabled || (!enabled.notifications && !enabled.quota)) return 'off';
+  if (enabled.quota && snap && !snap.ok) {
+    if (snap.appNotRunning) return 'app-not-running';
+    return snap.needsLogin ? 'needs-login' : 'error';
+  }
+  return 'active';
+}
+
+/** A snapshot that stands for "the connector's desktop app is closed" (see `appNotRunning` in types.ts). */
+function isAppNotRunning(snap: QuotaSnapshot | undefined): boolean {
+  return !!snap && !snap.ok && !!snap.appNotRunning;
+}
+
 function formatExactReset(ts: number, fmt: '12h' | '24h'): string {
   const d = new Date(ts);
   return d.toLocaleTimeString(undefined, {

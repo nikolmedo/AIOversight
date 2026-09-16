@@ -52,8 +52,8 @@ function resolvedHourFormat(): '12h' | '24h' {
 
 function resetChipLabel(resetsAt: number, mode: 'countdown' | 'exact', now: number): string {
   return mode === 'exact'
-    ? formatExactReset(resetsAt, resolvedHourFormat())
-    : formatCountdown(resetsAt - now);
+    ? `resets ${formatExactReset(resetsAt, resolvedHourFormat())}`
+    : formatResetsIn(resetsAt - now);
 }
 
 /**
@@ -609,53 +609,147 @@ function renderTotalSpendCard(
 }
 
 /**
- * Per-provider quota block (name / vendor / buckets). Replaces tray-popup.ts's
- * old `renderConnectorBlock` + `renderBuckets` sort helper.
+ * Compact spend summary for the settings Overview: the three periods side by
+ * side (each one also the period switch) plus the metric switch and a
+ * one-line per-provider breakdown of the active period. Reuses
+ * `.spend-switch` + `data-spend-*` so `bindTotalSpendCard` drives it too.
+ * With no spend data anywhere it collapses to a single muted line rather
+ * than an empty chart.
+ */
+function renderSpendSummary(
+  snapshots: Record<string, QuotaSnapshot>,
+  connectors: ConnectorMetadata[],
+  state: SpendCardState = spendCardState,
+): string {
+  const periods: Array<{ value: SpendPeriod; label: string }> = [
+    { value: 'today', label: 'Today' },
+    { value: 'yesterday', label: 'Yesterday' },
+    { value: 'last30d', label: '30 days' },
+  ];
+  const aggregates = periods.map(p => aggregateSpendForPeriod(snapshots, connectors, p.value));
+  // A connector can emit spend[] whose tiles are all null (nothing measured);
+  // three "No data" cells say less than one line.
+  if (!hasAnySpendData(snapshots) || aggregates.every(a => a.byConnector.length === 0)) {
+    return '<p class="spend-empty" data-role="total-spend-card">No spend estimates yet. They appear once an integration reports local usage.</p>';
+  }
+
+  const cells = periods
+    .map((p, i) => {
+      const agg = aggregates[i];
+      const value = formatSpendHeadline(state.mode, agg.totalCostCents, agg.totalTokens);
+      const active = p.value === state.period;
+      return `<button type="button" class="spend-switch spend-period${active ? ' active' : ''}" data-spend-period="${p.value}" aria-pressed="${active}">
+          <span class="spend-period-label">${escapeHtml(p.label)}</span>
+          <span class="spend-period-value num">${escapeHtml(value)}</span>
+        </button>`;
+    })
+    .join('');
+
+  const unit: QuotaUnit = state.mode === 'tokens' ? 'tokens' : 'usd';
+  const breakdown = aggregateSpendForPeriod(snapshots, connectors, state.period)
+    .byConnector.map(e => {
+      const v = state.mode === 'tokens' ? e.tokens : e.costCents;
+      return `<span class="spend-breakdown-item"><span class="spend-legend-dot" style="--dot-color:${connectorColor(e.id, connectors.find(c => c.id === e.id)?.brandColor)}"></span>${escapeHtml(e.name)} <span class="num">${escapeHtml(v != null ? formatQuotaValue(v, unit) : 'No data')}</span></span>`;
+    })
+    .join('');
+
+  return `
+    <section class="spend-summary" data-role="total-spend-card">
+      <div class="spend-summary-head">
+        <div>
+          <h3 class="block-title">Estimated spend</h3>
+          <p class="block-sub">At public API rates, not your bill on a flat-rate plan</p>
+        </div>
+        ${renderSpendModeSwitcher(state.mode)}
+      </div>
+      <div class="spend-periods">${cells}</div>
+      ${breakdown ? `<div class="spend-breakdown">${breakdown}</div>` : ''}
+    </section>
+  `;
+}
+
+interface TrayPopupPlan {
+  /** Connectors to render, in registry order. */
+  visible: ConnectorMetadata[];
+  /** Text for the empty state when `visible` is empty, else `null`. */
+  emptyMessage: string | null;
+}
+
+/**
+ * Which quota connectors the tray popup lists. "Enabled" is read from
+ * `ConnectorMetadata.quotaEnabled` (the persisted user setting) rather than
+ * "does a snapshot already exist in `quotas`" — enabling quota kicks off its
+ * first fetch asynchronously, which can take a while, so a snapshot-presence
+ * check would wrongly fold a just-enabled, still-loading connector into the
+ * "nothing enabled" empty state instead of `renderProviderBlock`'s "Not
+ * loaded yet." row. A connector whose desktop app is closed (`appNotRunning`)
+ * is left out too, since the popup is a glance at live numbers and the
+ * settings window already explains that state.
+ */
+function planTrayPopup(connectors: ConnectorMetadata[], quotas: Record<string, QuotaSnapshot>): TrayPopupPlan {
+  if (connectors.length === 0) return { visible: [], emptyMessage: 'No integrations configured.' };
+  const enabled = connectors.filter(def => def.quotaEnabled);
+  const visible = enabled.filter(def => !isAppNotRunning(quotas[def.id]));
+  if (visible.length > 0) return { visible, emptyMessage: null };
+  if (enabled.length === 0) {
+    return { visible, emptyMessage: 'No quota integrations enabled. Open settings to add one.' };
+  }
+  const names = enabled.map(def => def.name);
+  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  const verb = names.length === 1 ? "isn't" : "aren't";
+  return { visible, emptyMessage: `Nothing to show. ${list} ${verb} running.` };
+}
+
+const ICON_INFO =
+  '<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 7.25V11M8 5v.01"/></svg>';
+
+/**
+ * Neutral, non-error notice for an `appNotRunning` snapshot (settings
+ * window). `actionsHtml` is appended after the text, e.g. a Configure link.
+ */
+function renderAppNotRunningNotice(message: string, actionsHtml = ''): string {
+  return `
+    <div class="inline-notice" data-role="app-not-running">
+      ${ICON_INFO}
+      <span class="inline-notice-text" title="${escapeHtml(message)}">${escapeHtml(message)}</span>
+      ${actionsHtml}
+    </div>`;
+}
+
+/**
+ * Per-provider quota section for the tray popup: a flat, borderless section
+ * (name + plan tag, then meter rows). Errors collapse to one line with a
+ * shortcut to the settings window, where sign-in and configuration live.
  */
 function renderProviderBlock(
   def: ConnectorMetadata,
   snap: QuotaSnapshot | undefined,
   bucketPrefs?: Record<string, BucketPref>,
 ): string {
+  const tag = snap?.ok && snap.membershipType ? `<span class="tag">${escapeHtml(snap.membershipType)}</span>` : '';
+  const head = `<div class="provider-head"><span class="provider-name">${escapeHtml(def.name)}</span>${tag}</div>`;
+
   if (!snap) {
-    return `
-      <section class="quota-block">
-        <div class="quota-block-header">
-          <div class="block-name">${escapeHtml(def.name)}</div>
-          <div class="block-vendor">${escapeHtml(def.vendor)}</div>
-        </div>
-        <p class="empty small">Not loaded yet.</p>
-      </section>
-    `;
+    return `<section class="provider">${head}<p class="provider-note">Not loaded yet.</p></section>`;
   }
   if (!snap.ok) {
     return `
-      <section class="quota-block">
-        <div class="quota-block-header">
-          <div class="block-name">${escapeHtml(def.name)}</div>
-          <div class="block-vendor">${escapeHtml(def.vendor)}</div>
+      <section class="provider">
+        ${head}
+        <div class="provider-error">
+          <span class="provider-error-text" title="${escapeHtml(snap.error)}">${escapeHtml(snap.error)}</span>
+          <button type="button" class="link-btn" data-role="open-settings">Open settings</button>
         </div>
-        <div class="quota-error">${escapeHtml(snap.error)}</div>
-        <p class="quota-footnote">Last attempt: ${formatDateTime(snap.fetchedAt)}</p>
       </section>
     `;
   }
 
   const bucketsHtml =
-    snap.buckets.length === 0
-      ? '<p class="empty small">No usage buckets yet.</p>'
-      : renderMeterGroup(snap.buckets, bucketPrefs, { remainingWord: 'left', connectorId: def.id }) ||
-        '<p class="empty small">No usage buckets yet.</p>';
+    (snap.buckets.length > 0 &&
+      renderMeterGroup(snap.buckets, bucketPrefs, { remainingWord: 'left', connectorId: def.id })) ||
+    '<p class="provider-note">No usage buckets yet.</p>';
 
-  return `
-    <section class="quota-block">
-      <div class="quota-block-header">
-        <div class="block-name">${escapeHtml(def.name)}</div>
-        <div class="block-vendor">${snap.membershipType ? escapeHtml(snap.membershipType) : escapeHtml(def.vendor)}</div>
-      </div>
-      ${bucketsHtml}
-    </section>
-  `;
+  return `<section class="provider">${head}${bucketsHtml}</section>`;
 }
 
 // ---------------------------------------------------------------------------

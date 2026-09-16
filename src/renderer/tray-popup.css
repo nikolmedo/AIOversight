@@ -1,387 +1,227 @@
 @import url('tokens.css');
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
 
 /* =========================================================
-   AI Oversight — Tray Popup — Clean Modern
+   AI Oversight — Tray popup
+   One flat surface: sections separated by hairlines, no nested cards.
    ========================================================= */
 
-:root {
-  /* Tray-popup-specific tokens. Shared tokens (--bg, --surface, --accent,
-     --green/amber/red, --font, ...) live in tokens.css. */
-  --r:        8px;
-  --r-sm:     6px;
-}
-
-/* ── Reset ──────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-/* Global guarantee that the `hidden` attribute always wins over any
-   class's `display` declaration on the same element, regardless of
-   selector specificity/source order. Without this, any class that sets
-   `display` (e.g. `.row-menu { display: flex }`) can silently defeat
-   `el.hidden = true/false` toggled from JS — this exact bug made the row
-   context menu permanently stuck visible (see .row-menu[hidden] below for
-   the incident) and the same latent trap applies to `.row-menu-item`'s
-   `display: block`. */
+/* The `hidden` attribute must beat any class that sets `display` — without
+   this, `.row-menu { display: flex }` once left the row menu stuck visible. */
 [hidden] { display: none !important; }
 
-/* No background on `html` — when the root has none, the BODY's background
-   propagates to the canvas (CSS spec), so `body.popup-transparent`'s
-   translucent background can actually reach the window surface. An opaque
-   `html` background here would paint over the native acrylic/vibrancy layer
-   and make the "Increase transparency" setting visually a no-op. */
+/* No background on `html`: with none, the BODY background propagates to the
+   canvas, so `body.popup-transparent`'s translucent background can reach the
+   native acrylic/vibrancy layer. */
 html, body {
   color: var(--text);
   font-family: var(--font);
-  font-size: 12.5px;
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.4;
   overflow: hidden;
   user-select: none;
   -webkit-font-smoothing: antialiased;
 }
 body {
-  background: var(--bg);
+  background: var(--surface);
   display: flex; flex-direction: column;
-  /* MUST be a fixed `height`, not `min-height`. With `min-height: 100vh`
-     the body silently GROWS past the viewport once content exceeds it, so
-     `main { flex: 1 }` is never smaller than its content, its
-     `overflow-y: auto` never activates, and everything past the window's
-     height clamp (POPUP_MAX_HEIGHT) is clipped by `html { overflow:
-     hidden }` with no way to scroll to it. Locking the body to the
-     viewport is what makes `main` the real scroll container. */
+  /* Fixed `height`, not `min-height`: a growing body would stop `main` from
+     ever becoming the scroll container, and content past the window's
+     height clamp (POPUP_MAX_HEIGHT) would be clipped and unreachable. */
   height: 100vh;
   border: 1px solid var(--border);
-  border-radius: var(--r);
+  border-radius: var(--radius);
 }
+
+button { font: inherit; color: inherit; }
+svg { flex-shrink: 0; }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: var(--radius-sm); }
 
 /* ── Header ─────────────────────────────────────────────── */
-.brand { display: flex; align-items: center; gap: 9px; }
-
 .popup-header {
-  display: flex; align-items: center;
-  gap: 10px; padding: 10px 12px;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 8px 8px 12px;
   border-bottom: 1px solid var(--border);
-  background: var(--surface);
   flex-shrink: 0;
-  border-radius: var(--r) var(--r) 0 0;
 }
-
-.logo {
-  width: 26px; height: 26px; flex-shrink: 0; border-radius: 7px;
-  object-fit: cover;
-}
-
-h1 { font-size: 12.5px; font-weight: 700; }
-.tagline { font-size: 10.5px; color: var(--text-2); }
-
-/* Header settings gear — always reachable even if the scrollable content
-   below is long (the footer's Settings button can sit below the fold). */
+.logo { width: 18px; height: 18px; border-radius: 4px; object-fit: cover; }
+h1 { font-size: 13px; font-weight: 600; }
 .icon-btn {
-  margin-left: auto; flex-shrink: 0;
-  padding: 4px 8px; font-size: 15px; line-height: 1;
-  background: transparent; border-color: transparent; color: var(--text-2);
+  margin-left: auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text-2); cursor: pointer;
 }
-.icon-btn:hover { color: var(--text); background: var(--surface2); border-color: var(--border); }
+.icon-btn:hover { background: var(--surface-2); color: var(--text); }
+.icon-btn svg, .btn svg {
+  width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.5;
+  stroke-linecap: round; stroke-linejoin: round;
+}
 
 /* ── Buttons ────────────────────────────────────────────── */
-button {
-  font: inherit; cursor: pointer; border-radius: var(--r-sm);
-  border: 1px solid var(--border-2); background: var(--surface2); color: var(--text);
-  padding: 5px 11px; font-weight: 500; font-size: 12px;
-  transition: background 100ms, border-color 100ms, transform 70ms;
-  white-space: nowrap;
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 28px; padding: 0 10px;
+  border: 1px solid transparent; border-radius: var(--radius-sm);
+  font-size: 12px; font-weight: 500; white-space: nowrap; cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-button:hover { background: var(--border); border-color: var(--border-2); }
-button:active { transform: scale(0.96); }
-button:disabled { opacity: 0.45; pointer-events: none; }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn-ghost { background: transparent; color: var(--text-2); }
+.btn-ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.btn-secondary { background: var(--surface-2); border-color: var(--border); color: var(--text); }
+.btn-secondary:hover:not(:disabled) { border-color: var(--border-strong); }
+.link-btn {
+  border: 0; background: transparent; padding: 0; min-height: 24px;
+  color: var(--accent); font-size: 12px; font-weight: 500; cursor: pointer; flex-shrink: 0;
+}
+.link-btn:hover { text-decoration: underline; }
 
-button.primary {
-  background: var(--accent); border-color: var(--accent); color: #fff;
-  font-weight: 600;
-}
-button.primary:hover { filter: brightness(1.1); }
-button.small { padding: 4px 10px; font-size: 11px; }
-
-/* ── Main content ───────────────────────────────────────── */
-/* This window is height-clamped (POPUP_MAX_HEIGHT in tray-popup.ts) and
-   non-resizable. `main` used to be `overflow: hidden` with no scroll
-   fallback — once total content exceeded the clamp, everything past it
-   (including the footer's Settings button) was silently, invisibly cut
-   off with no way to reach it. `overflow-y: auto` here is the actual fix;
-   `body`/`html` stay `overflow: hidden` so only this region scrolls. */
-main {
-  flex: 1; overflow-y: auto; overflow-x: hidden;
-  padding: 10px;
-  display: flex; flex-direction: column; gap: 8px;
-  background: var(--bg);
-}
-/* Slim theme-matched scrollbar — the default Chromium bar is a wide light
-   track that clashes with the dark popup. */
-main::-webkit-scrollbar { width: 7px; }
+/* ── Scroll area ────────────────────────────────────────── */
+main { flex: 1; overflow-y: auto; overflow-x: hidden; }
+main::-webkit-scrollbar { width: 8px; }
 main::-webkit-scrollbar-track { background: transparent; }
-main::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 4px; }
-main::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+main::-webkit-scrollbar-thumb {
+  background: var(--border-strong); border-radius: 999px;
+  border: 2px solid transparent; background-clip: content-box;
+}
 
-/* ── Total Spend card (Phase 2b) ───────────────────────────
-   Lives INSIDE `main#scroller` (first child, above #content) so it scrolls
-   away with the provider blocks instead of permanently pinning ~half the
-   viewport — openusage scrolls everything as one column. `:empty` collapses
-   it when hidden (showSpendCard off / no spend data yet). */
 #totalSpendCard:empty { display: none; }
+#totalSpendCard { border-bottom: 1px solid var(--border); }
 
-/* Provider blocks column inside the scroller (was `main` itself before the
-   spend card moved into the scroll flow). */
-#content { display: flex; flex-direction: column; gap: 8px; }
-
-.spend-card {
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  padding: 10px 12px;
+/* ── Provider sections ──────────────────────────────────── */
+.provider { padding: 10px 12px 12px; }
+.provider + .provider { border-top: 1px solid var(--border); }
+.provider-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; min-width: 0; }
+.provider-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tag {
+  display: inline-flex; align-items: center; height: 18px; padding: 0 7px;
+  border-radius: 999px; background: var(--surface-2); color: var(--text-2);
+  font-size: 11px; font-weight: 500; white-space: nowrap;
 }
-.spend-card-header {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 6px; flex-wrap: wrap; margin-bottom: 10px;
+.provider-note { font-size: 12px; color: var(--text-2); }
+.provider-error { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.provider-error-text {
+  flex: 1; min-width: 0; font-size: 12px; color: var(--danger);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.spend-card-title { font-size: 11.5px; font-weight: 600; }
-.spend-card-subtitle { font-size: 9.5px; color: var(--text-3); margin-top: 2px; }
 
+/* ── Meter rows (shared renderMeterRow markup) ──────────── */
+.meter-row + .meter-row { margin-top: 10px; }
+.meter-row.no-data { opacity: .75; }
+.meter-row-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.meter-row-title { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.meter-row-side { display: flex; align-items: baseline; gap: 8px; flex-shrink: 0; }
+.meter-pct { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.meter-pct.warn { color: var(--warn); }
+.meter-pct.critical { color: var(--danger); }
+.meter-bar { position: relative; height: 4px; border-radius: 999px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border); }
+.meter-bar-fill { height: 100%; width: var(--fill, 0%); border-radius: 999px; background: var(--ok); }
+.meter-bar-fill.warn { background: var(--warn); }
+.meter-bar-fill.critical { background: var(--danger); }
+.pace-tick {
+  position: absolute; top: -2px; bottom: -2px; left: var(--tick, 0%);
+  width: 2px; border-radius: 1px; background: var(--text-2); pointer-events: none;
+}
+.meter-row-stats { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+.meter-row-value { font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.meter-note { font-size: 11px; color: var(--text-2); margin-top: 3px; }
+.reset-chip {
+  border: 0; background: transparent; padding: 0; min-height: 16px; position: relative;
+  font-size: 11px; color: var(--text-2); cursor: pointer; font-variant-numeric: tabular-nums;
+}
+.reset-chip:hover { color: var(--text); text-decoration: underline; }
+/* Invisible 24px-tall hit area without growing the row. */
+.reset-chip::after { content: ""; position: absolute; inset: -4px 0; }
+
+.meter-extras { margin-top: 10px; padding-top: 6px; border-top: 1px solid var(--border); }
+.meter-extras-heading {
+  font-size: 11px; font-weight: 600; color: var(--text-2);
+  text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px;
+}
+.meter-row-compact summary {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  min-height: 24px; list-style: none; cursor: pointer;
+}
+.meter-row-compact summary::-webkit-details-marker { display: none; }
+.meter-row-compact summary .meter-pct { font-weight: 500; color: var(--text-2); }
+.meter-row-compact summary:hover .meter-row-title { color: var(--accent); }
+.meter-row-compact-body { padding: 2px 0 6px; }
+/* The summary already shows label + value; keep only a header reset chip. */
+.meter-row-compact-body .meter-row-header { justify-content: flex-end; margin-bottom: 4px; }
+.meter-row-compact-body .meter-row-header > .meter-row-title,
+.meter-row-compact-body .meter-row-side > .meter-pct { display: none; }
+.meter-row-compact-body .meter-row-header:not(:has(.reset-chip)) { display: none; }
+.meter-row-compact + .meter-row-compact { margin-top: 0; }
+
+.empty { padding: 20px 16px; text-align: center; font-size: 12px; color: var(--text-2); }
+
+/* ── Total Spend (shared renderTotalSpendCard markup, flattened) ── */
+.spend-card { padding: 10px 12px 12px; }
+.spend-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.spend-card-title { font-size: 13px; font-weight: 600; }
+.spend-card-subtitle { font-size: 11px; color: var(--text-2); }
 .spend-card-body { display: flex; align-items: center; gap: 12px; }
-.spend-donut-wrap { flex-shrink: 0; }
-.spend-donut { display: block; width: 52px; height: 52px; }
-.spend-donut-empty {
-  width: 52px; height: 52px; border-radius: 50%;
-  border: 8px solid var(--border);
-  display: flex; align-items: center; justify-content: center;
-  color: var(--text-3); font-size: 8px; text-align: center;
-}
-
-.spend-card-summary { display: flex; flex-direction: column; gap: 7px; min-width: 0; flex: 1; }
-.spend-headline {
-  font-size: 16px; font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-
-.spend-switch-group { display: inline-flex; gap: 3px; flex-wrap: wrap; }
+.spend-donut { display: block; width: 44px; height: 44px; }
+.spend-donut-empty { font-size: 11px; color: var(--text-2); }
+.spend-card-summary { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+.spend-headline { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.spend-switch-group { display: inline-flex; padding: 2px; gap: 2px; background: var(--surface-2); border-radius: var(--radius-sm); align-self: flex-start; }
 .spend-switch {
-  padding: 3px 8px; font-size: 10px; font-weight: 500;
-  background: var(--surface2); border: 1px solid var(--border);
-  color: var(--text-2); border-radius: 999px;
+  height: 22px; padding: 0 7px; border: 0; border-radius: 4px; background: transparent;
+  color: var(--text-2); font-size: 11px; font-weight: 500; cursor: pointer;
 }
-.spend-switch:hover { background: var(--border); color: var(--text); }
-.spend-switch.active {
-  background: var(--accent-bg); border-color: var(--accent);
-  color: var(--accent);
-}
-
-.spend-legend {
-  list-style: none; margin-top: 9px; padding-top: 8px;
-  border-top: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 4px;
-}
-.spend-legend-row { display: flex; align-items: center; gap: 6px; font-size: 10.5px; }
-.spend-legend-dot {
-  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
-  background: var(--dot-color, var(--accent));
-}
-.spend-legend-name { color: var(--text); flex: 1; min-width: 0; }
+.spend-switch:hover { color: var(--text); }
+.spend-switch.active { background: var(--surface); color: var(--text); box-shadow: 0 0 0 1px var(--border); }
+.spend-legend { list-style: none; margin-top: 8px; display: flex; flex-direction: column; gap: 2px; }
+.spend-legend-row { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.spend-legend-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dot-color, var(--accent)); flex-shrink: 0; }
+.spend-legend-name { flex: 1; min-width: 0; }
 .spend-legend-value { color: var(--text-2); font-variant-numeric: tabular-nums; }
 
 /* ── Footer ─────────────────────────────────────────────── */
 .popup-footer {
-  padding: 8px 10px 10px;
-  border-top: 1px solid var(--border);
-  background: var(--surface);
-  flex-shrink: 0;
-  border-radius: 0 0 var(--r) var(--r);
-}
-.footer-row {
   display: flex; align-items: center; gap: 8px;
-}
-#refreshAll { flex-shrink: 0; }
-.refresh-timer {
-  flex: 1; text-align: center;
-  font-size: 10px; color: var(--text-3);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-
-/* ── Connector block ────────────────────────────────────── */
-.quota-block {
-  display: flex; flex-direction: column; gap: 6px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
-  padding: 10px 12px;
-}
-
-.quota-block-header {
-  display: flex; align-items: baseline; justify-content: space-between; gap: 6px;
-  margin-bottom: 4px;
-}
-.block-name { font-weight: 600; font-size: 12.5px; }
-.block-vendor { font-size: 10px; color: var(--text-2); }
-
-/* ── Meter rows (renderMeterRow) ───────────────────────────
-   Flat rows inside the provider card (openusage-style) — no nested
-   card-in-card borders; hairline separators between rows instead. */
-.meter-row {
-  padding: 8px 1px;
-}
-.meter-row + .meter-row { border-top: 1px solid var(--border); }
-.meter-row.no-data { opacity: 0.7; }
-.meter-row-header {
-  display: flex; justify-content: space-between; align-items: center;
-  gap: 6px; margin-bottom: 6px;
-}
-.meter-row-title { font-size: 12px; font-weight: 600; }
-/* Right side of the header: optional inline reset chip + percent. */
-.meter-row-side { display: flex; align-items: center; gap: 7px; flex-shrink: 0; }
-.meter-pct {
-  font-size: 12px; font-weight: 600; color: var(--text-2);
-  font-variant-numeric: tabular-nums;
-}
-.meter-pct.warn     { color: var(--amber); }
-.meter-pct.critical { color: var(--red); }
-
-/* Smooth progress bar */
-.meter-bar {
-  position: relative;
-  height: 5px; border-radius: 999px;
-  background: var(--border);
-}
-.meter-bar-fill {
-  height: 100%; border-radius: 999px; width: 0;
-  background: var(--accent);
-  animation: barFill 450ms ease 60ms both;
-}
-.meter-bar-fill.warn     { background: var(--amber); }
-.meter-bar-fill.critical { background: var(--red); }
-@keyframes barFill {
-  from { width: 0; }
-  to   { width: var(--fill, 0%); }
-}
-
-/* Even-pace tick. No `overflow: hidden` on `.meter-bar` (see settings.css)
-   so this can use the full bar height. */
-.pace-tick {
-  position: absolute; top: 0; bottom: 0; left: var(--tick, 0%);
-  width: 2px; background: var(--text); opacity: 0.55;
-  border-radius: 1px; pointer-events: none;
-}
-
-.meter-row-stats {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 6px; margin-top: 6px; flex-wrap: wrap;
-}
-.meter-row-value { font-size: 10.5px; color: var(--text-2); }
-.meter-note { font-size: 10px; color: var(--text-3); margin-top: 5px; }
-
-/* Reset countdown chip — click toggles countdown <-> exact time */
-.reset-chip {
-  padding: 1px 7px; font-size: 9.5px; font-weight: 600;
-  color: var(--text-2); background: var(--surface); border: 1px solid var(--border-2);
-  border-radius: 999px; font-variant-numeric: tabular-nums;
+  padding: 6px 8px;
+  border-top: 1px solid var(--border);
   flex-shrink: 0;
 }
-.reset-chip:hover { color: var(--text); background: var(--border); }
-
-/* On-demand metrics: a plain (non-collapsing) section — each row inside is
-   individually collapsible instead, so label+value stay visible without a
-   second click. */
-.meter-extras { border-top: 1px solid var(--border); margin-top: 6px; }
-.meter-extras-heading {
-  padding: 6px 0 2px; font-size: 10.5px; font-weight: 600; color: var(--text-3);
-  text-transform: uppercase; letter-spacing: 0.4px;
+.refresh-timer {
+  flex: 1; text-align: center; font-size: 11px; color: var(--text-2);
+  font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden;
 }
-.meter-extras-body { display: flex; flex-direction: column; gap: 2px; }
 
-/* Individually-collapsible compact row (used inside .meter-extras) */
-.meter-row-compact { padding: 0; }
-.meter-row-compact summary {
-  cursor: pointer; list-style: none;
-  display: flex; justify-content: space-between; align-items: center;
-  gap: 6px; padding: 6px 4px;
-  transition: background 80ms;
-}
-.meter-row-compact summary:hover { background: var(--border); border-radius: var(--r-sm); }
-.meter-row-compact summary::-webkit-details-marker { display: none; }
-.meter-row-compact summary::after {
-  content: '▸'; color: var(--text-3); font-size: 9px; flex-shrink: 0;
-  display: inline-block; transition: transform 150ms;
-}
-.meter-row-compact[open] summary::after { transform: rotate(90deg); }
-.meter-row-compact-body { padding: 2px 4px 8px; }
-/* Flat-row separators don't apply between compact rows (their own section). */
-.meter-row-compact + .meter-row-compact { border-top: none; }
-
-/* Errors */
-.quota-error {
-  background: var(--red-bg); border: 1px solid rgba(248,113,113,.2);
-  border-radius: var(--r-sm); padding: 8px 10px;
-  color: var(--red); font-size: 11px; line-height: 1.5;
-}
-.quota-footnote { font-size: 10px; color: var(--text-3); margin: 0; }
-
-.empty { color: var(--text-2); text-align: center; padding: 16px 8px; margin: 0; font-size: 11px; }
-.empty.small { padding: 8px; font-size: 10.5px; }
-
-/* ── Row context menu (Phase 2c) ──────────────────────────
-   In-DOM popup, `position: fixed` + viewport clamping — see
-   quota-view.ts's bindRowMenu for why (this window is non-resizable,
-   `overflow: hidden`, with no scroll container). */
+/* ── Row context menu (shared) ──────────────────────────── */
 .row-menu {
   position: fixed; z-index: 1000;
-  background: var(--surface); border: 1px solid var(--border-2);
-  border-radius: var(--r-sm); box-shadow: 0 4px 16px rgba(0,0,0,.35);
-  padding: 4px; display: flex; flex-direction: column; min-width: 150px;
+  display: flex; flex-direction: column; min-width: 160px; padding: 4px;
+  background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--radius);
+  box-shadow: var(--shadow-float);
 }
-/* `.row-menu` and the `[hidden]` attribute both have specificity (0,1,0);
-   `.row-menu`'s `display: flex` above wins the tie by source order, so the
-   `hidden` attribute JS toggles (see quota-view.ts's bindRowMenu) had no
-   visual effect at all — the menu stayed permanently visible/stuck. This
-   selector's higher specificity (0,2,0) fixes that regardless of source
-   order. */
+/* Specificity (0,2,0) so `hidden` beats `.row-menu { display: flex }`. */
 .row-menu[hidden] { display: none; }
 .row-menu-item {
-  display: block; width: 100%; text-align: left;
-  background: transparent; border: none; border-radius: var(--r-sm);
-  padding: 6px 9px; font-size: 11.5px; color: var(--text); font-weight: 500;
+  display: block; width: 100%; height: 26px; padding: 0 9px; text-align: left;
+  border: 0; border-radius: 4px; background: transparent; font-size: 12px; cursor: pointer;
 }
-.row-menu-item:hover { background: var(--surface2); }
-.row-menu-item:disabled { opacity: 0.45; pointer-events: none; }
+.row-menu-item:hover:not(:disabled) { background: var(--accent-soft); }
+.row-menu-item:disabled { opacity: .5; cursor: default; }
 
-/* ── Density (Phase 2c) — modest spacing overrides only ──── */
-body.density-compact .meter-row { padding: 6px 1px; }
-body.density-compact .meter-row-header { margin-bottom: 4px; }
-body.density-compact .meter-row-stats { margin-top: 3px; }
-body.density-compact .quota-block { padding: 8px 10px; gap: 4px; }
-body.density-compact main { gap: 6px; padding: 8px; }
+/* ── Density ────────────────────────────────────────────── */
+body.density-compact .provider { padding-top: 7px; padding-bottom: 9px; }
+body.density-compact .meter-row + .meter-row { margin-top: 7px; }
+body.density-compact .provider-head { margin-bottom: 5px; }
 
-/* ── Increase transparency (Phase 2c) ──────────────────────
-   Applied only when AppSettings.transparentPopup is on AND the native
-   window-level effect is available (Windows acrylic / macOS vibrancy — see
-   main/tray-popup.ts's setTransparent; no-op on Linux).
-
-   The native blur is only visible where the WEB pixels are translucent, so
-   every opaque full-surface layer must be overridden here, not just body:
-   `main` paints `--bg` across the whole scroll area, and the header/footer/
-   cards paint `--surface`. Missing any one of them makes the setting look
-   like a no-op (that was the original bug — only body was overridden, and
-   with a stale rgba from a pre-tokens.css palette).
-
-   The rgba values are the current tokens.css palette (--bg #101729,
-   --surface #1b2438 dark; #f6f8fb / #ffffff light) with an alpha chosen so
-   acrylic reads through while text stays legible. Keep in sync with
-   tokens.css if the palette changes. Visual result is platform-specific and
-   not promised to look identical everywhere. */
-body.popup-transparent { background: rgba(16, 23, 41, 0.55); }
-body.popup-transparent main { background: transparent; }
-body.popup-transparent .popup-header,
-body.popup-transparent .popup-footer { background: rgba(27, 36, 56, 0.55); }
-body.popup-transparent .quota-block,
-body.popup-transparent .spend-card { background: rgba(27, 36, 56, 0.5); }
+/* ── Increase transparency ─────────────────────────────────
+   Only visible where web pixels are translucent, so every opaque layer is
+   overridden. rgba values are tokens.css --surface (dark #16171C, light
+   #FFFFFF) at reduced alpha; keep in sync if the palette changes. */
+body.popup-transparent { background: rgba(22, 23, 28, .6); }
 @media (prefers-color-scheme: light) {
-  body.popup-transparent { background: rgba(246, 248, 251, 0.55); }
-  body.popup-transparent .popup-header,
-  body.popup-transparent .popup-footer { background: rgba(255, 255, 255, 0.55); }
-  body.popup-transparent .quota-block,
-  body.popup-transparent .spend-card { background: rgba(255, 255, 255, 0.5); }
+  body.popup-transparent { background: rgba(255, 255, 255, .62); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
 }
