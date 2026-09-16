@@ -81,13 +81,11 @@ export function formatTrayLineFor(
 const BASE_TOOLTIP = 'AI Oversight — monitoring AI agents for approval prompts';
 
 /**
- * Windows tray icons need explicit per-DPI representations (16/24/32 for
- * 100%/150%/200%) — there is no `@2x`-style filename convention for
- * intermediate scale factors the way Electron auto-picks up `tray-icon@2x.png`
- * on macOS/Linux. `tray-icon-16.png` is loaded as the base (scaleFactor 1.0
- * implicitly) and the 24/32 variants are added as extra representations at
- * scaleFactor 1.5/2.0 (relative to the 16px base), so Windows can pick the
- * sharpest one for the current display scaling instead of upscaling 16px art.
+ * Fallback path only, used when `tray-icon[-white].ico` is missing (see
+ * `loadTrayImage`): the 16px PNG as the base plus the 24/32px PNGs as extra
+ * representations at scaleFactor 1.5/2.0. Verified on a 200% display that
+ * Electron's Windows tray ignores those extra representations and the shell
+ * upscales the 16px bitmap, which is why the .ico is preferred.
  *
  * Pure and Electron-free on purpose: icons only regenerate via `postinstall`
  * (not `build`/`dev`/`package:win`), so a stale checkout or interrupted
@@ -104,23 +102,49 @@ export function trayRepresentationsToLoad(
   return reps;
 }
 
-function loadTrayImage(): Electron.NativeImage {
-  const assetsDir = path.join(__dirname, '..', '..', 'assets');
+function taskbarIsDark(): boolean {
+  return nativeTheme.shouldUseDarkColorsForSystemIntegratedUI;
+}
+
+/**
+ * `assetsDirOverride` exists only so tests can point this at a temp fixture
+ * directory without touching Electron's real runtime assets — production
+ * (`createTray`) always calls this with no argument.
+ */
+export function loadTrayImage(assetsDirOverride?: string): Electron.NativeImage {
+  const assetsDir = assetsDirOverride ?? path.join(__dirname, '..', '..', 'assets');
 
   if (process.platform === 'win32') {
-    // `createFromPath` never throws on a missing file — it returns an empty
-    // image, matching this function's pre-existing degrade-gracefully
-    // behavior on macOS/Linux. The 24/32px extras are gated on `existsSync`
-    // and additionally try/catch-guarded (a `readFileSync`/`addRepresentation`
-    // throw here must never escape into the caller's unguarded
-    // `app.whenReady().then()` chain and take down tray creation, IPC
-    // registration, and the rest of startup with it).
     // Windows never auto-inverts tray glyphs (there is no macOS-style
     // template-image tinting), so a dark taskbar needs the pre-rendered
-    // white-glyph variants. `nativeTheme.shouldUseDarkColors` tracks the OS
-    // system theme (which governs taskbar color on Windows); the `updated`
-    // listener in `createTray` swaps the image live when it changes.
-    const suffix = nativeTheme.shouldUseDarkColors ? '-white' : '';
+    // white-glyph variants. The taskbar follows the Windows *system* colour
+    // mode, not the app mode: `shouldUseDarkColors` would follow the app's own
+    // theme setting (`themeSource`), which can differ from the taskbar.
+    const suffix = taskbarIsDark() ? '-white' : '';
+
+    // An .ico carries one frame per notification-area DPI (16..48px) and the
+    // shell picks the matching one, so it stays sharp at 125%-300% scaling.
+    const icoPath = path.join(assetsDir, `tray-icon${suffix}.ico`);
+    if (fs.existsSync(icoPath)) {
+      // WARNING FIX: a throw here must never escape into the caller's
+      // unguarded `app.whenReady().then()` chain in index.ts (no
+      // `.catch()`/`unhandledRejection` handler exists anywhere) and take
+      // down tray creation, IPC registration, and the rest of startup — the
+      // same rationale as the PNG-representation catch block two lines
+      // below, which this was inconsistently missing.
+      try {
+        const ico = nativeImage.createFromPath(icoPath);
+        if (!ico.isEmpty()) return ico;
+      } catch (err) {
+        console.warn(`[tray] failed to load ${icoPath}, falling back to PNG representations:`, err);
+      }
+    }
+
+    // `createFromPath` never throws on a missing file — it returns an empty
+    // image. The 24/32px extras are gated on `existsSync` and additionally
+    // try/catch-guarded (a `readFileSync`/`addRepresentation` throw here must
+    // never escape into the caller's unguarded `app.whenReady().then()` chain
+    // and take down tray creation, IPC registration, and the rest of startup).
     const image = nativeImage.createFromPath(path.join(assetsDir, `tray-icon-16${suffix}.png`));
     const reps = trayRepresentationsToLoad({
       tray24: fs.existsSync(path.join(assetsDir, `tray-icon-24${suffix}.png`)),
@@ -198,17 +222,17 @@ export function createTray(actions: TrayActions): TrayHandle {
   rebuildMenu();
   tray.on('click', () => actions.togglePopup());
   if (process.platform === 'win32') {
-    // Swap black/white glyph live when the OS light/dark theme flips.
+    // Swap black/white glyph live when the taskbar's light/dark mode flips.
     // Registered here (not at module scope) because it needs the `tray`
     // instance; `createTray` runs exactly once per app lifetime and the tray
     // lives until quit, so a single listener neither leaks nor double
-    // registers. `updated` also fires for theme aspects that don't affect
-    // `shouldUseDarkColors` (e.g. high-contrast toggles) -- the guard skips
-    // redundant image reloads.
-    let usingDarkTaskbar = nativeTheme.shouldUseDarkColors;
+    // registers. `updated` also fires for changes that don't affect the
+    // taskbar (the app's own theme setting, high-contrast toggles) -- the
+    // guard skips redundant image reloads.
+    let usingDarkTaskbar = taskbarIsDark();
     nativeTheme.on('updated', () => {
-      if (nativeTheme.shouldUseDarkColors === usingDarkTaskbar) return;
-      usingDarkTaskbar = nativeTheme.shouldUseDarkColors;
+      if (taskbarIsDark() === usingDarkTaskbar) return;
+      usingDarkTaskbar = taskbarIsDark();
       tray.setImage(loadTrayImage());
     });
   }
