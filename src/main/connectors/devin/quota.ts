@@ -5,43 +5,47 @@ import * as path from 'path';
 import { ConnectorContext, QuotaBucket, QuotaProvider, QuotaSnapshot } from '../types';
 
 /**
- * Devin quota provider — file-based `~/.local/share/devin/credentials.toml`
- * (Windows: `%LOCALAPPDATA%\devin\credentials.toml`) parsed by hand (no TOML
- * dependency), calling the configured Connect-RPC server's `GetUserStatus`
- * as a plain JSON POST. No token refresh (per the plan) — a 401/403 is a
- * single explicit failure, not a retry loop.
+ * Devin quota provider — reads Devin's local `credentials.toml` (no TOML
+ * dependency, hand-parsed) and calls the Codeium backend's
+ * `SeatManagementService.GetUserStatus` as a Connect unary JSON POST. No
+ * token refresh — a 401/403 is a single explicit failure telling the user
+ * where to sign in, never a retry loop or a credential-file rewrite.
  *
- * CONFIDENCE NOTES (read before trusting a number) — this dev machine has
- * neither `~/.local/share/devin` nor `%LOCALAPPDATA%\devin` (checked
- * directly during Phase 5.5), so nothing below was verified against a live
- * install:
+ * CONFIDENCE NOTES (read before trusting a number) — this dev machine has no
+ * Devin install, so nothing below was verified against live data:
  *
  * 1. `credentials.toml` shape — the two flat keys (`windsurf_api_key`,
- *    `api_server_url`) are exactly what the task brief specified; the
- *    line-based parser below handles quoted/unquoted values, `#` comments,
- *    and `[section]` headers defensively even though the brief describes a
- *    flat file, in case a real install nests these under a header.
- * 2. Connect-RPC service/method path — UNVERIFIED. `RPC_PATH` follows
- *    Connect's documented unary-POST convention
- *    (`/<package>.<Service>/<Method>`) with a plausible package name
- *    inferred from the credentials key `windsurf_api_key` (suggesting this
- *    backend is Codeium/Windsurf's own API surface). If this path is wrong,
- *    the call simply fails closed (non-2xx -> `ok:false`), never a
- *    fabricated snapshot.
- * 3. `GetUserStatus` response shape — UNVERIFIED. Parsed defensively across
- *    several plausible field-name conventions; an unrecognised shape yields
- *    a missing bucket, never a fabricated `0`.
- * 4. Local-state-DB fallback (`sql.js`, mirroring `cursor/quota.ts`) —
- *    deliberately NOT implemented. There is zero grounding on Devin's local
- *    state DB path or schema on this machine; guessing one would mean
- *    querying an unverified table/column shape with unverified consequences
- *    if a query happened to match by coincidence. Documented as a known
- *    limitation rather than a guessed implementation.
+ *    `api_server_url`) are as specified; the line parser handles quoted and
+ *    unquoted values, `#` comments and `[section]` headers defensively in
+ *    case a real install nests them.
+ * 2. RPC service — `exa.seat_management_pb.SeatManagementService`, sourced
+ *    from the vendor's own issue tracker [D]. This file previously called
+ *    `exa.api_server_pb.ApiServerService`, which serves completions and chat
+ *    rather than quota, so the quota call could never have worked.
+ * 3. Request metadata [C] — `ide_name` must be the literal string
+ *    `chisel`. Sending `"devin"` returns `permission_denied: You need a full
+ *    seat`. Version fields must parse as SEMVER or the backend answers 500,
+ *    hence the literal `1.0.0` placeholders rather than an empty string.
+ * 4. Response field names [C] — `dailyQuotaRemainingPercent`,
+ *    `weeklyQuotaRemainingPercent`, `planInfo.planName`,
+ *    `overageBalanceMicros`. The RESET-timestamp field names were NOT
+ *    specified by the source, so several camelCase/snake_case spellings are
+ *    probed; an unrecognised one costs a reset time, never a wrong number.
+ * 5. OMITTED-FIELD TRAP [C] — a quota percentage field is omitted from the
+ *    response when its value is zero. See `parseRemainingPercent`.
+ * 6. Local-state-DB fallback — deliberately NOT implemented. There is no
+ *    grounding for Devin's local DB path or schema, and guessing one means
+ *    querying an unverified shape. A documented limitation, not a guess.
  */
 
 const DEFAULT_SERVER_HOST = 'server.codeium.com';
-// CONFIDENCE: LOW — see file-header note 2.
-const RPC_PATH = '/exa.api_server_pb.ApiServerService/GetUserStatus';
+// See file-header note 2 — the vendor's own service name, not an inference.
+const RPC_PATH = '/exa.seat_management_pb.SeatManagementService/GetUserStatus';
+
+/** See file-header note 3 — `chisel`, not `devin`, and semver-shaped versions. */
+const IDE_NAME = 'chisel';
+const EXTENSION_NAME = 'devin';
+const PLACEHOLDER_SEMVER = '1.0.0';
 
 const WEEKLY_WINDOW_MS = 604_800_000; // 7d
 const DAILY_WINDOW_MS = 86_400_000; // 1d
@@ -96,8 +100,8 @@ export function dollarsToCents(dollars: number): number {
 // --- double-timeout stacking on the Node https fallback) -------------------
 //
 // Same fixed pattern as grok/quota.ts's `httpJson` -- copied structurally
-// from github-copilot/quota.ts's `httpsGetJson`, not from codex-cli's own
-// `httpJson` (whose net.fetch branch has no timeout at all).
+// from github-copilot/quota.ts's `httpsGetJson`, with codex-cli's
+// POST-capable signature layered on top.
 
 async function httpJson(
   url: string,
@@ -202,12 +206,26 @@ interface DevinCredentials {
   apiServerUrl?: string;
 }
 
-function candidateCredentialPaths(): string[] {
+/** Every platform's credential location, in lookup order. `$XDG_DATA_HOME`
+ * wins where set; Windows checks both Roaming and Local because which one a
+ * given Devin build writes is unconfirmed, and macOS uses the standard
+ * Application Support directory. Exported for test coverage. */
+export function candidateCredentialPaths(): string[] {
   const home = os.homedir();
-  const out: string[] = [path.join(home, '.local', 'share', 'devin', 'credentials.toml')];
+  const out: string[] = [];
+
+  const xdg = process.env.XDG_DATA_HOME;
+  if (xdg) out.push(path.join(xdg, 'devin', 'credentials.toml'));
+  out.push(path.join(home, '.local', 'share', 'devin', 'credentials.toml'));
+
   if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
     const localAppData = process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+    out.push(path.join(appData, 'devin', 'credentials.toml'));
     out.push(path.join(localAppData, 'devin', 'credentials.toml'));
+  }
+  if (process.platform === 'darwin') {
+    out.push(path.join(home, 'Library', 'Application Support', 'devin', 'credentials.toml'));
   }
   return out;
 }
@@ -225,29 +243,46 @@ function loadCredentials(): DevinCredentials | null {
   return null;
 }
 
+/** `URL.hostname` keeps the brackets for an IPv6 literal, hence both spellings. */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+
+/** A rejected `api_server_url`. Carries the URL so the user can fix the file;
+ * never the key, which is what the rejection exists to protect. */
+export class InsecureServerUrlError extends Error {}
+
 /**
  * Resolves the Connect-RPC server base URL. A bearer token is about to be
- * POSTed to whatever this resolves to, so a value read off disk must
- * validate as a real http(s) URL before it's trusted -- anything else falls
- * back to the documented default rather than being used verbatim. Exported
- * for smoke coverage.
+ * POSTed to whatever this resolves to, so plain HTTP is only acceptable to a
+ * loopback address -- anywhere else it would put the key on the wire in clear
+ * text for anything on the path to read. An unparseable or non-http(s) value
+ * still falls back to the documented default rather than being used verbatim.
+ * Exported for smoke coverage.
  */
 export function resolveServerUrl(raw: string | undefined): string {
-  if (raw && raw.trim()) {
-    const candidate = raw.includes('://') ? raw.trim() : `https://${raw.trim()}`;
-    try {
-      const u = new URL(candidate);
-      if (u.protocol === 'http:' || u.protocol === 'https:') {
-        return candidate.replace(/\/+$/, '');
-      }
-    } catch {
-      // fall through to default
-    }
+  const trimmed = raw?.trim();
+  if (!trimmed) return `https://${DEFAULT_SERVER_HOST}`;
+
+  const candidate = trimmed.includes('://') ? trimmed : `https://${trimmed}`;
+  let parsed: URL;
+  try {
+    parsed = new URL(candidate);
+  } catch {
+    return `https://${DEFAULT_SERVER_HOST}`;
+  }
+
+  if (parsed.protocol === 'https:' || (parsed.protocol === 'http:' && LOOPBACK_HOSTS.has(parsed.hostname))) {
+    return candidate.replace(/\/+$/, '');
+  }
+  if (parsed.protocol === 'http:') {
+    throw new InsecureServerUrlError(
+      `Devin credentials.toml points api_server_url at ${candidate}. Refusing to send the API key over ` +
+        'plain HTTP to a non-loopback host — use an https:// URL, or a localhost address.',
+    );
   }
   return `https://${DEFAULT_SERVER_HOST}`;
 }
 
-// --- GetUserStatus response parsing (see file-header note 3) ---------------
+// --- GetUserStatus response parsing (see file-header notes 4-5) ------------
 
 interface ParsedWindow {
   usedPercent: number;
@@ -255,21 +290,68 @@ interface ParsedWindow {
   windowMs: number | null;
 }
 
-function parseUsageWindow(raw: unknown): ParsedWindow | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const r = raw as Record<string, unknown>;
-  const usedPercent = firstFiniteNumber(r.used_percent, r.usedPercent, r.percent_used, r.usagePercent);
-  if (usedPercent == null) return null;
-  const windowSeconds = firstFiniteNumber(r.window_seconds, r.windowSeconds);
-  const windowMs = windowSeconds != null ? windowSeconds * 1000 : null;
-  const resetsAt = resetsAtFrom(r.resets_at ?? r.resetsAt, r.resets_in_seconds ?? r.resetsInSeconds);
-  return { usedPercent: Math.min(100, Math.max(0, usedPercent)), resetsAt, windowMs };
+/**
+ * The omitted-field trap (file-header note 5). The backend drops a quota
+ * percentage field entirely when its value is zero, so absence is genuinely
+ * ambiguous: it means either "fully spent" or "this account has no such
+ * window". The reset timestamp disambiguates — a window that has a live
+ * reset time exists, so a missing percentage alongside it means 0% remaining.
+ *
+ * This is the one place in this codebase where a missing field legitimately
+ * becomes a measured `0` rather than `null`. Everywhere else the rule holds:
+ * `null` means unmeasured and must never be coerced to zero. Absent field AND
+ * absent reset time stays `null` — that is "no such window", not "spent".
+ *
+ * Exported for test coverage.
+ */
+export function parseRemainingPercent(
+  rawPercent: unknown,
+  hasLiveResetTime: boolean,
+): number | null {
+  const explicit = firstFiniteNumber(rawPercent);
+  if (explicit != null) return Math.min(100, Math.max(0, explicit));
+  return hasLiveResetTime ? 0 : null;
 }
 
 interface ParsedUserStatus {
   weekly?: ParsedWindow;
   daily?: ParsedWindow;
   extraBalanceCents?: number;
+  planName?: string;
+}
+
+/** Reset-time field spellings are unspecified by the source (file-header
+ * note 4), so a small set of plausible ones is probed. */
+function resetTimeFor(root: Record<string, unknown>, prefix: 'daily' | 'weekly'): number | null {
+  const Prefix = prefix === 'daily' ? 'Daily' : 'Weekly';
+  return resetsAtFrom(
+    root[`${prefix}QuotaResetTime`] ??
+      root[`${prefix}_quota_reset_time`] ??
+      root[`${prefix}QuotaResetsAt`] ??
+      root[`${prefix}ResetTime`] ??
+      root[`quota${Prefix}ResetTime`],
+    root[`${prefix}QuotaResetsInSeconds`] ?? root[`${prefix}_quota_resets_in_seconds`],
+  );
+}
+
+function windowFrom(
+  root: Record<string, unknown>,
+  prefix: 'daily' | 'weekly',
+  fallbackWindowMs: number,
+): ParsedWindow | null {
+  const resetsAt = resetTimeFor(root, prefix);
+  const remaining = parseRemainingPercent(
+    root[`${prefix}QuotaRemainingPercent`] ?? root[`${prefix}_quota_remaining_percent`],
+    resetsAt != null,
+  );
+  if (remaining == null) return null;
+  return {
+    usedPercent: Math.min(100, Math.max(0, 100 - remaining)),
+    resetsAt,
+    // The response carries no window-length field; the window is implied by
+    // which field the figure came from, so it counts as observed here.
+    windowMs: fallbackWindowMs,
+  };
 }
 
 /** Exported for smoke coverage. */
@@ -279,17 +361,28 @@ export function parseUserStatus(json: unknown): ParsedUserStatus {
   const root = (obj.userStatus ?? obj.user_status ?? obj.data ?? obj) as Record<string, unknown>;
 
   const result: ParsedUserStatus = {};
-  const weekly = parseUsageWindow(root.weekly_quota ?? root.weeklyQuota ?? root.weekly);
+  const weekly = windowFrom(root, 'weekly', WEEKLY_WINDOW_MS);
   if (weekly) result.weekly = weekly;
-  const daily = parseUsageWindow(root.daily_quota ?? root.dailyQuota ?? root.daily);
+  const daily = windowFrom(root, 'daily', DAILY_WINDOW_MS);
   if (daily) result.daily = daily;
 
+  // Micros are millionths of a dollar, so cents = micros / 10_000.
+  const overageMicros = firstFiniteNumber(root.overageBalanceMicros, root.overage_balance_micros);
   const balanceCents = firstFiniteNumber(root.extra_balance_cents, root.extraBalanceCents, root.balance_cents, root.balanceCents);
   const balanceDollars = firstFiniteNumber(root.extra_balance_usd, root.extraBalanceUsd, root.balance_usd, root.balanceUsd);
-  if (balanceCents != null) {
+  if (overageMicros != null) {
+    result.extraBalanceCents = Math.round(overageMicros / 10_000);
+  } else if (balanceCents != null) {
     result.extraBalanceCents = Math.round(balanceCents);
   } else if (balanceDollars != null) {
     result.extraBalanceCents = dollarsToCents(balanceDollars);
+  }
+
+  const planInfo = root.planInfo ?? root.plan_info;
+  if (planInfo && typeof planInfo === 'object') {
+    const p = planInfo as Record<string, unknown>;
+    const name = p.planName ?? p.plan_name;
+    if (typeof name === 'string' && name.trim()) result.planName = name.trim();
   }
 
   return result;
@@ -354,6 +447,24 @@ export function buildQuotaWindowBuckets(parsed: ParsedUserStatus): QuotaBucket[]
   return buckets;
 }
 
+/**
+ * The Connect request body. `ide_name` carries the literal `chisel` and the
+ * version fields carry a valid semver — see file-header note 3 for what each
+ * wrong value costs (a `permission_denied` and a 500 respectively). Exported
+ * for test coverage.
+ */
+export function buildUserStatusRequest(apiKey: string): Record<string, unknown> {
+  return {
+    metadata: {
+      api_key: apiKey,
+      ide_name: IDE_NAME,
+      ide_version: PLACEHOLDER_SEMVER,
+      extension_name: EXTENSION_NAME,
+      extension_version: PLACEHOLDER_SEMVER,
+    },
+  };
+}
+
 // --- Provider ----------------------------------------------------------------
 
 class DevinQuotaProvider implements QuotaProvider {
@@ -366,8 +477,8 @@ class DevinQuotaProvider implements QuotaProvider {
         ok: false,
         fetchedAt,
         error:
-          'No Devin credentials.toml found (looked at ~/.local/share/devin and %LOCALAPPDATA%\\devin). ' +
-          'Sign in with Devin to generate it.',
+          'No Devin credentials.toml found (looked in ' +
+          `${candidateCredentialPaths().join(', ')}). Open the Devin app and sign in to generate it.`,
       };
     }
     if (!creds.apiKey) {
@@ -375,12 +486,24 @@ class DevinQuotaProvider implements QuotaProvider {
         ok: false,
         fetchedAt,
         needsLogin: true,
-        error: 'Devin credentials.toml has no windsurf_api_key. Sign in again to regenerate it.',
+        error:
+          'Devin credentials.toml has no windsurf_api_key. Open the Devin app and sign in again to ' +
+          'regenerate it.',
         source: creds.path,
       };
     }
 
-    const serverUrl = resolveServerUrl(creds.apiServerUrl);
+    let serverUrl: string;
+    try {
+      serverUrl = resolveServerUrl(creds.apiServerUrl);
+    } catch (err) {
+      return {
+        ok: false,
+        fetchedAt,
+        error: err instanceof InsecureServerUrlError ? err.message : String(err),
+        source: creds.path,
+      };
+    }
     const url = `${serverUrl}${RPC_PATH}`;
 
     const res = await httpJson(url, {
@@ -390,19 +513,21 @@ class DevinQuotaProvider implements QuotaProvider {
         'Connect-Protocol-Version': '1',
         Authorization: `Bearer ${creds.apiKey}`,
       },
-      body: '{}',
+      body: JSON.stringify(buildUserStatusRequest(creds.apiKey)),
     });
 
-    // No token refresh for Devin (per the plan) -- there's no second
-    // credential source since the local-state-DB fallback wasn't built (see
-    // file-header note 4). One straight failure, not a retry against the
-    // identical request.
+    // No token refresh and no credential-file write, matching codex-cli:
+    // vendor refresh tokens rotate, and the vendor's own client rewrites this
+    // file without locking, so a second writer can invalidate the session of
+    // the tool we only observe. A rejected key goes back to the user.
     if (res.status === 401 || res.status === 403) {
       return {
         ok: false,
         fetchedAt,
         needsLogin: true,
-        error: `Devin API returned ${res.status} -- the API key may have expired. Sign in again to refresh credentials.toml.`,
+        error:
+          `Devin API returned ${res.status} — the API key in credentials.toml is no longer accepted. ` +
+          'Open the Devin app and sign in again to refresh it.',
         source: creds.path,
       };
     }
@@ -441,6 +566,7 @@ class DevinQuotaProvider implements QuotaProvider {
       ok: true,
       fetchedAt,
       buckets,
+      membershipType: parsed.planName,
       displayMessages: [],
       authMethod: 'bearer',
       source: url,
