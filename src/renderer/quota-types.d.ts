@@ -66,6 +66,8 @@ type QuotaSnapshot =
       error: string;
       source?: string;
       needsLogin?: boolean;
+      /** Desktop-app data source isn't running; `error` is a neutral notice. See types.ts. */
+      appNotRunning?: boolean;
     };
 
 /** Per-bucket display prefs the user controls (star / hide / reorder). */
@@ -111,6 +113,8 @@ interface ConnectorMetadata {
   integrateInfo?: ConnectorIntegrateInfo;
   /** Optional brand accent color (hex). Falls back to an id-hash color in the renderer. */
   brandColor?: string;
+  /** Quota polling currently enabled per user settings — see `main/connectors/types.ts`. */
+  quotaEnabled?: boolean;
 }
 
 interface ConnectorEnabled {
