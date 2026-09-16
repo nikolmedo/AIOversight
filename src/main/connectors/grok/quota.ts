@@ -7,49 +7,51 @@ import { JsonlSpendScanner, SpendRecord } from '../shared/jsonl-spend-scanner';
 import { costCentsFor } from '../shared/model-pricing';
 
 /**
- * Grok CLI quota provider — file-based `~/.grok/auth.json` credentials (the
- * same file the real Grok CLI writes, no keychain), auto-refreshing the
- * token via auth.x.ai when it expires, billing + settings endpoints, plus
- * local spend estimated from `~/.grok/logs/unified.jsonl`.
+ * Grok CLI quota provider — reads the Grok CLI's own `~/.grok/auth.json`
+ * (no keychain), calls the billing and settings endpoints, and reports local
+ * spend from the CLI's per-session `updates.jsonl` transcripts.
  *
- * CONFIDENCE NOTES (read before trusting a number) — this dev machine has
- * no `~/.grok` directory at all (checked directly: `ls ~/.grok` fails, see
- * the Phase 5.4 report), so nothing below was verified against a live
- * install:
+ * READ-ONLY BY POLICY. This connector never writes `auth.json` and never
+ * refreshes the OAuth session itself, matching `codex-cli/quota.ts`. Vendor
+ * refresh tokens rotate, and the vendor CLI rewrites this file with no
+ * locking, so a second writer can invalidate the session of the very tool we
+ * are supposed to be observing. An earlier version of this file did both. It
+ * also POSTed to `https://auth.x.ai/oauth/token`, which is not the endpoint
+ * xAI's OIDC discovery document advertises (`/oauth2/token`), so that refresh
+ * could never have succeeded regardless. On a 401/403 the user is sent back
+ * to the Grok CLI's own login.
  *
- * 1. `auth.json` shape — UNVERIFIED. Field names are probed defensively
- *    across several plausible conventions (snake_case and camelCase,
- *    `access_token`/`token`/`api_key`); whichever key name is actually
- *    found is remembered and reused verbatim when writing the refreshed
- *    token back, so this doesn't silently rewrite the file into a
- *    different naming convention than the real Grok CLI expects.
- * 2. Windows path — `~/.grok/auth.json` resolves via `os.homedir()`, same
- *    as `runtime.ts`'s `resolvePath()` does for the `~` prefix elsewhere in
- *    this codebase, so it correctly becomes `%USERPROFILE%\.grok\auth.json`
- *    on Windows. Whether a real Windows Grok CLI install actually uses this
- *    path (vs. some `%APPDATA%`-based convention) is NOT verified — no
- *    Windows-specific fallback is guessed at beyond this.
- * 3. `auth.x.ai` refresh endpoint/grant shape — UNVERIFIED. No client_id is
- *    fabricated (unlike codex-cli's `CODEX_OAUTH_CLIENT_ID`, which is
- *    sourced from a known login flow); if the real endpoint requires one
- *    this call fails closed (`ok:false`, "run grok login"), never a
- *    partial/wrong snapshot.
- * 4. `cli-chat-proxy.grok.com/v1/billing` and `/v1/settings` response
- *    shapes — UNVERIFIED. Parsed defensively across several plausible
- *    field-name conventions; an unrecognised shape yields a missing
- *    bucket/field, never a fabricated value.
- * 5. `~/.grok/logs/unified.jsonl` line shape — UNVERIFIED. Assumes
- *    PER-EVENT (non-cumulative) token counts, the more common JSONL logging
- *    convention in this codebase's own connectors — deliberately does NOT
- *    port codex-cli's cumulative-delta/restart-persistence machinery, since
- *    there's no evidence either way that Grok's log is cumulative. Any line
- *    shape not confidently recognised returns `null`, never a guessed cost.
+ * CONFIDENCE NOTES (read before trusting a number) — this dev machine has no
+ * `~/.grok` directory, so nothing below was verified against a live install:
+ *
+ * 1. `x-xai-token-auth: xai-grok-cli` on the billing call [C] — a required
+ *    header the previous version omitted, and the most likely cause of the
+ *    401/403 responses users reported.
+ * 2. `auth.json` shape [C] — top-level keys are ISSUER strings of the form
+ *    `https://auth.x.ai::<client_id>`, each mapping to an object holding
+ *    `key` (the access token), `refresh_token`, `expires_at`, `auth_mode`,
+ *    `email`, `team_id`, `user_id` and `principal_type`. The previous
+ *    version probed flat `access_token`/`token`/`api_key` keys that this
+ *    file does not have. The flat probe is KEPT as a fallback for any build
+ *    that does write that shape. `$GROK_HOME` overrides the directory.
+ * 3. Billing response [C] — `config.creditUsagePercent`, falling back to
+ *    `onDemandUsed.val` over `onDemandCap.val`; reset time from
+ *    `config.currentPeriod.end` or `config.billingPeriodEnd`. The older
+ *    flat field names stay in the probe list as a fallback.
+ * 4. `/v1/settings` [C] — `subscription_tier_display` carries the plan name.
+ * 5. Spend source [C] — `~/.grok/sessions/<encoded-cwd>/<session-id>/
+ *    updates.jsonl`, rows where `sessionUpdate === 'turn_completed'`.
+ *    `usage.costUsdTicks / 1e10` is a vendor-reported EXACT dollar cost, so
+ *    it is preferred over estimating from the shared price table. The
+ *    previously-scanned `logs/unified.jsonl` carries token counts but no
+ *    model id, so it can never be priced — it is kept only as a fallback for
+ *    installs with no `sessions/` directory. The row's TIMESTAMP field name
+ *    was not specified by the source, so several spellings are probed; a row
+ *    with no parseable timestamp is dropped rather than dated to "now".
  */
 
 const BILLING_URL = 'https://cli-chat-proxy.grok.com/v1/billing?format=credits';
 const SETTINGS_URL = 'https://cli-chat-proxy.grok.com/v1/settings';
-// CONFIDENCE: LOW — see file-header note 3.
-const GROK_REFRESH_URL = 'https://auth.x.ai/oauth/token';
 
 const WEEKLY_WINDOW_MS = 604_800_000; // 7d
 
@@ -114,10 +116,8 @@ export function resolveWindowPairing(
 // --- HTTP helper (AbortController + 15s timeout, clean-abort-to-408, no ---
 // --- double-timeout stacking on the Node https fallback) -------------------
 //
-// Copied structurally from github-copilot/quota.ts's `httpsGetJson` (the
-// only correct pattern in this codebase) with codex-cli's POST-capable
-// signature layered on top — NOT from codex-cli's own `httpJson`, whose
-// `net.fetch` branch has no timeout at all.
+// Copied structurally from github-copilot/quota.ts's `httpsGetJson`, with
+// codex-cli's POST-capable signature layered on top.
 
 async function httpJson(
   url: string,
@@ -185,120 +185,70 @@ async function httpJson(
   });
 }
 
+/** `x-xai-token-auth` is required by the billing endpoint — see file-header
+ * note 1. Omitting it is the likely cause of the 401/403 users reported. */
 function authHeaders(accessToken: string): Record<string, string> {
-  return { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' };
+  return {
+    Authorization: `Bearer ${accessToken}`,
+    'x-xai-token-auth': 'xai-grok-cli',
+    Accept: 'application/json',
+  };
 }
 
-// --- Credential file resolution (see file-header notes 1-2) ----------------
+// --- Credential file resolution (see file-header note 2) -------------------
 
-interface AuthTokens {
-  accessToken?: string;
-  refreshToken?: string;
-  /** The raw key name the token was found under — reused verbatim on write-back. */
-  accessTokenKey?: string;
-  refreshTokenKey?: string;
-}
-
-interface LoadedAuth {
+export interface LoadedAuth {
   path: string;
-  raw: Record<string, unknown>;
-  tokens: AuthTokens;
+  accessToken?: string;
+  /** Present when the token came from an issuer-keyed entry. */
+  email?: string;
 }
 
-const ACCESS_TOKEN_KEYS = ['access_token', 'accessToken', 'token', 'api_key', 'apiKey'];
-const REFRESH_TOKEN_KEYS = ['refresh_token', 'refreshToken'];
+/** `$GROK_HOME` overrides the directory; otherwise `~/.grok`. Exported for
+ * test coverage. */
+export function grokHomeDir(): string {
+  const override = process.env.GROK_HOME;
+  return override && override.trim() ? override.trim() : path.join(os.homedir(), '.grok');
+}
 
-function firstPresentStringKey(obj: Record<string, unknown>, keys: string[]): string | undefined {
-  for (const k of keys) {
-    if (typeof obj[k] === 'string' && obj[k]) return k;
+const ISSUER_PREFIX = 'https://auth.x.ai::';
+const FLAT_TOKEN_KEYS = ['access_token', 'accessToken', 'token', 'api_key', 'apiKey'];
+
+/**
+ * Parses the real issuer-keyed `auth.json` (file-header note 2): every
+ * top-level key is an issuer string, and the access token lives on `key`
+ * inside its value. The flat-shape probe is kept as a fallback so a build
+ * that writes `access_token` at the top level still works. Exported for test
+ * coverage.
+ */
+export function extractAccessToken(raw: unknown): { accessToken?: string; email?: string } {
+  if (!raw || typeof raw !== 'object') return {};
+  const obj = raw as Record<string, unknown>;
+
+  for (const [issuer, value] of Object.entries(obj)) {
+    if (!issuer.startsWith(ISSUER_PREFIX) || !value || typeof value !== 'object') continue;
+    const entry = value as Record<string, unknown>;
+    const token = firstNonEmptyString(entry.key);
+    if (token) {
+      return { accessToken: token, email: firstNonEmptyString(entry.email) };
+    }
   }
-  return undefined;
+
+  // Fallback: the flat shape this file used to assume.
+  for (const k of FLAT_TOKEN_KEYS) {
+    const token = firstNonEmptyString(obj[k]);
+    if (token) return { accessToken: token };
+  }
+  return {};
 }
 
 function loadAuthFile(): LoadedAuth | null {
-  const authPath = path.join(os.homedir(), '.grok', 'auth.json');
+  const authPath = path.join(grokHomeDir(), 'auth.json');
   if (!fs.existsSync(authPath)) return null;
   try {
-    const raw = JSON.parse(fs.readFileSync(authPath, 'utf8')) as Record<string, unknown>;
-    const accessKey = firstPresentStringKey(raw, ACCESS_TOKEN_KEYS);
-    const refreshKey = firstPresentStringKey(raw, REFRESH_TOKEN_KEYS);
-    return {
-      path: authPath,
-      raw,
-      tokens: {
-        accessToken: accessKey ? (raw[accessKey] as string) : undefined,
-        refreshToken: refreshKey ? (raw[refreshKey] as string) : undefined,
-        accessTokenKey: accessKey,
-        refreshTokenKey: refreshKey,
-      },
-    };
-  } catch {
-    return null;
-  }
-}
-
-/** Writes `data` to `filePath` atomically via a same-directory temp file +
- * rename, preserving the original file's permission mode. Identical to
- * `codex-cli/quota.ts`'s `atomicWriteFile` (self-contained copy per this
- * codebase's per-connector convention). Exported for smoke coverage. */
-export function atomicWriteFile(filePath: string, data: string): boolean {
-  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  let mode = 0o600;
-  try {
-    mode = fs.statSync(filePath).mode;
-  } catch {
-    // Original doesn't exist yet -- keep the 0o600 default.
-  }
-  try {
-    fs.writeFileSync(tmpPath, data);
-    fs.chmodSync(tmpPath, mode);
-    fs.renameSync(tmpPath, filePath);
-    return true;
-  } catch {
-    try {
-      fs.unlinkSync(tmpPath);
-    } catch {
-      // best-effort cleanup
-    }
-    return false;
-  }
-}
-
-/** Writes the rotated access/refresh token back into auth.json under
- * whichever key names were originally found (see `AuthTokens.accessTokenKey`
- * / `refreshTokenKey`), preserving every other field. A failed write is
- * logged, never silently swallowed — it can otherwise lock the separate
- * `grok` CLI out. */
-function writeTokensBack(auth: LoadedAuth, ctx: ConnectorContext): void {
-  const next: Record<string, unknown> = { ...auth.raw };
-  next[auth.tokens.accessTokenKey ?? 'access_token'] = auth.tokens.accessToken;
-  if (auth.tokens.refreshToken) {
-    next[auth.tokens.refreshTokenKey ?? 'refresh_token'] = auth.tokens.refreshToken;
-  }
-  const ok = atomicWriteFile(auth.path, JSON.stringify(next, null, 2));
-  if (!ok) {
-    ctx.log('warn', '[grok] failed to persist refreshed auth.json -- original file left untouched', {
-      path: auth.path,
-    });
-  }
-}
-
-/** See file-header note 3. Returns `null` (never throws) on any failure. */
-async function refreshAccessToken(
-  refreshToken: string,
-): Promise<{ accessToken: string; refreshToken?: string } | null> {
-  try {
-    const res = await httpJson(GROK_REFRESH_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ grant_type: 'refresh_token', refresh_token: refreshToken }),
-    });
-    if (res.status >= 400) return null;
-    const json = res.json as Record<string, unknown>;
-    const accessToken = firstNonEmptyString(json.access_token, json.accessToken, json.token);
-    if (!accessToken) return null;
-    const newRefreshToken = firstNonEmptyString(json.refresh_token, json.refreshToken);
-    return { accessToken, refreshToken: newRefreshToken };
+    const raw = JSON.parse(fs.readFileSync(authPath, 'utf8')) as unknown;
+    const { accessToken, email } = extractAccessToken(raw);
+    return { path: authPath, accessToken, email };
   } catch {
     return null;
   }
@@ -337,23 +287,52 @@ function billingRoot(json: unknown): Record<string, unknown> {
   return (obj.data && typeof obj.data === 'object' ? obj.data : obj) as Record<string, unknown>;
 }
 
+/** Unwraps `{ val: n }`, the shape the billing endpoint wraps its numeric
+ * amounts in, and tolerates a bare number. */
+function amountVal(raw: unknown): number | null {
+  if (raw && typeof raw === 'object') {
+    return firstFiniteNumber((raw as Record<string, unknown>).val);
+  }
+  return firstFiniteNumber(raw);
+}
+
 /** Exported for smoke coverage. */
 export function parseBillingJson(json: unknown): ParsedBilling {
   const root = billingRoot(json);
   const result: ParsedBilling = {};
 
-  const usedPercent = firstFiniteNumber(
+  // `config` is where the documented fields live (file-header note 3); the
+  // flat names stay in the probe list as a fallback for older responses.
+  const cfgRaw = root.config;
+  const cfg = (cfgRaw && typeof cfgRaw === 'object' ? cfgRaw : {}) as Record<string, unknown>;
+
+  let usedPercent = firstFiniteNumber(
+    cfg.creditUsagePercent,
+    cfg.credit_usage_percent,
     root.weekly_usage_percent,
     root.weeklyUsagePercent,
     root.used_percent,
     root.usagePercent,
     root.percent_used,
   );
+  if (usedPercent == null) {
+    const onDemandUsed = amountVal(cfg.onDemandUsed ?? root.onDemandUsed);
+    const onDemandCap = amountVal(cfg.onDemandCap ?? root.onDemandCap);
+    if (onDemandUsed != null && onDemandCap != null && onDemandCap > 0) {
+      usedPercent = (onDemandUsed / onDemandCap) * 100;
+    }
+  }
+
   if (usedPercent != null) {
     const windowSeconds = firstFiniteNumber(root.window_seconds, root.windowSeconds);
     const windowMs = windowSeconds != null ? windowSeconds * 1000 : null;
+    const currentPeriod = cfg.currentPeriod;
+    const periodEnd =
+      currentPeriod && typeof currentPeriod === 'object'
+        ? (currentPeriod as Record<string, unknown>).end
+        : undefined;
     const resetsAt = resetsAtFrom(
-      root.resets_at ?? root.resetsAt ?? root.reset_at,
+      periodEnd ?? cfg.billingPeriodEnd ?? root.resets_at ?? root.resetsAt ?? root.reset_at,
       root.resets_in_seconds ?? root.resetsInSeconds,
     );
     result.weekly = { usedPercent: Math.min(100, Math.max(0, usedPercent)), resetsAt, windowMs };
@@ -372,11 +351,14 @@ export function parseBillingJson(json: unknown): ParsedBilling {
   return result;
 }
 
-/** Exported for smoke coverage. */
+/** `subscription_tier_display` is the documented field (file-header note 4);
+ * the rest are kept as a fallback. Exported for smoke coverage. */
 export function parsePlanTier(json: unknown): string | null {
   const root = billingRoot(json);
   return (
     firstNonEmptyString(
+      root.subscription_tier_display,
+      root.subscriptionTierDisplay,
       root.plan,
       root.planName,
       root.plan_name,
@@ -389,29 +371,64 @@ export function parsePlanTier(json: unknown): string | null {
 
 // --- Local spend scan (see file-header note 5) ------------------------------
 
-/** Exported for smoke coverage. */
+/** `costUsdTicks` counts ten-billionths of a dollar, so cents = ticks / 1e8.
+ * Exported for test coverage. */
+export function costTicksToCents(ticks: number): number {
+  return Math.round(ticks / 1e8);
+}
+
+/** The model id lives on the keys of `usage.modelUsage`, not on the row.
+ * Only needed for the price-table fallback. */
+function modelFromUsage(usage: Record<string, unknown>): string | undefined {
+  const modelUsage = usage.modelUsage;
+  if (modelUsage && typeof modelUsage === 'object') {
+    const keys = Object.keys(modelUsage as Record<string, unknown>);
+    if (keys.length > 0) return keys[0];
+  }
+  return undefined;
+}
+
+/**
+ * Parses one `updates.jsonl` row. Only `turn_completed` rows carry usage.
+ * `costUsdTicks` is a vendor-reported exact cost and always wins over the
+ * shared price table, which is only consulted when the field is absent.
+ * Exported for smoke coverage.
+ */
 export function extractGrokSpend(line: unknown): SpendRecord | null {
   if (!line || typeof line !== 'object') return null;
   const obj = line as Record<string, unknown>;
 
-  const usageRaw = obj.usage && typeof obj.usage === 'object' ? (obj.usage as Record<string, unknown>) : obj;
-  const inputTokens = firstFiniteNumber(usageRaw.input_tokens, usageRaw.prompt_tokens);
-  const outputTokens = firstFiniteNumber(usageRaw.output_tokens, usageRaw.completion_tokens);
+  const kind = firstNonEmptyString(obj.sessionUpdate, obj.session_update);
+  if (kind != null && kind !== 'turn_completed') return null;
+
+  const usage = obj.usage && typeof obj.usage === 'object' ? (obj.usage as Record<string, unknown>) : obj;
+  const inputTokens = firstFiniteNumber(usage.inputTokens, usage.input_tokens, usage.prompt_tokens);
+  const outputTokens = firstFiniteNumber(usage.outputTokens, usage.output_tokens, usage.completion_tokens);
   if (inputTokens == null && outputTokens == null) return null;
 
-  const ts = parseTsMs(obj.timestamp ?? obj.ts ?? obj.time);
+  // The row's timestamp field name is unspecified by the source (file-header
+  // note 5), so several spellings are probed. No parseable timestamp means
+  // the row is dropped — never dated to "now".
+  const ts = parseTsMs(obj.timestamp ?? obj.ts ?? obj.time ?? obj.createdAt ?? obj.created_at);
   if (ts == null) return null;
 
-  const cacheReadTokens = firstFiniteNumber(usageRaw.cached_tokens, usageRaw.cache_read_tokens) ?? 0;
-  const model = firstNonEmptyString(obj.model, usageRaw.model);
+  const cacheReadTokens =
+    firstFiniteNumber(usage.cachedReadTokens, usage.cached_read_tokens, usage.cached_tokens, usage.cache_read_tokens) ?? 0;
+  const reasoningTokens = firstFiniteNumber(usage.reasoningTokens, usage.reasoning_tokens) ?? 0;
+  const model = firstNonEmptyString(obj.model, usage.model) ?? modelFromUsage(usage);
 
-  const costCents = model
-    ? costCentsFor(model, {
-        inputTokens: inputTokens ?? 0,
-        outputTokens: outputTokens ?? 0,
-        cacheReadTokens,
-      })
-    : null;
+  const ticks = firstFiniteNumber(usage.costUsdTicks, usage.cost_usd_ticks);
+  const costCents =
+    ticks != null
+      ? costTicksToCents(ticks)
+      : model
+        ? costCentsFor(model, {
+            inputTokens: inputTokens ?? 0,
+            outputTokens: outputTokens ?? 0,
+            reasoningTokens,
+            cacheReadTokens,
+          })
+        : null;
 
   return {
     ts,
@@ -440,14 +457,32 @@ class GrokQuotaProvider implements QuotaProvider {
     }
   }
 
+  /**
+   * Per-session `updates.jsonl` is the primary source (file-header note 5).
+   * `logs/unified.jsonl` is only scanned when that yields nothing: it has no
+   * model id, so its rows can never be priced, and scanning both would
+   * double-count any install that has both.
+   */
   private async computeSpend(): Promise<SpendTile[]> {
-    const patterns = [this.ctx.resolvePath('~/.grok/logs/unified.jsonl')];
+    const home = grokHomeDir();
     const scanner = JsonlSpendScanner.shared(this.ctx.cacheDir);
-    const records = await scanner.scan({
+
+    // `**`, not `*/*`: the shared scanner only walks subdirectories when the
+    // pattern contains `**`, so a `*/*` form would silently match nothing.
+    let records = await scanner.scan({
       key: 'grok',
-      patterns,
+      patterns: [path.join(home, 'sessions', '**', 'updates.jsonl')],
       extract: line => extractGrokSpend(line),
     });
+
+    if (records.length === 0) {
+      records = await scanner.scan({
+        key: 'grok-legacy',
+        patterns: [path.join(home, 'logs', 'unified.jsonl')],
+        extract: line => extractGrokSpend(line),
+      });
+    }
+
     return scanner.aggregate(records, Date.now());
   }
 
@@ -459,10 +494,10 @@ class GrokQuotaProvider implements QuotaProvider {
       return {
         ok: false,
         fetchedAt,
-        error: 'No Grok auth.json found at ~/.grok/auth.json. Run `grok login` to sign in.',
+        error: `No Grok auth.json found at ${path.join(grokHomeDir(), 'auth.json')}. Run \`grok login\` to sign in.`,
       };
     }
-    if (!auth.tokens.accessToken) {
+    if (!auth.accessToken) {
       return {
         ok: false,
         fetchedAt,
@@ -472,18 +507,19 @@ class GrokQuotaProvider implements QuotaProvider {
       };
     }
 
-    const billingRes = await this.fetchBillingWithRefresh(auth);
+    const billingRes = await httpJson(BILLING_URL, { headers: authHeaders(auth.accessToken) });
     if (billingRes.status === 401 || billingRes.status === 403) {
-      // WARNING fix: don't unconditionally claim a refresh was attempted --
-      // `fetchBillingWithRefresh` only refreshes when a refresh token was
-      // actually present, so a plain "even after a token refresh attempt"
-      // would misreport auth.json files that never had one.
-      const error = billingRes.refreshAttempted
-        ? `Grok session expired (HTTP ${billingRes.status}) even after a token refresh attempt. ` +
-          'Run `grok login` to sign in again.'
-        : `Grok session expired (HTTP ${billingRes.status}). No refresh token was available to retry with. ` +
-          'Run `grok login` to sign in again.';
-      return { ok: false, fetchedAt, needsLogin: true, error, source: auth.path };
+      // No in-process refresh and no write to auth.json — see the file
+      // header. The Grok CLI owns this file; we only read it.
+      return {
+        ok: false,
+        fetchedAt,
+        needsLogin: true,
+        error:
+          `Grok rejected the stored session (HTTP ${billingRes.status}). Run \`grok login\` to sign in ` +
+          'again — this app deliberately does not refresh or rewrite the CLI\'s auth.json.',
+        source: auth.path,
+      };
     }
     if (billingRes.status >= 400) {
       return { ok: false, fetchedAt, error: `Grok billing API HTTP ${billingRes.status}`, source: BILLING_URL };
@@ -545,7 +581,9 @@ class GrokQuotaProvider implements QuotaProvider {
       return {
         ok: false,
         fetchedAt,
-        error: 'Grok billing API returned no recognisable usage fields (the endpoint may have changed shape).',
+        error:
+          'Grok reported no usage figures. Accounts that have not been migrated to weekly billing return ' +
+          'nothing usable here, so there may be no meter to show rather than a fault.',
         source: BILLING_URL,
       };
     }
@@ -554,7 +592,7 @@ class GrokQuotaProvider implements QuotaProvider {
     // whole snapshot (per the task's explicit "non-critical" requirement).
     let membershipType: string | undefined;
     try {
-      const settingsRes = await httpJson(SETTINGS_URL, { headers: authHeaders(auth.tokens.accessToken) });
+      const settingsRes = await httpJson(SETTINGS_URL, { headers: authHeaders(auth.accessToken) });
       if (settingsRes.status < 400) {
         membershipType = parsePlanTier(settingsRes.json) ?? undefined;
       }
@@ -573,29 +611,6 @@ class GrokQuotaProvider implements QuotaProvider {
     };
   }
 
-  /** Exactly one refresh attempt per poll (not per endpoint call) -- only
-   * the billing call is refresh-gated; `/v1/settings` above reuses whatever
-   * token is current afterwards and swallows its own failures entirely.
-   * `refreshAttempted` reports whether a refresh call was actually made (as
-   * opposed to skipped because no refresh token was present) so the caller's
-   * error message can say so accurately -- see the WARNING fix above. */
-  private async fetchBillingWithRefresh(
-    auth: LoadedAuth,
-  ): Promise<{ status: number; json: unknown; refreshAttempted: boolean }> {
-    let res = await httpJson(BILLING_URL, { headers: authHeaders(auth.tokens.accessToken!) });
-    let refreshAttempted = false;
-    if ((res.status === 401 || res.status === 403) && auth.tokens.refreshToken) {
-      refreshAttempted = true;
-      const refreshed = await refreshAccessToken(auth.tokens.refreshToken);
-      if (refreshed) {
-        auth.tokens.accessToken = refreshed.accessToken;
-        if (refreshed.refreshToken) auth.tokens.refreshToken = refreshed.refreshToken;
-        writeTokensBack(auth, this.ctx);
-        res = await httpJson(BILLING_URL, { headers: authHeaders(auth.tokens.accessToken) });
-      }
-    }
-    return { ...res, refreshAttempted };
-  }
 }
 
 export function createGrokQuotaProvider(

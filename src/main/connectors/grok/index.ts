@@ -7,7 +7,8 @@ const GrokConnector: Connector = {
   vendor: 'xAI',
   description:
     'Reads the Grok CLI\'s local ~/.grok/auth.json session to track weekly usage and pay-as-you-go status, ' +
-    'auto-refreshing the token when it expires, plus local spend estimated from ~/.grok/logs/unified.jsonl.',
+    'plus spend from the CLI\'s own per-session transcripts. Read-only: it never refreshes or rewrites the ' +
+    'CLI\'s credentials, so an expired session sends you back to `grok login`.',
   enabledByDefault: false,
   configSchema: [],
   quota: {
