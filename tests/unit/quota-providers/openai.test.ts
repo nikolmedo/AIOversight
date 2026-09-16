@@ -100,12 +100,42 @@ describe('OpenAIQuotaProvider', () => {
       assert.equal(byId['output-tokens'].used, 20_000);
       // 5_000 + 2_000 cached input tokens.
       assert.equal(byId['cached-tokens'].used, 7_000);
+      // Token counts are tokens; only the model-request count is 'requests'.
+      assert.equal(byId.requests.unit, 'requests');
+      assert.equal(byId['input-tokens'].unit, 'tokens');
+      assert.equal(byId['output-tokens'].unit, 'tokens');
+      assert.equal(byId['cached-tokens'].unit, 'tokens');
       // (2.5 + 1.1) USD -> 360 cents.
       assert.equal(byId['spend-this-period'].used, 360);
       assert.equal(byId['spend-this-period'].unit, 'usd');
 
       // The cost bucket is unshifted to the front of the list.
       assert.equal(snapshot.buckets[0].id, 'spend-this-period');
+    }
+  });
+
+  it('reports a rate-limited snapshot carrying Retry-After when the usage report responds with 429', async () => {
+    // Arrange
+    const def = findConnector('openai')!;
+    const ctx = runtime.contextFor(def);
+    ctx.setSecret('adminApiKey', 'sk-admin-realistic-key');
+
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: { message: 'Rate limit reached' } }), {
+        status: 429,
+        headers: { 'content-type': 'application/json', 'retry-after': '30' },
+      })) as typeof globalThis.fetch;
+
+    const provider = def.quota!.create({}, ctx);
+
+    // Act
+    const snapshot = await provider.fetch();
+
+    // Assert
+    assert.equal(snapshot.ok, false);
+    if (!snapshot.ok) {
+      assert.match(snapshot.error, /rate-limited/);
+      assert.equal(snapshot.retryAfterMs, 30_000);
     }
   });
 
@@ -267,5 +297,27 @@ describe('OpenAIQuotaProvider', () => {
     if (snapshot.ok) {
       assert.deepEqual(snapshot.buckets, []);
     }
+  });
+
+  it('reports no spend at all when every cost amount is an empty string', async () => {
+    // Arrange - `Number('')` is 0, which would render an authoritative $0.00
+    // for a period whose real spend is simply unknown.
+    const def = findConnector('openai')!;
+    const ctx = runtime.contextFor(def);
+    ctx.setSecret('adminApiKey', 'sk-admin-realistic-key');
+
+    globalThis.fetch = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/usage/completions')) return jsonResponse(200, openAiUsageCompletionsResponse());
+      if (url.includes('/costs')) return jsonResponse(200, { data: [{ results: [{ amount: { value: '' } }] }] });
+      return jsonResponse(404, {});
+    }) as typeof globalThis.fetch;
+
+    // Act
+    const snapshot = await def.quota!.create({}, ctx).fetch();
+
+    // Assert
+    assert.equal(snapshot.ok, true);
+    if (snapshot.ok) assert.equal(snapshot.buckets.some(b => b.id === 'spend-this-period'), false);
   });
 });

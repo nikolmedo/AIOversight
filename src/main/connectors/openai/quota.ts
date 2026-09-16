@@ -1,22 +1,68 @@
-import { ConnectorContext, QuotaBucket, QuotaProvider, QuotaSnapshot } from '../types';
+import { ConnectorContext, QuotaBucket, QuotaProvider, QuotaSnapshot, QuotaUnit } from '../types';
 
 const USAGE_COMPLETIONS_URL = 'https://api.openai.com/v1/organization/usage/completions';
 const COSTS_URL = 'https://api.openai.com/v1/organization/costs';
 
+/** Fallback when a 429 arrives with no usable `Retry-After`. */
+const DEFAULT_RETRY_AFTER_MS = 60_000;
+
+interface HttpJsonResult {
+  status: number;
+  json: unknown;
+  /** Only populated on a 429. See `parseRetryAfterMs`. */
+  retryAfterMs?: number;
+}
+
+/**
+ * `Retry-After` is either a delta in seconds or an HTTP date (RFC 9110).
+ * OpenAI sends seconds, but a proxy in front of it may not, so both are
+ * accepted and anything unparseable falls back to a minute.
+ */
+function parseRetryAfterMs(raw: string | null | undefined): number {
+  if (!raw) return DEFAULT_RETRY_AFTER_MS;
+  const trimmed = raw.trim();
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.round(seconds * 1000);
+  const dateMs = Date.parse(trimmed);
+  if (Number.isFinite(dateMs)) return Math.max(0, dateMs - Date.now());
+  return DEFAULT_RETRY_AFTER_MS;
+}
+
 async function httpsGetJson(
   url: string,
   headers: Record<string, string>,
-): Promise<{ status: number; json: unknown }> {
+): Promise<HttpJsonResult> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { net } = require('electron') as typeof import('electron');
     if (net?.fetch) {
-      const res = await net.fetch(url, { headers });
-      const txt = await res.text();
+      // net.fetch has no built-in timeout -- without this, a single hung
+      // OpenAI call wedges every future poll and the Refresh button (and,
+      // via refreshAll()'s Promise.all, every other connector's refresh too).
+      // Pattern ported from openrouter/quota.ts.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15_000);
       try {
-        return { status: res.status, json: txt ? JSON.parse(txt) : {} };
-      } catch {
-        return { status: res.status, json: {} };
+        const res = await net.fetch(url, { headers, signal: controller.signal });
+        const txt = await res.text();
+        const retryAfterMs =
+          res.status === 429 ? parseRetryAfterMs(res.headers.get('retry-after')) : undefined;
+        try {
+          return { status: res.status, json: txt ? JSON.parse(txt) : {}, retryAfterMs };
+        } catch {
+          return { status: res.status, json: {}, retryAfterMs };
+        }
+      } catch (err) {
+        // A deliberate timeout-abort means the destination is unreachable or
+        // slow either way -- falling through to the Node https fallback below
+        // would just pay the SAME 15s timeout again. Fail closed here (408)
+        // instead of retrying via a different transport.
+        if (controller.signal.aborted) {
+          return { status: 408, json: {} };
+        }
+        throw err;
+      } finally {
+        clearTimeout(timer);
       }
     }
   } catch {
@@ -28,13 +74,22 @@ async function httpsGetJson(
   return new Promise((resolve, reject) => {
     const req = https.get(url, { headers }, res => {
       const chunks: Buffer[] = [];
+      const status = res.statusCode ?? 0;
+      const retryAfterMs =
+        status === 429
+          ? parseRetryAfterMs(
+              Array.isArray(res.headers['retry-after'])
+                ? res.headers['retry-after'][0]
+                : res.headers['retry-after'],
+            )
+          : undefined;
       res.on('data', c => chunks.push(c));
       res.on('end', () => {
         const body = Buffer.concat(chunks).toString('utf8');
         try {
-          resolve({ status: res.statusCode ?? 0, json: body ? JSON.parse(body) : {} });
+          resolve({ status, json: body ? JSON.parse(body) : {}, retryAfterMs });
         } catch {
-          resolve({ status: res.statusCode ?? 0, json: {} });
+          resolve({ status, json: {}, retryAfterMs });
         }
       });
     });
@@ -78,6 +133,18 @@ class OpenAIQuotaProvider implements QuotaProvider {
     try {
       const usageUrl = `${USAGE_COMPLETIONS_URL}?start_time=${start}&end_time=${end}&bucket_width=1d&group_by=model`;
       const usageResp = await httpsGetJson(usageUrl, headers);
+      // Returned, not thrown: the generic catch below would flatten this into
+      // an error string and drop the vendor's requested backoff.
+      if (usageResp.status === 429) {
+        const retryAfterMs = usageResp.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS;
+        return {
+          ok: false,
+          fetchedAt,
+          error: `OpenAI rate-limited the usage report (HTTP 429). Backing off for ${Math.round(retryAfterMs / 1000)}s.`,
+          retryAfterMs,
+          source: USAGE_COMPLETIONS_URL,
+        };
+      }
       if (usageResp.status >= 400) {
         throw new Error(formatOpenAIError(usageResp.status, usageResp.json));
       }
@@ -130,6 +197,17 @@ class OpenAIQuotaProvider implements QuotaProvider {
   }
 }
 
+/** `Number('')` is `0` and `Number('x')` is `NaN`, so a value that is present
+ * but not a real number must be rejected rather than coerced — an empty
+ * `amount.value` would otherwise report an authoritative $0.00 for a period
+ * whose spend is simply unknown. */
+function finiteNumber(v: unknown): number | null {
+  if (v == null) return null;
+  if (typeof v === 'string' && v.trim() === '') return null;
+  const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
 function parseUsage(json: Record<string, unknown>): QuotaBucket[] {
   const data = (json.data ?? []) as Array<Record<string, unknown>>;
   let inputTokens = 0;
@@ -139,17 +217,17 @@ function parseUsage(json: Record<string, unknown>): QuotaBucket[] {
   for (const bucketDay of data) {
     const results = (bucketDay.results ?? []) as Array<Record<string, unknown>>;
     for (const r of results) {
-      inputTokens += Number(r.input_tokens ?? 0);
-      outputTokens += Number(r.output_tokens ?? 0);
-      cachedTokens += Number(r.input_cached_tokens ?? 0);
-      requests += Number(r.num_model_requests ?? 0);
+      inputTokens += finiteNumber(r.input_tokens) ?? 0;
+      outputTokens += finiteNumber(r.output_tokens) ?? 0;
+      cachedTokens += finiteNumber(r.input_cached_tokens) ?? 0;
+      requests += finiteNumber(r.num_model_requests) ?? 0;
     }
   }
   const buckets: QuotaBucket[] = [];
-  if (requests) buckets.push(req('requests', 'Model requests', requests));
-  if (inputTokens) buckets.push(req('input-tokens', 'Input tokens', inputTokens));
-  if (outputTokens) buckets.push(req('output-tokens', 'Output tokens', outputTokens));
-  if (cachedTokens) buckets.push(req('cached-tokens', 'Cached input tokens', cachedTokens));
+  if (requests) buckets.push(counter('requests', 'Model requests', requests, 'requests'));
+  if (inputTokens) buckets.push(counter('input-tokens', 'Input tokens', inputTokens, 'tokens'));
+  if (outputTokens) buckets.push(counter('output-tokens', 'Output tokens', outputTokens, 'tokens'));
+  if (cachedTokens) buckets.push(counter('cached-tokens', 'Cached input tokens', cachedTokens, 'tokens'));
   return buckets;
 }
 
@@ -160,9 +238,9 @@ function parseCost(json: Record<string, unknown>): number | null {
   for (const bucketDay of data) {
     const results = (bucketDay.results ?? []) as Array<Record<string, unknown>>;
     for (const r of results) {
-      const amount = (r.amount as { value?: number } | undefined)?.value;
+      const amount = finiteNumber((r.amount as { value?: unknown } | undefined)?.value);
       if (amount != null) {
-        totalCents += Math.round(Number(amount) * 100);
+        totalCents += Math.round(amount * 100);
         any = true;
       }
     }
@@ -170,8 +248,8 @@ function parseCost(json: Record<string, unknown>): number | null {
   return any ? totalCents : null;
 }
 
-function req(id: string, label: string, used: number): QuotaBucket {
-  return { id, label, used, limit: null, remaining: null, unit: 'requests', enabled: true };
+function counter(id: string, label: string, used: number, unit: QuotaUnit): QuotaBucket {
+  return { id, label, used, limit: null, remaining: null, unit, enabled: true };
 }
 
 function formatOpenAIError(status: number, json: unknown): string {
