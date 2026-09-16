@@ -27,7 +27,7 @@ const { dollarsToCents, buildSpendTiles } = require('../dist/main/connectors/cur
 const { dollarsToCents: copilotDollarsToCents } = require('../dist/main/connectors/github-copilot/quota.js');
 const { dollarsToCents: openrouterDollarsToCents, firstFiniteNumber: openrouterFirstFiniteNumber } = require('../dist/main/connectors/openrouter/quota.js');
 const { extractItems: zaiExtractItems, parseQuotaItems: zaiParseQuotaItems, resolveWindowPairing: zaiResolveWindowPairing, firstFiniteNumber: zaiFirstFiniteNumber } = require('../dist/main/connectors/zai/quota.js');
-const { atomicWriteFile, slugifyModel, buildSparkBuckets, extractCodexSpend } = require('../dist/main/connectors/codex-cli/quota.js');
+const { slugifyModel, buildAdditionalLimitBuckets, parseUsageBuckets: parseCodexUsageBuckets, extractCodexSpend } = require('../dist/main/connectors/codex-cli/quota.js');
 const { extractClaudeCodeSpend } = require('../dist/main/connectors/claude-code/quota.js');
 const { JsonlSpendScanner } = require('../dist/main/connectors/shared/jsonl-spend-scanner.js');
 const { rateFor, costCentsFor } = require('../dist/main/connectors/shared/model-pricing.js');
@@ -38,14 +38,12 @@ const {
   extractAuthLabel: opencodeExtractAuthLabel,
   dollarsToCents: opencodeDollarsToCents,
   toSpendRecords: opencodeToSpendRecords,
-  buildCapBuckets: opencodeBuildCapBuckets,
   buildSpendTiles: opencodeBuildSpendTiles,
   noUsableSessionData,
   createOpencodeQuotaProvider,
 } = require('../dist/main/connectors/opencode/quota.js');
 const {
   resolveWindowPairing: grokResolveWindowPairing,
-  atomicWriteFile: grokAtomicWriteFile,
   parseBillingJson: grokParseBillingJson,
   parsePlanTier: grokParsePlanTier,
   extractGrokSpend,
@@ -146,7 +144,8 @@ function testRegistry() {
   }
   // OpenCode is fully offline -- no secret configSchema field.
   const opencode = findConnector('opencode');
-  check('opencode has no secret config field', !opencode.configSchema.some(f => f.type === 'secret'));
+  check('opencode has a secret apiKey field for the OpenCode Zen key',
+        opencode.configSchema.some(f => f.key === 'apiKey' && f.type === 'secret'));
   check('opencode quota is enabled by default (reads local files, no config required)',
         opencode.quotaEnabledByDefault === true);
   // Antigravity (Phase 5.6) is the one connector that is off by default in
@@ -824,68 +823,104 @@ function testZaiQuotaParsing() {
 }
 
 // --------------------------------------------------------------------------
-// codex-cli/quota.ts: atomicWriteFile (correction round item 1, CRITICAL)
+// codex-cli/quota.ts: wham/usage wire shape (verified against openai/codex)
 // --------------------------------------------------------------------------
-function testCodexAtomicWrite() {
-  console.log('codex-cli/quota.ts: atomicWriteFile');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-smoke-codex-'));
-  const target = path.join(tmp, 'auth.json');
-  fs.writeFileSync(target, '{"orig":true}');
-
-  const ok = atomicWriteFile(target, '{"next":true}');
-  check('atomicWriteFile: returns true on success', ok === true);
-  check('atomicWriteFile: target now has the new content',
-        fs.readFileSync(target, 'utf8') === '{"next":true}');
-  const leftovers = fs.readdirSync(tmp).filter(f => f !== 'auth.json');
-  check('atomicWriteFile: no leftover temp file after a successful write',
-        leftovers.length === 0, JSON.stringify(leftovers));
-
-  // POSIX-only: Windows NTFS doesn't map owner/group/other permission bits,
-  // so fs.chmodSync there is a near no-op (only toggles read-only).
-  if (process.platform !== 'win32') {
-    const modeTarget = path.join(tmp, 'mode-auth.json');
-    fs.writeFileSync(modeTarget, '{"orig":true}');
-    fs.chmodSync(modeTarget, 0o600);
-    atomicWriteFile(modeTarget, '{"next":true}');
-    const modeAfter = fs.statSync(modeTarget).mode & 0o777;
-    check('atomicWriteFile: preserves the original file\'s permission mode (0600) across a refresh',
-          modeAfter === 0o600, modeAfter.toString(8));
-  }
-
-  const badTarget = path.join(tmp, 'missing-dir', 'auth.json');
-  const failed = atomicWriteFile(badTarget, '{}');
-  check('atomicWriteFile: returns false (not throws) when the target directory does not exist', failed === false);
-  check('atomicWriteFile: an unrelated failed write leaves the original file untouched',
-        fs.readFileSync(target, 'utf8') === '{"next":true}');
-
-  fs.rmSync(tmp, { recursive: true, force: true });
-}
-
-// --------------------------------------------------------------------------
-// codex-cli/quota.ts: Spark bucket id stability + dedup (correction item 6)
-// --------------------------------------------------------------------------
-function testCodexSparkBuckets() {
-  console.log('codex-cli/quota.ts: slugifyModel + buildSparkBuckets');
+function testCodexWireShape() {
+  console.log('codex-cli/quota.ts: slugifyModel + parseUsageBuckets');
   check("slugifyModel(' GPT-5 ') === 'gpt-5'", slugifyModel(' GPT-5 ') === 'gpt-5');
   check("slugifyModel('GPT 5  Codex') collapses whitespace -> 'gpt-5-codex'",
         slugifyModel('GPT 5  Codex') === 'gpt-5-codex', slugifyModel('GPT 5  Codex'));
   check('slugifyModel is case/whitespace-insensitive across two spellings of the same model',
         slugifyModel('gpt-5') === slugifyModel(' GPT-5 '));
 
-  const window = { used_percent: 42 };
-  const arrayShape = [{ model: 'GPT-5', ...window }];
-  const objectShape = { ' gpt-5 ': window };
-  const arrayBuckets = buildSparkBuckets(arrayShape);
-  const objectBuckets = buildSparkBuckets(objectShape);
-  check('buildSparkBuckets: array shape and object shape yield the same bucket id for the same model',
-        arrayBuckets[0].id === objectBuckets[0].id, `${arrayBuckets[0].id} vs ${objectBuckets[0].id}`);
+  const usual = parseCodexUsageBuckets({
+    plan_type: 'pro',
+    rate_limit: {
+      allowed: true,
+      limit_reached: false,
+      primary_window: { used_percent: 12.5, limit_window_seconds: 18000, reset_after_seconds: 1234 },
+      secondary_window: { used_percent: 40, limit_window_seconds: 604800, reset_after_seconds: 5678 },
+    },
+  });
+  const usualIds = usual.buckets.map(b => b.id);
+  check('parseUsageBuckets: rate_limit.primary_window (18000s) -> session bucket',
+        usualIds.includes('session'), usualIds.join(','));
+  check('parseUsageBuckets: rate_limit.secondary_window (604800s) -> weekly bucket',
+        usualIds.includes('weekly'), usualIds.join(','));
+  check('parseUsageBuckets: used_percent lands on the bucket unchanged',
+        usual.buckets.find(b => b.id === 'session').used === 12.5);
+  check('parseUsageBuckets: plan_type is surfaced', usual.planType === 'pro', usual.planType);
+  check('parseUsageBuckets: reset_after_seconds yields a resetsAt',
+        typeof usual.buckets.find(b => b.id === 'weekly').resetsAt === 'number');
 
-  const dupeShape = [{ model: 'GPT-5', ...window }, { model: ' gpt-5 ', used_percent: 77 }];
-  const dupeBuckets = buildSparkBuckets(dupeShape);
-  check('buildSparkBuckets: two entries normalizing to the same slug produce exactly one bucket',
-        dupeBuckets.length === 1, dupeBuckets.length);
-  check('buildSparkBuckets: bucket id is namespaced (spark-<slug>), not a bare model name',
-        dupeBuckets[0].id === 'spark-gpt-5', dupeBuckets[0].id);
+  // Since ~July 2026 the WEEKLY window sometimes arrives in the primary slot.
+  const swapped = parseCodexUsageBuckets({
+    rate_limit: {
+      primary_window: { used_percent: 70, limit_window_seconds: 604800 },
+      secondary_window: { used_percent: 5, limit_window_seconds: 18000 },
+    },
+  });
+  const weekly = swapped.buckets.find(b => b.id === 'weekly');
+  const session = swapped.buckets.find(b => b.id === 'session');
+  check('parseUsageBuckets: a 604800s primary_window classifies as weekly, not session',
+        !!weekly && weekly.used === 70, weekly && weekly.used);
+  check('parseUsageBuckets: the 18000s secondary_window still classifies as session',
+        !!session && session.used === 5, session && session.used);
+
+  const perModel = parseCodexUsageBuckets({
+    rate_limit: { primary_window: { used_percent: 1, limit_window_seconds: 18000 } },
+    additional_rate_limits: [
+      {
+        limit_name: 'Codex Mini',
+        metered_feature: 'codex',
+        normal_model_slug: 'gpt-5.3-codex',
+        rate_limit: { used_percent: 33, limit_window_seconds: 18000 },
+      },
+    ],
+  });
+  const modelBucket = perModel.buckets.find(b => b.id.startsWith('model-'));
+  check('parseUsageBuckets: additional_rate_limits[] yields a per-model bucket',
+        !!modelBucket && modelBucket.id === 'model-gpt-5.3-codex-session',
+        modelBucket && modelBucket.id);
+  check('parseUsageBuckets: per-model bucket is labelled from limit_name',
+        !!modelBucket && modelBucket.label === 'Codex Mini (5h)', modelBucket && modelBucket.label);
+
+  check('buildAdditionalLimitBuckets: a non-array argument yields no buckets',
+        buildAdditionalLimitBuckets(undefined).length === 0);
+  check('buildAdditionalLimitBuckets: two entries with the same slug collapse to one bucket',
+        buildAdditionalLimitBuckets([
+          { normal_model_slug: 'GPT-5', rate_limit: { used_percent: 10, limit_window_seconds: 18000 } },
+          { normal_model_slug: ' gpt-5 ', rate_limit: { used_percent: 20, limit_window_seconds: 18000 } },
+        ]).length === 1);
+  check('buildAdditionalLimitBuckets: an entry whose rate_limit is a primary/secondary container yields both slots',
+        buildAdditionalLimitBuckets([
+          {
+            normal_model_slug: 'gpt-5',
+            rate_limit: {
+              primary_window: { used_percent: 10, limit_window_seconds: 18000 },
+              secondary_window: { used_percent: 20, limit_window_seconds: 604800 },
+            },
+          },
+        ]).length === 2);
+
+  const credits = parseCodexUsageBuckets({
+    credits: { has_credits: true, unlimited: false, balance: 42 },
+    rate_limit_reset_credits: { available_count: 3 },
+  });
+  check('parseUsageBuckets: credits.balance becomes the remaining credits',
+        credits.buckets.find(b => b.id === 'credits').remaining === 42);
+  check('parseUsageBuckets: rate_limit_reset_credits.available_count becomes the reset-credits bucket',
+        credits.buckets.find(b => b.id === 'reset-credits').remaining === 3);
+  check('parseUsageBuckets: a body with credits but no window still reports windowCount 0 (drift warning fires)',
+        credits.windowCount === 0, credits.windowCount);
+
+  const unlimited = parseCodexUsageBuckets({ credits: { unlimited: true, balance: 0 } });
+  check('parseUsageBuckets: unlimited credits render with limit null, not a fabricated 0',
+        unlimited.buckets.find(b => b.id === 'credits').limit === null);
+
+  const drifted = parseCodexUsageBuckets({ rate_limits: { primary: { used_percent: 10, window_minutes: 300 } } });
+  check('parseUsageBuckets: the OLD (never-real) rate_limits/primary shape produces nothing',
+        drifted.buckets.length === 0 && drifted.windowCount === 0);
 }
 
 // --------------------------------------------------------------------------
@@ -1039,32 +1074,10 @@ function testOpencodeQuota() {
   check('noUsableSessionData: db files found but zero readable -> true', noUsableSessionData(2, 0) === true);
   check('noUsableSessionData: at least one db successfully read -> false', noUsableSessionData(2, 1) === false);
 
-  console.log('opencode/quota.ts: buildCapBuckets (session/weekly/monthly, UTC-anchored)');
-  const buckets = opencodeBuildCapBuckets([{ ts: nowTs, costCents: 500, tokens: 100 }], nowTs);
-  const session = buckets.find(b => b.id === 'session');
-  const weekly = buckets.find(b => b.id === 'weekly');
-  const monthly = buckets.find(b => b.id === 'monthly');
-  check('buildCapBuckets: session cap is $12 (1200 cents)', session.limit === 1200, session.limit);
-  check('buildCapBuckets: weekly cap is $30 (3000 cents)', weekly.limit === 3000, weekly.limit);
-  check('buildCapBuckets: monthly cap is $60 (6000 cents)', monthly.limit === 6000, monthly.limit);
-  check('buildCapBuckets: a session right now counts toward all three windows',
-        session.used === 500 && weekly.used === 500 && monthly.used === 500,
-        JSON.stringify({ session: session.used, weekly: weekly.used, monthly: monthly.used }));
-  check('buildCapBuckets: session bucket has no resetsAt (rolling look-back, no discrete reset)',
-        session.resetsAt === undefined);
-  check('buildCapBuckets: weekly bucket has a real resetsAt (UTC calendar boundary)',
-        typeof weekly.resetsAt === 'number' && weekly.resetsAt > nowTs);
-  check('buildCapBuckets: monthly bucket has a real resetsAt (UTC calendar boundary)',
-        typeof monthly.resetsAt === 'number' && monthly.resetsAt > nowTs);
-
-  const staleTs = nowTs - 30 * 24 * 3_600_000; // a month ago -- outside every window
-  const staleBuckets = opencodeBuildCapBuckets([{ ts: staleTs, costCents: 500, tokens: 100 }], nowTs);
-  check('buildCapBuckets: a session outside every window contributes 0, not the stale cost',
-        staleBuckets.every(b => b.used === 0), JSON.stringify(staleBuckets.map(b => b.used)));
-
-  check('buildCapBuckets: a record with costCents:null contributes nothing (never coerced to 0-cost spend)',
-        opencodeBuildCapBuckets([{ ts: nowTs, costCents: null, tokens: 100 }], nowTs)
-          .every(b => b.used === 0));
+  // The $12/$30/$60 cap buckets this block used to cover are gone: they were
+  // invented budget markers presented as vendor limits, and quota windows now
+  // come from the OpenCode Zen usage API instead (see opencode/quota.ts's
+  // file-header note 0, and tests/unit/quota-providers/opencode.test.ts).
 
   console.log('opencode/quota.ts: buildSpendTiles (Today/Yesterday/Last30d, null-vs-zero)');
   const tiles = opencodeBuildSpendTiles([{ ts: nowTs, costCents: 250, tokens: 500 }], nowTs);
@@ -1098,7 +1111,7 @@ async function testOpencodeUnavailableStates() {
   const emptyDir = path.join(tmpRoot, 'empty');
   fs.mkdirSync(emptyDir);
   const snapNoDb = await createOpencodeQuotaProvider({ dataDirs: [emptyDir] }, ctxFor()).fetch();
-  check('fetch(): no opencode*.db file found -> ok:false, not a fabricated zero', snapNoDb.ok === false,
+  check('fetch(): no Zen key and no opencode*.db -> ok:false, not a fabricated zero', snapNoDb.ok === false,
         JSON.stringify(snapNoDb));
 
   const brokenDir = path.join(tmpRoot, 'broken');
@@ -1122,8 +1135,12 @@ async function testOpencodeUnavailableStates() {
   fs.writeFileSync(path.join(validDir, 'opencode.db'), Buffer.from(validDb.export()));
   validDb.close();
   const snapValid = await createOpencodeQuotaProvider({ dataDirs: [validDir] }, ctxFor()).fetch();
-  check('fetch(): a readable .db with a genuinely empty session table -> ok:true with measured used:0',
-        snapValid.ok === true && snapValid.buckets.every(b => b.used === 0), JSON.stringify(snapValid));
+  // A readable db with no Zen key is a legitimate partial state: local spend
+  // is known, quota windows are not. It must not fail, and must not invent
+  // quota buckets out of local spend the way the old cap markers did.
+  check('fetch(): a readable .db but no Zen key -> ok:true, spend present, zero quota buckets',
+        snapValid.ok === true && snapValid.buckets.length === 0 && Array.isArray(snapValid.spend),
+        JSON.stringify(snapValid));
 
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 }
@@ -1152,11 +1169,24 @@ function testModelPricing() {
   check('costCentsFor: unknown model returns null, never 0',
         costCentsFor('some-unpriced-model', { inputTokens: 1000, outputTokens: 1000 }) === null);
 
-  // Deterministic example: Sonnet-tier, 1M input + 1M output tokens, no cache.
-  // inputPerMTokUsd=3, outputPerMTokUsd=15 -> $18.00 -> 1800 cents.
+  // Deterministic example: Sonnet 5, 1M input + 1M output tokens, no cache.
+  // inputPerMTokUsd=2, outputPerMTokUsd=10 -> $12.00 -> 1200 cents.
   const sonnetCost = costCentsFor('claude-sonnet-5', { inputTokens: 1_000_000, outputTokens: 1_000_000 });
-  check('costCentsFor: known model computes the expected cents ($3+$15 per MTok -> 1800)',
-        sonnetCost === 1800, sonnetCost);
+  check('costCentsFor: known model computes the expected cents ($2+$10 per MTok -> 1200)',
+        sonnetCost === 1200, sonnetCost);
+
+  // Version-keyed Anthropic tiers: the same family prices differently by
+  // generation, which the old substring-only table could not express.
+  check('rateFor: claude-sonnet-4-6 keeps the pre-5 Sonnet rate',
+        rateFor('claude-sonnet-4-6').inputPerMTokUsd === 3, rateFor('claude-sonnet-4-6').inputPerMTokUsd);
+  check('rateFor: claude-opus-4-8 uses the 4.5+ Opus rate, not the retired $15 one',
+        rateFor('claude-opus-4-8').inputPerMTokUsd === 5, rateFor('claude-opus-4-8').inputPerMTokUsd);
+  check('rateFor: a dated snapshot is not mistaken for a minor version',
+        rateFor('claude-sonnet-4-5-20250929').inputPerMTokUsd === 3);
+  check('rateFor: a newer-than-known version resolves to the newest tier, never null',
+        rateFor('claude-opus-6') === rateFor('claude-opus-5'));
+  check('rateFor: the fable family is priced instead of falling through to null',
+        rateFor('claude-fable-5-1').outputPerMTokUsd === 50);
 
   check('costCentsFor: zero tokens on a known model is a measured zero (0), not null',
         costCentsFor('claude-sonnet-5', { inputTokens: 0, outputTokens: 0 }) === 0);
@@ -1175,14 +1205,16 @@ function testModelPricing() {
   check('costCentsFor: crossing the long-context threshold strictly increases cost per input token',
         overThreshold / 300_000 > underThreshold / 270_000);
 
-  // Fast-tier multiplier: gpt-5-codex has fastTierMultiplier=1.5. Expected
-  // values computed directly from the rate (not by re-rounding an already
-  // rounded normal-tier result, which would drift from independent rounding).
+  // Fast-tier multiplier: gpt-5-codex has fastTierMultiplier=2 (OpenAI renamed
+  // "Priority processing" to "Fast mode" on 2026-07-30 and repriced it at 2x
+  // standard, not the 1.5x this table used to assume). Expected values
+  // computed directly from the rate (not by re-rounding an already rounded
+  // normal-tier result, which would drift from independent rounding).
   const normalTier = costCentsFor('gpt-5-codex', { inputTokens: 100_000, outputTokens: 0, fastTier: false });
   const fastTier = costCentsFor('gpt-5-codex', { inputTokens: 100_000, outputTokens: 0, fastTier: true });
   const expectedNormal = Math.round((100_000 / 1_000_000) * 1.25 * 100);
-  const expectedFast = Math.round((100_000 / 1_000_000) * 1.25 * 1.5 * 100);
-  check('costCentsFor: fastTier:true applies fastTierMultiplier (1.5x)',
+  const expectedFast = Math.round((100_000 / 1_000_000) * 1.25 * 2 * 100);
+  check('costCentsFor: fastTier:true applies fastTierMultiplier (2x)',
         fastTier === expectedFast, `${fastTier} vs ${expectedFast}`);
   check('costCentsFor: fastTier:false matches the base (unmultiplied) rate',
         normalTier === expectedNormal, `${normalTier} vs ${expectedNormal}`);
@@ -1749,15 +1781,11 @@ function testGrokQuota() {
           return r.windowMs === 604800000 && r.resetsAt === undefined;
         })());
 
-  console.log('grok/quota.ts: atomicWriteFile (same pattern as codex-cli\'s)');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-smoke-grok-'));
-  const target = path.join(tmp, 'auth.json');
-  fs.writeFileSync(target, '{"orig":true}');
-  const ok = grokAtomicWriteFile(target, '{"next":true}');
-  check('atomicWriteFile: returns true on success', ok === true);
-  check('atomicWriteFile: target now has the new content',
-        fs.readFileSync(target, 'utf8') === '{"next":true}');
-  fs.rmSync(tmp, { recursive: true, force: true });
+  // atomicWriteFile is gone: this connector no longer writes auth.json at
+  // all. Vendor refresh tokens rotate and the Grok CLI rewrites that file
+  // without locking, so a second writer can invalidate the user's session --
+  // a 401 now returns needsLogin instead (see grok/quota.ts's file header,
+  // and tests/unit/quota-providers/grok.test.ts).
 
   console.log('grok/quota.ts: parseBillingJson');
   check('parseBillingJson: reads weekly_usage_percent + pay_as_you_go under data',
@@ -1856,7 +1884,14 @@ function testDevinQuota() {
   console.log('devin/quota.ts: parseUserStatus');
   check('parseUserStatus: reads weekly + daily quota under userStatus',
         (() => {
-          const p = devinParseUserStatus({ userStatus: { weekly_quota: { used_percent: 30 }, daily_quota: { used_percent: 10 } } });
+          const p = devinParseUserStatus({
+      userStatus: {
+        weeklyQuotaRemainingPercent: 70,
+        weeklyQuotaResetTime: '2026-09-20T00:00:00Z',
+        dailyQuotaRemainingPercent: 90,
+        dailyQuotaResetTime: '2026-09-17T00:00:00Z',
+      },
+    });
           return p.weekly.usedPercent === 30 && p.daily.usedPercent === 10;
         })());
   check('parseUserStatus: extra_balance_cents passed through unchanged (no double dollars->cents conversion)',
@@ -2193,9 +2228,10 @@ function testAntigravityQuota() {
     // createXQuotaProvider().fetch() directly under Node.
     const provider = createAntigravityQuotaProvider({}, makeCtx([]));
     const snap = await provider.fetch();
-    check('fetch(): nothing listening on the scanned range -> ok:false with the honest "not running" message',
+    check('fetch(): no language-server process and nothing listening -> ok:false with a message that says the app must be running',
           snap.ok === false && typeof snap.error === 'string' &&
-          snap.error === 'Antigravity is not running — start the app to see quota.',
+          snap.error.includes('does not appear to be running') &&
+          snap.error.includes('open Antigravity'),
           JSON.stringify(snap));
     check('fetch(): the not-running case is NOT needsLogin -- there is no login flow for this connector',
           snap.ok === false && snap.needsLogin === undefined);
@@ -2330,8 +2366,7 @@ function testTrayRepresentations() {
   testConnectorClassifiers();
   testConnectorHelpers();
   testZaiQuotaParsing();
-  testCodexAtomicWrite();
-  testCodexSparkBuckets();
+  testCodexWireShape();
   testCursorSpendTiles();
   testOpencodeQuota();
   await testOpencodeUnavailableStates();
