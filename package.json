@@ -1,6 +1,6 @@
 {
   "name": "aioversight",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "private": true,
   "description": "Lightweight, framework-agnostic monitoring tool for autonomous AI agents — execution alerts, human-in-the-loop interventions, and universal token/quota tracking.",
   "main": "dist/main/index.js",
@@ -9,7 +9,7 @@
     "email": "nikolmedo@gmail.com",
     "url": "https://nolmedo.dev"
   },
-  "license": "MIT",
+  "license": "Apache-2.0",
   "scripts": {
     "postinstall": "node scripts/generate-icons.js",
     "build": "tsc -p tsconfig.json && node scripts/copy-renderer.js",
