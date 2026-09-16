@@ -201,18 +201,9 @@ export class QuotaService extends EventEmitter {
    * just received, not to when we asked.
    */
   private noteResult(entry: ProviderEntry, snapshot: QuotaSnapshot, startedAt: number): void {
-    if (snapshot.ok) {
-      entry.consecutiveFailures = 0;
-      entry.nextAllowedFetchAt = 0;
-      return;
-    }
-    entry.consecutiveFailures += 1;
-    const requested = snapshot.retryAfterMs;
-    entry.nextAllowedFetchAt =
-      requested != null && requested > 0
-        ? Date.now() + requested
-        : startedAt +
-          Math.min(MAX_BACKOFF_MS, entry.intervalMs * 2 ** (entry.consecutiveFailures - 1));
+    const next = backoffAfter(snapshot, entry, startedAt, Date.now());
+    entry.consecutiveFailures = next.consecutiveFailures;
+    entry.nextAllowedFetchAt = next.nextAllowedFetchAt;
   }
 
   private async fetchOne(id: string): Promise<QuotaSnapshot> {
@@ -244,6 +235,10 @@ export class QuotaService extends EventEmitter {
             buckets: snap.buckets.length,
             authMethod: snap.authMethod,
           });
+        } else if (snap.appNotRunning) {
+          // Expected while the app is closed; at `warn` it would fill the Logs
+          // tab once per poll.
+          this.runtime.log('debug', `[quota] ${id} app not running`);
         } else {
           this.runtime.log('warn', `[quota] ${id} failed`, { error: snap.error });
         }
@@ -267,6 +262,35 @@ export class QuotaService extends EventEmitter {
     entry.inFlight = promise;
     return promise;
   }
+}
+
+export interface BackoffState {
+  consecutiveFailures: number;
+  nextAllowedFetchAt: number;
+}
+
+/**
+ * Backoff state after a fetch that started at `startedAt` returned `snapshot`.
+ * A success clears it. So does `appNotRunning`: the app being closed is not
+ * a vendor outage, and backing off would delay picking up data after the
+ * user opens the app by up to `MAX_BACKOFF_MS`.
+ */
+export function backoffAfter(
+  snapshot: QuotaSnapshot,
+  prev: BackoffState & { intervalMs: number },
+  startedAt: number,
+  now: number,
+): BackoffState {
+  if (snapshot.ok || snapshot.appNotRunning) {
+    return { consecutiveFailures: 0, nextAllowedFetchAt: 0 };
+  }
+  const consecutiveFailures = prev.consecutiveFailures + 1;
+  const requested = snapshot.retryAfterMs;
+  const nextAllowedFetchAt =
+    requested != null && requested > 0
+      ? now + requested
+      : startedAt + Math.min(MAX_BACKOFF_MS, prev.intervalMs * 2 ** (consecutiveFailures - 1));
+  return { consecutiveFailures, nextAllowedFetchAt };
 }
 
 function pickInterval(

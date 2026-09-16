@@ -1,5 +1,7 @@
 import './../../helpers/electron-stub';
-import { describe, it } from 'node:test';
+import Module = require('node:module');
+import type * as cp from 'child_process';
+import { describe, it, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import {
   parseProcessArgs,
@@ -16,7 +18,193 @@ import {
   mergePoolQuota,
   CSRF_HEADER,
   RPC_REQUEST_BODY,
+  notFoundSnapshot,
+  parsePortRangeInfo,
+  APP_NOT_RUNNING_NOTICE,
+  runCommand,
+  createAntigravityQuotaProvider,
 } from '../../../src/main/connectors/antigravity/quota';
+import { createFakeContext } from '../../helpers/fake-context';
+
+describe('Antigravity server not reached', () => {
+  it('reports appNotRunning with the open-the-app notice when no process was found', () => {
+    // Act
+    const snap = notFoundSnapshot(null, parsePortRangeInfo(undefined), 1);
+
+    // Assert
+    assert.equal(snap.ok, false);
+    if (!snap.ok) {
+      assert.equal(snap.appNotRunning, true);
+      assert.equal(snap.error, APP_NOT_RUNNING_NOTICE);
+    }
+  });
+
+  it('reports a real error, not appNotRunning, when the process was found but never answered', () => {
+    // Arrange
+    const discovered = parseLanguageServerCmdline({ pid: 4242, cmdline: LS_CMDLINE });
+
+    // Act
+    const snap = notFoundSnapshot(discovered, parsePortRangeInfo(undefined), 1);
+
+    // Assert
+    assert.equal(snap.ok, false);
+    if (!snap.ok) {
+      assert.equal(snap.appNotRunning, undefined);
+      assert.match(snap.error, /pid 4242/);
+    }
+  });
+
+  it('WARNING FIX: reports a real error, not appNotRunning, when discovery itself was inconclusive (mechanism failed, not "found nothing")', () => {
+    // Act -- discovery failed (e.g. powershell/ps errored or timed out), so
+    // the caller passes inconclusive: true instead of the clean not-found path.
+    const snap = notFoundSnapshot(null, parsePortRangeInfo(undefined), 1, true);
+
+    // Assert -- a real, backoff-arming error, never the calm "just open the app" notice.
+    assert.equal(snap.ok, false);
+    if (!snap.ok) {
+      assert.equal(snap.appNotRunning, undefined);
+      assert.notEqual(snap.error, APP_NOT_RUNNING_NOTICE);
+      assert.match(snap.error, /process listing failed/i);
+    }
+  });
+
+  it('WARNING FIX: a truncated port-range scan is a real error, not appNotRunning, even with discovered === null', () => {
+    // Arrange -- a pathologically wide range whose span was capped by MAX_PORT_RANGE_SPAN.
+    const portInfo = parsePortRangeInfo('1-65000');
+    assert.ok(portInfo.requestedSpan > portInfo.ports.length, 'precondition: this range must actually be truncated');
+
+    // Act
+    const snap = notFoundSnapshot(null, portInfo, 1, false);
+
+    // Assert
+    assert.equal(snap.ok, false);
+    if (!snap.ok) {
+      assert.equal(snap.appNotRunning, undefined);
+      assert.match(snap.error, /truncated/i);
+    }
+  });
+
+  it('a clean "no process, no port hit" outcome (not inconclusive, not truncated) still reports appNotRunning: true', () => {
+    // Arrange -- a normal, non-widened range: nothing here should truncate.
+    const portInfo = parsePortRangeInfo(undefined);
+    assert.equal(portInfo.requestedSpan, portInfo.ports.length, 'precondition: this range must NOT be truncated');
+
+    // Act
+    const snap = notFoundSnapshot(null, portInfo, 1, false);
+
+    // Assert
+    assert.equal(snap.ok, false);
+    if (!snap.ok) assert.equal(snap.appNotRunning, true);
+  });
+});
+
+/**
+ * `child_process.execFile` is non-configurable on this Node version, so it
+ * cannot be monkeypatched by reassigning the property (a plain assignment
+ * throws "only a getter"; `Object.defineProperty` throws "Cannot redefine
+ * property"). Instead, intercept `require('child_process')` itself via
+ * `Module._load` -- the same technique `electron-stub.ts` uses for
+ * `require('electron')` -- and hand back a shallow copy of the real module
+ * with `execFile` swapped, only while `execFileOverride` is set. `runCommand`
+ * does a fresh `require('child_process')` on every call, so this is enough;
+ * no source change to `runCommand` is needed to make it testable.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const ModuleAny = Module as any;
+const loadBeforeThisFile = ModuleAny._load;
+let execFileOverride: typeof cp.execFile | null = null;
+
+function patchedLoadForChildProcess(this: unknown, request: string, ...rest: unknown[]) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const result = loadBeforeThisFile.call(this, request, ...rest);
+  if (request === 'child_process' && execFileOverride) {
+    return { ...result, execFile: execFileOverride };
+  }
+  return result;
+}
+
+Object.defineProperty(ModuleAny, '_load', {
+  value: patchedLoadForChildProcess,
+  writable: true,
+  configurable: true,
+  enumerable: true,
+});
+
+function setExecFile(fn: typeof cp.execFile | null): void {
+  execFileOverride = fn;
+}
+
+describe('Antigravity async command execution (WARNING/RESILIENCE fix: no more execFileSync blocking the event loop)', () => {
+  afterEach(() => {
+    setExecFile(null);
+  });
+
+  it('runCommand returns a Promise rather than blocking synchronously', () => {
+    // Act
+    const pending = runCommand(process.execPath, ['-e', 'process.exit(0)']);
+
+    // Assert
+    assert.equal(typeof pending.then, 'function');
+  });
+
+  it('does not block the event loop while the shelled-out command is pending', async () => {
+    // Arrange -- a stand-in for a slow real command: it only answers once a
+    // timer (proxy for "other event-loop work") has already run.
+    setExecFile(((
+      _file: string,
+      _args: string[],
+      _opts: unknown,
+      cb: (err: Error | null, stdout?: string, stderr?: string) => void,
+    ) => {
+      setTimeout(() => {
+        order.push('timer');
+        cb(null, 'stub-output', '');
+      }, 20);
+    }) as unknown as typeof cp.execFile);
+    const order: string[] = [];
+
+    // Act
+    const result = await runCommand('whatever', []).then(res => {
+      order.push('runCommand');
+      return res;
+    });
+
+    // Assert -- if `runCommand` still used `execFileSync` (ignoring this
+    // mock entirely and either blocking for real or throwing ENOENT
+    // synchronously), 'runCommand' would resolve on the current microtask
+    // turn, before the 20ms timer ever fires.
+    assert.deepEqual(order, ['timer', 'runCommand']);
+    assert.deepEqual(result, { ok: true, stdout: 'stub-output' });
+  });
+
+  it('reports "not-found" for a missing tool (ENOENT), never confused with a real failure', async () => {
+    // Act
+    const result = await runCommand('definitely-not-a-real-binary-xyz-123', []);
+
+    // Assert
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.reason, 'not-found');
+  });
+
+  it('reports "failed" (not "not-found") for a command that runs but exits non-zero', async () => {
+    // Act -- the tool exists (it's this test's own Node binary) and ran, it
+    // just failed -- a real, worth-surfacing problem, not "app is closed".
+    const result = await runCommand(process.execPath, ['-e', 'process.exit(3)']);
+
+    // Assert
+    assert.equal(result.ok, false);
+    if (!result.ok) assert.equal(result.reason, 'failed');
+  });
+
+  it('resolves ok:true with the captured stdout on success', async () => {
+    // Act
+    const result = await runCommand(process.execPath, ['-e', 'process.stdout.write("hello")']);
+
+    // Assert
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.stdout, 'hello');
+  });
+});
 
 const LS_CMDLINE =
   '"C:\\Users\\u\\.antigravity\\language_server_windows_x64.exe" --app_data_dir antigravity ' +
@@ -229,4 +417,54 @@ describe('Antigravity quota parsing', () => {
     assert.equal(byId['gemini-5h'].used, 80);
     assert.equal(byId['other-5h'].used, 10);
   });
+});
+
+describe('Antigravity fetch() end-to-end wiring for inconclusive discovery (WARNING FIX)', () => {
+  afterEach(() => {
+    setExecFile(null);
+  });
+
+  // The Linux branch of `listProcesses()` reads `/proc` directly rather than
+  // shelling out through `runCommand`, so this mock (which only intercepts
+  // `execFile`) can't exercise it there.
+  const itNonLinux = process.platform !== 'linux' ? it : it.skip;
+
+  itNonLinux(
+    'reports a real error (not appNotRunning) and warns, when the platform\'s process-listing command fails outright',
+    async () => {
+      // Arrange -- every invocation of the platform's process-listing command
+      // (powershell.exe on win32, ps elsewhere) fails with a non-ENOENT error,
+      // simulating a blocked/erroring tool rather than a missing one.
+      setExecFile(((
+        _file: string,
+        _args: string[],
+        _opts: unknown,
+        cb: (err: Error | null, stdout?: string, stderr?: string) => void,
+      ) => {
+        cb(Object.assign(new Error('Access is denied'), { code: 1 }));
+      }) as unknown as typeof cp.execFile);
+
+      const ctx = createFakeContext();
+      // A narrow, almost-certainly-empty port range keeps the port-scan
+      // fallback (which still runs) fast and real-network-based, same as the
+      // existing "no language-server process and nothing listening" test.
+      const provider = createAntigravityQuotaProvider({ portRange: '49500-49501' }, ctx);
+
+      // Act
+      const snap = await provider.fetch();
+
+      // Assert -- a real, backoff-arming error, never the calm "closed app" notice.
+      assert.equal(snap.ok, false);
+      if (!snap.ok) {
+        assert.equal(snap.appNotRunning, undefined);
+        assert.match(snap.error, /process listing failed/i);
+      }
+      // WARNING FIX: visible at `warn`, not `debug`, so a permanently
+      // misdiagnosed environment problem doesn't stay silent by default.
+      assert.ok(
+        ctx.logs.some(l => l.level === 'warn' && /process discovery failed/i.test(l.message)),
+        JSON.stringify(ctx.logs),
+      );
+    },
+  );
 });

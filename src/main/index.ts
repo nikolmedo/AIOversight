@@ -152,7 +152,7 @@ app.whenReady().then(async () => {
     {
       openSettings,
       getQuotas: () => quotaService!.state(),
-      getConnectors: () => runtime!.metadata(),
+      getConnectors: () => runtime!.metadata(settings!.get().connectors.enabled),
     },
     !!settings.get().transparentPopup,
   );
@@ -227,7 +227,7 @@ function openSettings(): void {
 
 function registerIpc(): void {
   ipcMain.handle('settings:get', () => ({
-    connectors: runtime!.metadata(),
+    connectors: runtime!.metadata(settings!.get().connectors.enabled),
     settings: settings!.get(),
     paused,
     settingsPath: settings!.filePath(),
@@ -276,7 +276,7 @@ function registerIpc(): void {
         settings!.get().connectors,
         settings!.get().quotaPollMinutes,
       );
-      return runtime!.metadata();
+      return runtime!.metadata(settings!.get().connectors.enabled);
     },
   );
 
@@ -393,7 +393,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('trayPopup:getQuotas', () => quotaService!.state());
-  ipcMain.handle('trayPopup:getConnectors', () => runtime!.metadata());
+  ipcMain.handle('trayPopup:getConnectors', () => runtime!.metadata(settings!.get().connectors.enabled));
   ipcMain.handle('trayPopup:getBucketPrefs', () => settings!.get().connectors.bucketPrefs ?? {});
   ipcMain.handle('trayPopup:getUiPrefs', () => {
     const s = settings!.get();

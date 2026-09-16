@@ -21,6 +21,22 @@ describe('formatTrayLineFor', () => {
     assert.equal(line, 'Claude Code: 42% used');
   });
 
+  it('returns null for an appNotRunning snapshot, leaving the connector out of the tooltip', () => {
+    // Arrange
+    const snap: QuotaSnapshot = {
+      ok: false,
+      fetchedAt: 1,
+      error: "Antigravity isn't running. Open it to see its quota.",
+      appNotRunning: true,
+    };
+
+    // Act
+    const line = formatTrayLineFor('Antigravity', snap);
+
+    // Assert
+    assert.equal(line, null);
+  });
+
   it('returns null for an error snapshot', () => {
     // Arrange
     const snap = quotaSnapshotError('No admin API key set.') as QuotaSnapshot;
