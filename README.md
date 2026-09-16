@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/ai-icon-no-bkg.png" alt="AIOversight logo" width="96" />
+<img src="assets/icon.png" alt="AIOversight logo" width="96" />
 
 # AIOversight
 
@@ -171,6 +171,11 @@ curl -sX POST http://127.0.0.1:53127/notify \
 | **Logs** | Diagnostic output from each connector, the runtime, and the notifier. |
 | **General** | Launch at system startup, master notification switch, per-kind toggles, cooldown, default quota poll interval, tray quota summary, quiet hours. |
 | **Webhook recipe** | Copy-paste `curl` example with your live host / port / token. |
+
+<div align="center">
+<img src="docs/screenshot-integrations.png" alt="Integrations tab" width="49%" />
+<img src="docs/screenshot-general.png" alt="General tab" width="49%" />
+</div>
 
 ## Privacy & security
 
