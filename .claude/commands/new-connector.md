@@ -13,6 +13,7 @@ Then:
 5. Add the connector to `src/main/connectors/registry.ts`
 6. Run `npx tsc --noEmit` — fix any type errors
 7. Run `npm run smoke` — if the connector has a detector, add test cases to `scripts/smoke.js` first
+8. Run `npm test` — if the connector has a quota provider, add `tests/unit/quota-providers/<id>.test.ts` first
 
 Connector id must be kebab-case and stable (it becomes a settings key stored on disk).
 All identifiers, comments, and UI copy must be in English.

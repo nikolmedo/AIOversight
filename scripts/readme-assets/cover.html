@@ -1,0 +1,35 @@
+<!doctype html><html><head><meta charset="utf-8"><base href="{{BASE}}">
+<!-- Template for scripts/readme-assets/render-cover.js. {{...}} placeholders are
+     filled from src/renderer/tokens.css; paths below resolve against the repo root. -->
+<style>
+:root{--bg:{{bg}};--surface:{{surface}};--border:{{border}};--border-strong:{{border-strong}};
+--text:{{text}};--text-2:{{text-2}};--text-3:{{text-3}};--shadow-float:{{shadow-float}};}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1280px;height:640px;overflow:hidden;background:var(--bg)}
+body{position:relative;font-family:"Segoe UI Variable Display","Segoe UI",-apple-system,system-ui,sans-serif;
+  color:var(--text);-webkit-font-smoothing:antialiased}
+.copy{position:absolute;left:72px;top:0;bottom:0;width:452px;display:flex;flex-direction:column;justify-content:center;padding-top:12px}
+.mark{width:64px;height:64px;display:block;margin-bottom:28px}
+h1{font-size:60px;font-weight:600;letter-spacing:-0.02em;line-height:1.05}
+.tag{margin-top:18px;font-size:26px;line-height:1.35;color:var(--text-2);font-weight:400;letter-spacing:-0.005em;
+  font-family:"Segoe UI Variable Text","Segoe UI",-apple-system,system-ui,sans-serif}
+.meta{margin-top:30px;font-size:17px;line-height:1.5;white-space:nowrap;color:var(--text-3);
+  font-family:"Segoe UI Variable Text","Segoe UI",-apple-system,system-ui,sans-serif}
+.meta span{padding:0 6px}
+.win{position:absolute;overflow:hidden;border:1px solid var(--border);border-radius:12px;
+  background:var(--surface);box-shadow:var(--shadow-float)}
+.win img{display:block;position:absolute;left:0;top:0}
+.main{left:676px;top:92px;width:760px;height:700px}
+.main img{width:760px;left:-1px;top:-1px}
+.popup{left:566px;top:318px;width:272px;height:680px}
+.popup img{width:272px;left:-1px;top:-1px}
+</style></head><body>
+<div class="copy">
+  <img class="mark" src="assets/ai-icon.png" alt="">
+  <h1>AI Oversight</h1>
+  <p class="tag">The control tower for your AI&nbsp;coding&nbsp;agents.</p>
+  <p class="meta">Finish &amp; waiting alerts<span>·</span>Quota across 12 tools<span>·</span>Local-first</p>
+</div>
+<div class="win main"><img src="docs/screenshots/overview-{{THEME}}.png"></div>
+<div class="win popup"><img src="docs/screenshots/popup-{{THEME}}.png"></div>
+</body></html>

@@ -1,0 +1,180 @@
+  // Screenshot capture block for README images. NOT compiled, NOT committed into src/.
+  // Paste this whole block into src/main/index.ts inside app.whenReady(), right after
+  // `refreshTrayQuotaSummary();` (it must run after registerIpc(), whose handlers it replaces).
+  // Run, copy the PNGs, then restore src/main/index.ts and rebuild. Steps and environment
+  // quirks: scripts/readme-assets/README.md. All data below is fictional demo data.
+  // TEMP-SCREENSHOT-BEGIN
+  if (process.env.AIO_SCREENSHOT_DIR) {
+    const fs = require('fs') as typeof import('fs');
+    const dir = process.env.AIO_SCREENSHOT_DIR;
+    const theme = process.env.AIO_SCREENSHOT_THEME === 'light' ? 'light' : 'dark';
+    const only = (process.env.AIO_SCREENSHOT_ONLY ?? '').split(',').filter(Boolean);
+    const want = (n: string) => only.length === 0 || only.includes(n);
+    nativeTheme.themeSource = theme;
+    fs.mkdirSync(dir, { recursive: true });
+    const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
+    const MIN = 60_000;
+    const HOUR = 3_600_000;
+    const DAY = 86_400_000;
+    const now = Date.now();
+    const spendClaude = [
+      { period: 'today' as const, label: 'Today', costCents: 842, tokens: 2_310_000 },
+      { period: 'yesterday' as const, label: 'Yesterday', costCents: 1105, tokens: 3_020_000 },
+      { period: 'last30d' as const, label: 'Last 30 days', costCents: 15480, tokens: 41_700_000 },
+    ];
+    const spendCodex = [
+      { period: 'today' as const, label: 'Today', costCents: 231, tokens: 640_000 },
+      { period: 'yesterday' as const, label: 'Yesterday', costCents: 402, tokens: 1_150_000 },
+      { period: 'last30d' as const, label: 'Last 30 days', costCents: 5230, tokens: 14_900_000 },
+    ];
+    const spendCursor = [
+      { period: 'today' as const, label: 'Today', costCents: 187, tokens: 520_000 },
+      { period: 'yesterday' as const, label: 'Yesterday', costCents: 260, tokens: 730_000 },
+      { period: 'last30d' as const, label: 'Last 30 days', costCents: 3310, tokens: 9_100_000 },
+    ];
+    const demo: Record<string, QuotaSnapshot> = {
+      'claude-code': {
+        ok: true, fetchedAt: now - 2 * MIN, membershipType: 'Max 5x', displayMessages: [], authMethod: 'cookie', spend: spendClaude,
+        buckets: [
+          { id: 'five-hour', label: '5-hour limit', used: 42, limit: 100, remaining: 58, unit: 'percent', enabled: true, resetsAt: now + 2 * HOUR + 10 * MIN, windowMs: 5 * HOUR },
+          { id: 'seven-day', label: '7-day limit', used: 61, limit: 100, remaining: 39, unit: 'percent', enabled: true, resetsAt: now + 3 * DAY + 4 * HOUR, windowMs: 7 * DAY },
+          { id: 'weekly-opus', label: 'Weekly Opus limit', used: 84, limit: 100, remaining: 16, unit: 'percent', enabled: true, resetsAt: now + 3 * DAY + 4 * HOUR, windowMs: 7 * DAY, defaultVisibility: 'onDemand' },
+        ],
+      },
+      'codex-cli': {
+        ok: true, fetchedAt: now - 4 * MIN, membershipType: 'Plus', displayMessages: [], spend: spendCodex,
+        buckets: [
+          { id: 'session', label: 'Session (5h)', used: 18, limit: 100, remaining: 82, unit: 'percent', enabled: true, resetsAt: now + 3 * HOUR + 40 * MIN, windowMs: 5 * HOUR },
+          { id: 'weekly', label: 'Weekly', used: 35, limit: 100, remaining: 65, unit: 'percent', enabled: true, resetsAt: now + 5 * DAY + 2 * HOUR, windowMs: 7 * DAY },
+        ],
+      },
+      cursor: {
+        ok: true, fetchedAt: now - 6 * MIN, membershipType: 'Pro', displayMessages: [], spend: spendCursor,
+        buckets: [
+          { id: 'plan-usage', label: 'Plan usage this period', used: 1320, limit: 2000, remaining: 680, unit: 'usd', enabled: true, resetsAt: now + 11 * DAY, windowMs: 30 * DAY },
+          { id: 'spend-limit', label: 'Spend limit', used: 240, limit: 5000, remaining: 4760, unit: 'usd', enabled: true, defaultVisibility: 'onDemand' },
+        ],
+      },
+      'github-copilot': {
+        ok: true, fetchedAt: now - 9 * MIN, membershipType: 'Business', displayMessages: ['Billed in AI Credits (1 credit = $0.01), resetting 00:00 UTC on the 1st.'],
+        buckets: [
+          { id: 'premium_interactions', label: 'Premium requests (credits)', used: 503.6, limit: 20000, remaining: 19496.4, unit: 'credits', enabled: true, note: 'AI Credits ($0.01 each)' },
+          { id: 'chat', label: 'Chat (unlimited)', used: 0, limit: null, remaining: null, unit: 'credits', enabled: true },
+          { id: 'completions', label: 'Code completions (unlimited)', used: 0, limit: null, remaining: null, unit: 'credits', enabled: true },
+        ],
+      },
+      openrouter: {
+        ok: true, fetchedAt: now - 12 * MIN, displayMessages: [], authMethod: 'api-key',
+        buckets: [
+          { id: 'prepaid-balance', label: 'Prepaid balance', used: 660, limit: 2500, remaining: 1840, unit: 'usd', enabled: true },
+          { id: 'lifetime-spend', label: 'Lifetime spend', used: 660, limit: null, remaining: null, unit: 'usd', enabled: true },
+        ],
+      },
+    };
+    const demoEnabled: Record<string, ConnectorEnabled> = {
+      'claude-code': { notifications: true, quota: true },
+      'codex-cli': { notifications: true, quota: true },
+      cursor: { notifications: true, quota: true },
+      'github-copilot': { notifications: false, quota: true },
+      openrouter: { notifications: false, quota: true },
+      webhook: { notifications: true, quota: false },
+    };
+    const demoEvents = [
+      { ts: now - 2 * MIN, agent: 'Claude Code', sessionId: 'd1', kind: 'waiting' as const, message: 'Allow `npm install zod`?', source: 'C:\\Users\\dev\\projects\\shop-api' },
+      { ts: now - 9 * MIN, agent: 'Codex CLI', sessionId: 'd2', kind: 'finished' as const, message: 'Turn complete: added pagination to the orders endpoint', source: 'C:\\Users\\dev\\projects\\shop-api' },
+      { ts: now - 17 * MIN, agent: 'Copilot', sessionId: 'd3', kind: 'waiting' as const, message: "Allow execution of 'npm run test:e2e'?", source: 'C:\\Users\\dev\\projects\\storefront' },
+      { ts: now - 34 * MIN, agent: 'Cursor', sessionId: 'd4', kind: 'finished' as const, message: 'Turn complete', source: 'C:\\Users\\dev\\projects\\storefront' },
+      { ts: now - 51 * MIN, agent: 'Claude Code', sessionId: 'd5', kind: 'waiting' as const, message: 'Approve edit to src/api/routes.ts?', source: 'C:\\Users\\dev\\projects\\shop-api' },
+      { ts: now - 72 * MIN, agent: 'Codex CLI', sessionId: 'd6', kind: 'waiting' as const, message: 'Run `cargo test --workspace`?', source: 'C:\\Users\\dev\\projects\\ledger-rs' },
+      { ts: now - 96 * MIN, agent: 'Claude Code', sessionId: 'd7', kind: 'finished' as const, message: 'Turn complete: migrated auth middleware to the new session store', source: 'C:\\Users\\dev\\projects\\shop-api' },
+      { ts: now - 118 * MIN, agent: 'Cursor', sessionId: 'd8', kind: 'waiting' as const, message: 'Approve edit to app/checkout/page.tsx?', source: 'C:\\Users\\dev\\projects\\storefront' },
+    ];
+    const demoSettings = () => {
+      const s = settings!.get();
+      return {
+        ...s,
+        recentEvents: demoEvents,
+        connectors: { ...s.connectors, enabled: { ...s.connectors.enabled, ...demoEnabled } },
+      };
+    };
+    const qs = quotaService!;
+    qs.state = () => demo;
+    qs.refresh = async (id: string) => demo[id] ?? null;
+    qs.refreshAll = async () => demo;
+    for (const ch of ['settings:get', 'quota:get', 'quota:refresh', 'trayPopup:getQuotas', 'trayPopup:refresh', 'settings:logs']) {
+      ipcMain.removeHandler(ch);
+    }
+    ipcMain.handle('settings:get', () => ({
+      connectors: runtime!.metadata(),
+      settings: demoSettings(),
+      paused: false,
+      settingsPath: 'C:\\Users\\dev\\AppData\\Roaming\\AI Oversight\\settings.json',
+      quotas: demo,
+      platform: process.platform,
+    }));
+    ipcMain.handle('quota:get', () => demo);
+    ipcMain.handle('quota:refresh', (_e, id?: string) => (id ? demo[id] : demo));
+    ipcMain.handle('trayPopup:getQuotas', () => demo);
+    ipcMain.handle('trayPopup:refresh', (_e, id?: string) => (id ? { [id]: demo[id] } : demo));
+    ipcMain.handle('settings:logs', () => []);
+
+    void (async () => {
+      const save = async (win: BrowserWindow, name: string) => {
+        const img = await win.webContents.capturePage();
+        fs.writeFileSync(path.join(dir, `${name}-${theme}.png`), img.toPNG());
+        console.log('[screenshot]', name, theme, img.getSize());
+      };
+
+      if (want('popup') && tray && trayPopup) {
+        trayPopup.toggle(tray);
+        await wait(1500);
+        const popupWin = BrowserWindow.getAllWindows().find(w => w !== settingsWindow && w.isVisible());
+        if (popupWin) {
+          const desired = (await popupWin.webContents.executeJavaScript(`(() => {
+            const s = document.getElementById('scroller');
+            const chrome = document.body.getBoundingClientRect().height - s.clientHeight;
+            return Math.ceil(chrome + s.scrollHeight);
+          })()`)) as number;
+          const [, curH] = popupWin.getContentSize();
+          if (desired > curH) popupWin.setContentSize(360, desired, false);
+          await wait(600);
+          await popupWin.webContents.executeJavaScript(`document.activeElement && document.activeElement.blur()`);
+          await save(popupWin, 'popup');
+          trayPopup.hide();
+        } else {
+          console.error('[screenshot] popup window not found');
+        }
+      }
+
+      openSettings();
+      const win = settingsWindow!;
+      await new Promise<void>(r => win.webContents.once('did-finish-load', () => r()));
+      await wait(1000);
+      const js = (code: string) => win.webContents.executeJavaScript(code);
+      const blur = () => js(`document.activeElement && document.activeElement.blur()`);
+      const go = async (page: string) => {
+        await js(`document.querySelector('.nav-item[data-page="${page}"]').click()`);
+        await wait(400);
+        await blur();
+        await wait(100);
+      };
+      for (const p of ['overview', 'activity', 'preferences', 'webhook']) {
+        if (!want(p)) continue;
+        await go(p);
+        await save(win, p);
+      }
+      if (want('integrations-drawer')) {
+        await go('integrations');
+        await js(`document.querySelector('.integration-row[data-connector-id="claude-code"] .integration-main').click()`);
+        await wait(700);
+        await blur();
+        await wait(150);
+        await save(win, 'integrations-drawer');
+      }
+      app.quit();
+    })().catch(err => {
+      console.error('[screenshot]', err);
+      app.quit();
+    });
+  }
+  // TEMP-SCREENSHOT-END
