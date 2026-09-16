@@ -1,6 +1,40 @@
 import { ConnectorContext, QuotaBucket, QuotaProvider, QuotaSnapshot } from '../types';
 
-const SUBSCRIPTION_URL = 'https://api.z.ai/api/biz/subscription/list';
+/**
+ * Z.ai / GLM quota provider.
+ *
+ * CONFIDENCE NOTES (read before trusting a number):
+ *
+ * 1. `/api/monitor/usage/quota/limit` response shape — MEDIUM-HIGH, sourced
+ *    from two independent community quota tools that agree on the field
+ *    names, still unverified against a live key here. The shape is:
+ *      data.level                                  -> 'lite' | 'pro' | 'max'
+ *      data.limits[].type                          -> TOKENS_LIMIT | CREDIT_LIMIT | TIME_LIMIT
+ *      data.limits[].unit                          -> 3 = 5h window, 6 = weekly
+ *      data.limits[].usage                         -> the CAP for the window
+ *      data.limits[].currentValue                  -> the amount CONSUMED
+ *      data.limits[].remaining / .percentage       -> server-computed
+ *      data.limits[].nextResetTime                 -> epoch MILLISECONDS
+ *    `usage` naming the cap and `currentValue` the consumption is genuinely
+ *    counter-intuitive; an earlier version of this file read them the other
+ *    way round and reported a 402-of-2000 account as 402/402 = 100% spent.
+ * 2. Window classification comes from the numeric `unit` code (3 / 6), not
+ *    from a name heuristic — the entries carry no window-length field.
+ * 3. Auth form — UNCONFIRMED. One community tool sends
+ *    `Authorization: Bearer <key>`, another sends the RAW key with no
+ *    prefix (plus `Accept-Language`). Bearer is tried first and a 401 is
+ *    retried once with the raw key rather than being reported as a bad key.
+ * 4. `parseQuotaItems` / `extractItems` below are the ORIGINAL fuzzy parser,
+ *    kept as a fallback for any account whose response has no `data.limits`
+ *    array. It reads `item.usage` as CONSUMED, which is the inverted reading
+ *    fixed in note 1 — so it must only ever run when the documented shape is
+ *    absent. `parseLimits` gates that (see `fetch`).
+ *
+ * Related sibling endpoints exist but are not called (one undocumented
+ * request per poll is enough): `/api/monitor/usage/model-usage` and
+ * `/api/monitor/usage/tool-usage`, both taking `startTime` / `endTime`.
+ */
+
 const QUOTA_LIMIT_URL = 'https://api.z.ai/api/monitor/usage/quota/limit';
 
 const SESSION_WINDOW_MS = 18_000_000; // 5h rolling window
@@ -89,11 +123,9 @@ function firstString(...vals: unknown[]): string | null {
 }
 
 /**
- * Reset times arrive as epoch milliseconds per the plan's note — unlike
- * claude-code's cli-quota.ts, which has to guess seconds-vs-ms, this treats
- * the raw value as already-ms. This is an explicit, stated assumption from
- * the implementation brief, not independently verified against a live
- * Z.ai account in this environment.
+ * `nextResetTime` arrives as epoch MILLISECONDS, so the raw value is used
+ * as-is with no seconds-vs-ms disambiguation. Both community tools that
+ * informed this file agree on the unit (see file-header note 1).
  */
 function resetsAtMsFromEpochMs(raw: unknown): number | null {
   const n = firstFiniteNumber(raw);
@@ -103,15 +135,12 @@ function resetsAtMsFromEpochMs(raw: unknown): number | null {
 type RawItem = Record<string, unknown>;
 
 /**
- * Z.ai's `/api/monitor/usage/quota/limit` response shape is NOT publicly
- * documented and could not be verified against a live key in this
- * environment. Everything below is a best-effort, defensive parse: it probes
- * several plausible container paths and field-name conventions and simply
- * omits a bucket when it can't find a confident match, rather than guessing
- * a value. Confidence: LOW on exact field names, MEDIUM on the general shape
- * (a list of quota-window objects with used/limit/window-length/reset
- * fields), based on the plan's description of session/weekly/%-based buckets
- * plus a web-search request count.
+ * FALLBACK PARSER ONLY — see file-header note 4. This is the original
+ * best-effort probe across plausible container paths and field names, used
+ * only for a response that carries no `data.limits` array. It reads
+ * `item.usage` as the CONSUMED amount, which is the opposite of what the
+ * documented shape means by that field, so running it on a `limits` response
+ * would re-introduce the inversion `parseLimits` exists to fix.
  */
 function isRawItem(v: unknown): v is RawItem {
   return typeof v === 'object' && v !== null;
@@ -229,14 +258,105 @@ export function resolveWindowPairing(
   return { windowMs };
 }
 
-function extractPlanName(json: unknown): string | null {
-  const root = (json as { data?: unknown } | undefined)?.data ?? json;
-  if (Array.isArray(root) && root.length) {
-    const first = root[0] as Record<string, unknown>;
-    return firstString(first.plan_name, first.name, first.plan);
+// --- Primary parser: the documented `data.limits` shape -------------------
+
+/** `unit` codes that identify a limit entry's window (file-header note 2). */
+const UNIT_FIVE_HOUR = 3;
+const UNIT_WEEKLY = 6;
+
+export interface ParsedLimit {
+  window: 'session' | 'weekly';
+  /** 0..100. Server-reported `percentage` when present, else derived from
+   * `currentValue` (consumed) over `usage` (the cap). */
+  usedPercent: number;
+  resetsAt: number | null;
+  windowMs: number;
+}
+
+export interface ParsedLimitResponse {
+  /** `null` when the response carried no `data.limits` array at all — the
+   * signal `fetch` uses to fall back to the legacy fuzzy parser. */
+  limits: ParsedLimit[] | null;
+  level: string | null;
+}
+
+/**
+ * Parses the documented response. `TIME_LIMIT` entries are skipped (they
+ * describe a subscription's calendar validity, not a usage meter);
+ * `TOKENS_LIMIT` and `CREDIT_LIMIT` are both real meters — lite accounts
+ * moved to `CREDIT_LIMIT` during 2026, and tools that matched only
+ * `TOKENS_LIMIT` went blank for those users. Exported for test coverage.
+ */
+export function parseLimits(json: unknown): ParsedLimitResponse {
+  const data = (json as { data?: unknown } | undefined)?.data;
+  const obj = (data ?? {}) as Record<string, unknown>;
+  const level = firstString(obj.level);
+  const rawLimits = obj.limits;
+  if (!Array.isArray(rawLimits)) return { limits: null, level };
+
+  const out: ParsedLimit[] = [];
+  for (const raw of rawLimits) {
+    if (!isRawItem(raw)) continue;
+    const item = raw as RawItem;
+
+    const type = (firstString(item.type) ?? '').toUpperCase();
+    if (type === 'TIME_LIMIT') continue;
+
+    const unit = firstFiniteNumber(item.unit);
+    const window = unit === UNIT_FIVE_HOUR ? 'session' : unit === UNIT_WEEKLY ? 'weekly' : null;
+    if (window == null) continue;
+
+    // `percentage` is taken as already 0..100 (the sampled 402-of-2000
+    // account reports 20, not 0.2). Deriving from currentValue/usage is the
+    // fallback, never the other way round.
+    let usedPercent = firstFiniteNumber(item.percentage);
+    if (usedPercent == null) {
+      const consumed = firstFiniteNumber(item.currentValue);
+      const cap = firstFiniteNumber(item.usage);
+      if (consumed == null || cap == null || cap <= 0) continue;
+      usedPercent = (consumed / cap) * 100;
+    }
+
+    out.push({
+      window,
+      usedPercent: Math.min(100, Math.max(0, usedPercent)),
+      resetsAt: resetsAtMsFromEpochMs(item.nextResetTime),
+      windowMs: window === 'session' ? SESSION_WINDOW_MS : WEEKLY_WINDOW_MS,
+    });
   }
-  const obj = (root ?? {}) as Record<string, unknown>;
-  return firstString(obj.plan_name, obj.name, obj.plan);
+  return { limits: out, level };
+}
+
+/**
+ * Buckets from the documented shape. `remaining` is the percent complement,
+ * NOT the response's own `remaining` field: that field counts down in the
+ * entry's native unit (tokens or credits, per `type`), so dropping it into a
+ * percent bucket would mix two scales in one row. The bucket ids stay
+ * `session` / `weekly` because both still mean exactly what they meant
+ * before — the 5h and 7d windows — so persisted star/hide prefs carry over.
+ * Exported for test coverage.
+ */
+export function limitBuckets(limits: ParsedLimit[]): QuotaBucket[] {
+  const buckets: QuotaBucket[] = [];
+  for (const window of ['session', 'weekly'] as const) {
+    const entry = limits.find(l => l.window === window);
+    if (!entry) continue;
+    const bucket: QuotaBucket = {
+      id: window,
+      label: window === 'session' ? 'Session (5h)' : 'Weekly',
+      used: entry.usedPercent,
+      limit: 100,
+      remaining: Math.max(0, 100 - entry.usedPercent),
+      unit: 'percent',
+      enabled: true,
+      windowMs: entry.windowMs,
+    };
+    // `windowMs` here is genuinely observed (the `unit` code identifies the
+    // window), so pairing a real `resetsAt` with it is sound.
+    if (entry.resetsAt != null) bucket.resetsAt = entry.resetsAt;
+    buckets.push(bucket);
+  }
+  return buckets;
 }
 
 class ZaiQuotaProvider implements QuotaProvider {
@@ -263,11 +383,16 @@ class ZaiQuotaProvider implements QuotaProvider {
       };
     }
 
-    const headers = { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' };
-
-    const quotaResp = await httpsGetJson(QUOTA_LIMIT_URL, headers);
+    const quotaResp = await this.fetchQuotaWithAuthFallback(apiKey);
     if (quotaResp.status === 401 || quotaResp.status === 403) {
-      return { ok: false, fetchedAt, error: 'Z.ai API key invalid.', needsLogin: false };
+      return {
+        ok: false,
+        fetchedAt,
+        error:
+          `Z.ai rejected the API key (HTTP ${quotaResp.status}), with both the Bearer and raw-key ` +
+          'auth forms. Check the key in the Z.ai Quota section.',
+        needsLogin: false,
+      };
     }
     if (quotaResp.status >= 400) {
       return {
@@ -277,6 +402,32 @@ class ZaiQuotaProvider implements QuotaProvider {
       };
     }
 
+    const documented = parseLimits(quotaResp.json);
+    if (documented.limits != null) {
+      const buckets = limitBuckets(documented.limits);
+      if (buckets.length === 0) {
+        return {
+          ok: false,
+          fetchedAt,
+          error:
+            'Z.ai returned a quota response with no usable limit windows (every entry was a TIME_LIMIT ' +
+            'or carried an unrecognised unit code).',
+          source: QUOTA_LIMIT_URL,
+        };
+      }
+      return {
+        ok: true,
+        fetchedAt,
+        buckets,
+        membershipType: documented.level ?? undefined,
+        displayMessages: [],
+        authMethod: 'api-key',
+        source: QUOTA_LIMIT_URL,
+      };
+    }
+
+    // No `data.limits` array — fall back to the legacy fuzzy parser (see
+    // file-header note 4).
     const items = extractItems(quotaResp.json);
     const parsed = parseQuotaItems(items);
 
@@ -340,28 +491,33 @@ class ZaiQuotaProvider implements QuotaProvider {
       });
     }
 
-    const displayMessages: string[] = [];
-
-    // Plan name is non-critical metadata — a failure here must not fail the
-    // whole snapshot, just omit it from displayMessages.
-    try {
-      const subResp = await httpsGetJson(SUBSCRIPTION_URL, headers);
-      if (subResp.status < 400) {
-        const planName = extractPlanName(subResp.json);
-        if (planName) displayMessages.push(`Plan: ${planName}`);
-      }
-    } catch {
-      // subscription lookup is best-effort — ignore
-    }
-
     return {
       ok: true,
       fetchedAt,
       buckets,
-      displayMessages,
-      authMethod: 'bearer',
+      displayMessages: [],
+      authMethod: 'api-key',
       source: QUOTA_LIMIT_URL,
     };
+  }
+
+  /**
+   * Bearer first, then the raw key once on a 401/403 (file-header note 3).
+   * The retry also sends `Accept-Language`, which the raw-key tool sends
+   * alongside it — cheap, and the canonical form is unconfirmed either way.
+   */
+  private async fetchQuotaWithAuthFallback(apiKey: string): Promise<{ status: number; json: unknown }> {
+    const bearer = await httpsGetJson(QUOTA_LIMIT_URL, {
+      Authorization: `Bearer ${apiKey}`,
+      Accept: 'application/json',
+    });
+    if (bearer.status !== 401 && bearer.status !== 403) return bearer;
+
+    return httpsGetJson(QUOTA_LIMIT_URL, {
+      Authorization: apiKey,
+      Accept: 'application/json',
+      'Accept-Language': 'en-US,en',
+    });
   }
 }
 

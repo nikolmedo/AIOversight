@@ -134,10 +134,19 @@ export type QuotaSnapshot =
       source?: string;
       /**
        * Set when the failure is because the user must sign in interactively
-       * (e.g. claude.ai). The UI shows a "Sign in" button that triggers the
-       * connector's login flow instead of just displaying the error.
+       * (e.g. claude.ai). The UI adds a "Sign in" button that triggers the
+       * connector's login flow — but ONLY when the connector declares a
+       * `login` handler. A connector whose sign-in happens outside this app
+       * (codex-cli's `codex login`, say) may still set this; it gets no
+       * button, so its `error` string must carry the actual instruction.
        */
       needsLogin?: boolean;
+      /**
+       * Vendor asked us to back off (e.g. HTTP 429 `Retry-After`); the poller
+       * will not re-fetch this connector before that delay elapses. A manual
+       * refresh still goes through — see `QuotaService.refresh`.
+       */
+      retryAfterMs?: number;
     };
 
 export interface QuotaProvider {
@@ -315,7 +324,11 @@ export interface ConnectorMetadata {
   configSchema: ConnectorConfigField[];
   /** Which secret keys exist (so the UI can show "(set)" without value). */
   setSecretKeys?: string[];
-  /** Login button label; present only when the connector declares a login flow. */
+  /**
+   * Login button label. Present only when the connector declares a `login`
+   * handler, so the renderer treats its presence as "this connector has an
+   * in-app sign-in flow" and hides the button entirely when it's absent.
+   */
   loginLabel?: string;
   /** Integrate tab hint; present only when the connector acts as an HTTP server. */
   integrateInfo?: ConnectorIntegrateInfo;

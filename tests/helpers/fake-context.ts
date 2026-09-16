@@ -1,3 +1,5 @@
+import * as os from 'os';
+import * as path from 'path';
 import { AgentEvent, ConnectorContext, EventKind } from '../../src/main/connectors/types';
 import { LogEntry } from '../../src/main/connectors/runtime';
 
@@ -18,6 +20,12 @@ export interface FakeConnectorContext extends ConnectorContext {
 export interface FakeContextOptions {
   resolvePath?: (p: string) => string;
   secrets?: Record<string, string>;
+  /**
+   * Defaults to a path under the OS temp dir. The runtime never pre-creates
+   * this directory, so a test that doesn't exercise an on-disk cache can leave
+   * the default pointing at a path that doesn't exist.
+   */
+  cacheDir?: string;
 }
 
 export function createFakeContext(opts: FakeContextOptions = {}): FakeConnectorContext {
@@ -36,6 +44,7 @@ export function createFakeContext(opts: FakeContextOptions = {}): FakeConnectorC
       logs.push({ ts: Date.now(), level, message, meta });
     },
     resolvePath: opts.resolvePath ?? (p => p),
+    cacheDir: opts.cacheDir ?? path.join(os.tmpdir(), 'aioversight-test-cache'),
     secret(key) {
       return secrets.get(key) ?? null;
     },

@@ -234,80 +234,91 @@ export function copilotInternalUserResponse(): Record<string, unknown> {
   };
 }
 
+/**
+ * The AI-Credits era payload, redacted from a live 2026-09-16 probe of
+ * `copilot_internal/user` on a `business` plan. Note `credits_used: 0` sitting
+ * next to a clearly-metered `quota_remaining: 19496.4` — that combination is
+ * why `credits_used` is only ever a fallback.
+ */
+export function copilotTokenBillingUserResponse(): Record<string, unknown> {
+  return {
+    copilot_plan: 'business',
+    quota_reset_date: '2026-10-01',
+    token_based_billing: true,
+    quota_snapshots: {
+      chat: {
+        credits_used: 0,
+        entitlement: 0,
+        has_quota: true,
+        overage_count: 0,
+        overage_entitlement: 0,
+        overage_permitted: false,
+        percent_remaining: 100,
+        quota_id: 'chat',
+        quota_remaining: 0,
+        quota_reset_at: 0,
+        remaining: 0,
+        token_based_billing: true,
+        unlimited: true,
+      },
+      premium_interactions: {
+        credits_used: 504,
+        entitlement: 20_000,
+        has_quota: true,
+        overage_count: 0,
+        overage_entitlement: 0,
+        overage_permitted: true,
+        percent_remaining: 97.4,
+        quota_id: 'premium_interactions',
+        quota_remaining: 19_496.4,
+        remaining: 19_496,
+        token_based_billing: true,
+        unlimited: false,
+      },
+    },
+  };
+}
+
 export function copilotErrorResponse(message: string): Record<string, unknown> {
   return { message, documentation_url: 'https://docs.github.com/rest' };
 }
 
-export function copilotOrgMetricsResponse(): Array<Record<string, unknown>> {
-  return [
-    {
-      date: '2026-06-08',
-      total_active_users: 12,
-      total_engaged_users: 9,
-      total_acceptances_count: 80,
-      total_suggestions_count: 200,
-      total_chat_turns: 30,
-      copilot_ide_code_completions: {
-        editors: [
-          {
-            name: 'vscode',
-            models: [{ name: 'default', total_code_acceptances: 10, total_code_suggestions: 25 }],
-          },
-        ],
-      },
-      copilot_ide_chat: {
-        editors: [{ name: 'vscode', models: [{ name: 'default', total_chats: 5 }] }],
-      },
-      copilot_dotcom_chat: { models: [{ name: 'default', total_chats: 2 }] },
-      copilot_dotcom_pull_requests: { repositories: [{ name: 'aioversight', total_pr_summaries_created: 3 }] },
-    },
-    {
-      date: '2026-06-09',
-      total_active_users: 15,
-      total_engaged_users: 11,
-      total_acceptances_count: 90,
-      total_suggestions_count: 220,
-      total_chat_turns: 35,
-    },
-  ];
+/** `.../copilot/metrics/reports/organization-28-day/latest` — report metadata,
+ * not metrics. The body lives behind the signed `download_links`. */
+export function copilotReportPointerResponse(downloadUrl: string): Record<string, unknown> {
+  return {
+    download_links: [downloadUrl],
+    report_start_day: '2026-08-20',
+    report_end_day: '2026-09-16',
+  };
 }
 
-// --- claude /usage CLI output (real ANSI-colored TUI dump) ---
-
-export function claudeCliUsageOutputWithAnsi(): string {
+/** NDJSON (one record per line), which is what the download link actually
+ * serves despite the `.json` extension. */
+export function copilotOrgReportNdjson(): string {
   return [
-    '\x1B[1mClaude Code Usage\x1B[0m',
+    JSON.stringify({
+      report_start_day: '2026-08-20',
+      report_end_day: '2026-09-16',
+      monthly_active_users: 42,
+      day_totals: [
+        { date: '2026-09-15', daily_active_users: 12 },
+        { date: '2026-09-16', daily_active_users: 15 },
+      ],
+      totals_by_ai_adoption_phase: [
+        { phase_number: 1, total_engaged_users: 6 },
+        { phase_number: 2, total_engaged_users: 5 },
+      ],
+    }),
     '',
-    '\x1B[36mCurrent session\x1B[0m',
-    '  \x1B[32m███████████░░░░░░░░░\x1B[0m  42% used',
-    '  Resets 2h 15m',
-    '',
-    '\x1B[36mCurrent week\x1B[0m',
-    '  \x1B[32m████░░░░░░░░░░░░░░░░\x1B[0m  18% used',
-    '  Resets Mon, Jun 15',
-    '',
-    '\x1B[2mWhat\'s contributing to your usage\x1B[0m',
-    'Current session  --  35% used',
-    'Resets 2h 15m',
   ].join('\n');
 }
 
-export function claudeCliUsageOutputPlain(): string {
+export function copilotUsersReportNdjson(): string {
   return [
-    'Claude Code Usage',
-    '',
-    'Current session',
-    '  42% used',
-    '  Resets 2h 15m',
-    '',
-    'Current week',
-    '  18% used',
-    '  Resets Mon, Jun 15',
+    JSON.stringify({ user_id: 1, user_login: 'dev-one', ai_credits_used: 120.5 }),
+    JSON.stringify({ user_id: 2, user_login: 'dev-two', ai_credits_used: 80 }),
   ].join('\n');
-}
-
-export function claudeCliUsageOutputUnexpected(): string {
-  return 'Error: not logged in. Run `claude login` first.\n';
 }
 
 // --- settings.json shapes ---

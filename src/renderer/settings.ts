@@ -645,12 +645,18 @@ function renderQuotaSnapshot(q: QuotaSnapshot | undefined, def?: ConnectorMetada
     return '<p class="empty small">No data yet — click <em>Refresh now</em>.</p>';
   }
   if (!q.ok) {
-    const loginLabel = def
-      ? (def.loginLabel ?? `Sign in to ${def.name}`)
-      : '';
+    // `loginLabel` is the renderer's only signal that the connector actually
+    // declares a `login` handler (runtime.ts sets it from `c.login?.label`,
+    // which is required on ConnectorLogin). Gate on it rather than defaulting
+    // to "Sign in to <name>": a connector can legitimately report
+    // `needsLogin` for a sign-in that happens OUTSIDE this app (codex-cli
+    // wants `codex login` in a terminal), and a button wired to a handler
+    // that doesn't exist does nothing when clicked. Without a handler the
+    // snapshot's own error text — which carries the instruction — is all the
+    // user gets, and it already renders just above.
     const loginBtn =
-      q.needsLogin && def
-        ? `<button class="primary small" data-role="connector-login" data-connector-id="${escapeHtml(def.id)}">${escapeHtml(loginLabel)}</button>`
+      q.needsLogin && def?.loginLabel
+        ? `<button class="primary small" data-role="connector-login" data-connector-id="${escapeHtml(def.id)}">${escapeHtml(def.loginLabel)}</button>`
         : '';
     return `
       <div class="quota-error">${escapeHtml(q.error)}</div>

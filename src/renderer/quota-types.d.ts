@@ -106,6 +106,7 @@ interface ConnectorMetadata {
   defaultIntervalMinutes?: number;
   configSchema: ConnectorConfigField[];
   setSecretKeys?: string[];
+  /** Present only when the connector declares a `login` handler — see types.ts. */
   loginLabel?: string;
   integrateInfo?: ConnectorIntegrateInfo;
   /** Optional brand accent color (hex). Falls back to an id-hash color in the renderer. */

@@ -100,6 +100,35 @@ describe('AnthropicQuotaProvider', () => {
       // (1.25 + 0.75) USD -> 200 cents.
       assert.equal(byId['spend-this-period'].used, 200);
       assert.equal(byId['spend-this-period'].unit, 'usd');
+      for (const id of ['input-tokens', 'output-tokens', 'cache-read-tokens', 'cache-write-tokens']) {
+        assert.equal(byId[id].unit, 'tokens', id);
+      }
+    }
+  });
+
+  it('identifies itself to Anthropic with a User-Agent header', async () => {
+    // Arrange
+    const def = findConnector('anthropic')!;
+    const ctx = runtime.contextFor(def);
+    ctx.setSecret('adminApiKey', 'sk-ant-admin01-realistic-key');
+
+    const seen: string[] = [];
+    globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+      seen.push(new Headers(init?.headers).get('user-agent') ?? '');
+      const url = String(input);
+      if (url.includes('/usage_report/messages')) {
+        return jsonResponse(200, anthropicUsageReportResponse());
+      }
+      return jsonResponse(200, anthropicCostReportResponse());
+    }) as typeof globalThis.fetch;
+
+    // Act
+    await def.quota!.create({}, ctx).fetch();
+
+    // Assert
+    assert.ok(seen.length > 0);
+    for (const ua of seen) {
+      assert.match(ua, /^AIOversight\/\S+ \(https:\/\/github\.com\/nikolmedo\/AIOversight\)$/);
     }
   });
 
@@ -130,7 +159,42 @@ describe('AnthropicQuotaProvider', () => {
     }
   });
 
-  it('surfaces a combined error message when the usage report responds with 429 (rate limited)', async () => {
+  it('reports a rate-limited snapshot carrying Retry-After when the usage report responds with 429', async () => {
+    // Arrange
+    const def = findConnector('anthropic')!;
+    const ctx = runtime.contextFor(def);
+    ctx.setSecret('adminApiKey', 'sk-ant-admin01-realistic-key');
+
+    let calls = 0;
+    globalThis.fetch = (async (input: string | URL) => {
+      calls++;
+      const url = String(input);
+      if (url.includes('/usage_report/messages')) {
+        return new Response(JSON.stringify(anthropicErrorResponse('rate limit exceeded')), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '120' },
+        });
+      }
+      return jsonResponse(404, {});
+    }) as typeof globalThis.fetch;
+
+    const provider = def.quota!.create({}, ctx);
+
+    // Act
+    const snapshot = await provider.fetch();
+
+    // Assert
+    assert.equal(snapshot.ok, false);
+    if (!snapshot.ok) {
+      assert.match(snapshot.error, /rate-limited/);
+      assert.equal(snapshot.retryAfterMs, 120_000);
+    }
+    // A 429 means "stop asking", so the cookie strategy is NOT tried as a
+    // second door — only the one admin-key request went out.
+    assert.equal(calls, 1);
+  });
+
+  it('falls back to a 60s backoff when a 429 carries no Retry-After header', async () => {
     // Arrange
     const def = findConnector('anthropic')!;
     const ctx = runtime.contextFor(def);
@@ -152,12 +216,7 @@ describe('AnthropicQuotaProvider', () => {
     // Assert
     assert.equal(snapshot.ok, false);
     if (!snapshot.ok) {
-      assert.match(snapshot.error, /Could not fetch Anthropic usage/);
-      // NOTE: AnthropicQuotaProvider's admin-key path doesn't read the
-      // response body for errors -- it always raises a bare `HTTP <status>`,
-      // discarding the API's error message (unlike the OpenAI provider).
-      assert.match(snapshot.error, /Admin key: Error: HTTP 429/);
-      assert.match(snapshot.error, /claude\.ai cookie: Error: No claude\.ai sessionKey cookie found/);
+      assert.equal(snapshot.retryAfterMs, 60_000);
     }
   });
 
@@ -247,5 +306,31 @@ describe('AnthropicQuotaProvider', () => {
       assert.deepEqual(snapshot.buckets, []);
       assert.equal(snapshot.membershipType, 'anthropic-admin');
     }
+  });
+
+  it('reports no spend at all when every cost amount is an empty string', async () => {
+    // Arrange - `Number('')` is 0, which would render an authoritative $0.00
+    // for a period whose real spend is simply unknown.
+    const def = findConnector('anthropic')!;
+    const ctx = runtime.contextFor(def);
+    ctx.setSecret('adminApiKey', 'sk-ant-admin01-realistic-key');
+
+    globalThis.fetch = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/usage_report/messages')) return jsonResponse(200, anthropicUsageReportResponse());
+      if (url.includes('/cost_report')) {
+        return jsonResponse(200, {
+          data: [{ results: [{ amount: { value: '', currency: 'USD' } }] }],
+        });
+      }
+      return jsonResponse(404, {});
+    }) as typeof globalThis.fetch;
+
+    // Act
+    const snapshot = await def.quota!.create({}, ctx).fetch();
+
+    // Assert
+    assert.equal(snapshot.ok, true);
+    if (snapshot.ok) assert.equal(snapshot.buckets.some(b => b.id === 'spend-this-period'), false);
   });
 });

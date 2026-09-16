@@ -1,61 +1,58 @@
 import { ConnectorContext, QuotaBucket, QuotaProvider, QuotaSnapshot } from '../types';
 
 /**
- * Antigravity quota provider — local-language-server-only, reduced scope.
+ * Antigravity quota provider — reads the quota from Antigravity's own local
+ * language server, which only exists while the app is running.
  *
- * CONFIDENCE NOTES (read before trusting a number) — this connector could NOT
- * be verified against a running Antigravity install in this environment (the
- * tool isn't installed on this dev machine, and almost no one has it). Every
- * piece below marked "GUESS" is a best-effort, defensive implementation, not
- * a transcription of observed behavior:
+ * CONFIDENCE NOTES (read before trusting a number) — Antigravity is not
+ * installed on this dev machine, so none of this was verified against a live
+ * instance. The sourcing below is nevertheless much stronger than the port
+ * guessing it replaces:
  *
- * 1. Discovery mechanism — Antigravity is a local IDE/agent tool. Per the
- *    plan, when it's running it exposes a local HTTP language server on some
- *    port, guarded by a CSRF-style token/handshake. There is no known
- *    file-based port registry to read (unlike this codebase's other local
- *    servers), so discovery here is a constrained TCP/HTTP port scan.
- * 2. Default port range (`DEFAULT_PORT_RANGE`) — GUESS. Chosen as a small,
- *    plausible high-numbered ephemeral-ish range typical of local dev-tool
- *    language servers, NOT verified against real Antigravity behavior. The
- *    `portRange` config field lets a user override it once they know the
- *    real port (e.g. from Task Manager / `netstat`) — a widened override is
- *    scanned in full (see `MAX_PORT_RANGE_SPAN`), not silently truncated to
- *    a small fixed port count.
- * 3. Per-port detection signature (`looksLikeAntigravityServer`) — GUESS.
- *    Some local dev-tool servers answer a root/health GET with a small JSON
- *    body advertising a CSRF token; this checks for a small, deliberately
- *    narrow set of field names (CSRF/Antigravity/language-server-lineage
- *    only — generic names like "sessionId" are excluded on purpose, since
- *    they're common enough across unrelated local dev servers to risk
- *    mis-identifying the WRONG local service and then POSTing quota-RPC
- *    calls to it). A false negative on every port is the safe failure mode
- *    (falls through to "not running"); a bare 200 with no recognisable field
- *    is deliberately NOT treated as a match. When a token IS found, it's
- *    threaded through and replayed on the follow-up query call as
- *    `X-CSRF-Token` — the discovery mechanism is documented as CSRF-guarded,
- *    so a query sent without it (once one was found) would be expected to
- *    fail closed.
- * 4. Query RPC path/method names (`RPC_METHODS`) — GUESS, per the plan's
- *    mention of `RetrieveUserQuotaSummary` (primary) and `GetUserStatus` /
- *    `GetCommandModelConfigs` (documented fallbacks). Modeled as Connect-RPC
- *    unary POSTs (`/<package>.<Service>/<Method>`), following the same
- *    convention this codebase's `devin/quota.ts` already uses for a
- *    structurally similar local-agent backend.
- * 5. Quota response shape / pool classification — GUESS. Parsed defensively
- *    across plausible field-name conventions; unrecognised shapes yield no
- *    buckets (explicit `ok:false`), never a fabricated number.
+ * 1. DISCOVERY IS PROCESS-BASED [C, multiple independent tools agree]. The
+ *    language server's port is EPHEMERAL — no fixed range exists, and the
+ *    `49500-49529` range earlier versions of this file scanned was an
+ *    outright guess presented as if it were known. Comparable tools instead
+ *    locate the running `language_server*` process whose command line
+ *    contains `--app_data_dir antigravity`, and read `--csrf_token`,
+ *    `--extension_server_port` and `--extension_server_csrf_token` straight
+ *    out of its arguments. Shelling out for this matches the house style
+ *    already set by `shared/chromium-cookies.ts`.
+ * 2. The port scan is KEPT, but only as a last resort after process
+ *    discovery finds nothing, and its range is no longer described as known.
+ * 3. The CSRF header is `X-Codeium-Csrf-Token` [C]. This file previously
+ *    sent `X-CSRF-Token`, which the server would not have recognised.
+ * 4. The request body carries an IDE metadata envelope [C] rather than `{}`.
+ * 5. `RetrieveUserQuotaSummary` is the preferred RPC, with `GetUserStatus`
+ *    as the legacy fallback [C]. Response shape:
+ *      response.groups[].displayName
+ *      response.groups[].buckets[].{bucketId,displayName,description,
+ *                                   remaining:{remainingFraction}}
+ *    Some tools see `groups[]` at the top level rather than under
+ *    `response`, so both are handled. The legacy shape is
+ *    `userStatus.cascadeModelConfigData.clientModelConfigs[].quotaInfo`
+ *    carrying `remainingFraction` and `resetTime` per model.
+ * 6. `remainingFraction` is REMAINING, not used: a 0..1 fraction, so
+ *    used% = (1 - fraction) * 100. Reading it as "used" would invert every
+ *    meter.
+ * 7. Tools disagree on the scheme (`https://` vs `http://`), so both are
+ *    tried against each candidate port.
  *
- * Deliberately NOT implemented: any macOS-Keychain (or other OS-credential-
- * store) fallback for when Antigravity is closed. The plan is explicit that
- * no file-based equivalent exists in the source material, and this connector
- * must not invent one — when no local server is found, this returns a plain
- * "Antigravity is not running" error, not `needsLogin: true` (there is no
- * login flow here to begin with).
+ * Deliberately NOT implemented: any OS-credential-store fallback for when
+ * Antigravity is closed. There is no login flow for this connector, so a
+ * failure to find the server is never `needsLogin: true` — it is reported
+ * plainly, telling the user the app has to be running.
  */
 
 // --- Port range parsing ------------------------------------------------------
 
-// GUESS (see file-header note 2) — small, bounded, overridable via config.
+/**
+ * Last-resort scan range (file-header note 2). This is NOT the language
+ * server's real port range — the port is ephemeral and no fixed range
+ * exists. It is only a small window to sweep when process discovery has
+ * already failed, and a user who has read the real port off `netstat` can
+ * override it.
+ */
 export const DEFAULT_PORT_RANGE = '49500-49529';
 
 /**
@@ -188,12 +185,23 @@ async function httpJsonLocal(
     // is the only case that legitimately falls through to Node's http.
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const http = require('http') as typeof import('http');
+  // Pick the module by scheme: candidate URLs now include `https://` (see
+  // file-header note 7), and `http.request` on an https URL throws
+  // ERR_INVALID_PROTOCOL synchronously rather than failing softly.
+  let transport: typeof import('http') | typeof import('https');
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    transport = new URL(url).protocol === 'https:'
+      ? (require('https') as typeof import('https'))
+      : (require('http') as typeof import('http'));
+  } catch {
+    return Promise.resolve({ status: 0, json: {} });
+  }
+
   return new Promise(resolve => {
     const headers = { ...(init.headers ?? {}) };
     if (init.body) headers['Content-Length'] = String(Buffer.byteLength(init.body));
-    const req = http.request(url, { method: init.method ?? 'GET', headers }, res => {
+    const req = transport.request(url, { method: init.method ?? 'GET', headers }, res => {
       const chunks: Buffer[] = [];
       res.on('data', c => chunks.push(c));
       res.on('end', () => {
@@ -222,7 +230,247 @@ async function httpJsonLocal(
   });
 }
 
-// --- Port-scan discovery ------------------------------------------------------
+// --- Process-based discovery (see file-header note 1) ----------------------
+
+/** One running process, as returned by whichever platform lister ran. */
+export interface ProcessEntry {
+  pid: number;
+  cmdline: string;
+}
+
+export interface LanguageServerInfo {
+  pid: number;
+  csrfToken?: string;
+  extensionServerCsrfToken?: string;
+  extensionServerPort?: number;
+}
+
+/**
+ * Pulls `--flag value` and `--flag=value` pairs out of a command line.
+ * Quoted values are unwrapped. Exported for test coverage.
+ */
+export function parseProcessArgs(cmdline: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  // Split on whitespace that is not inside quotes.
+  const tokens = cmdline.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+  const unquote = (s: string): string =>
+    (s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'")) ? s.slice(1, -1) : s;
+
+  for (let i = 0; i < tokens.length; i++) {
+    const token = unquote(tokens[i]);
+    if (!token.startsWith('--')) continue;
+    const eq = token.indexOf('=');
+    if (eq > 2) {
+      out[token.slice(2, eq)] = unquote(token.slice(eq + 1));
+      continue;
+    }
+    const next = tokens[i + 1];
+    if (next != null && !unquote(next).startsWith('--')) {
+      out[token.slice(2)] = unquote(next);
+      i++;
+    }
+  }
+  return out;
+}
+
+/**
+ * Recognises an Antigravity language-server process and lifts its tokens and
+ * port out of the command line. Requires BOTH a `language_server` executable
+ * and an `--app_data_dir` naming antigravity, so a sibling Codeium/Windsurf
+ * language server on the same machine is not mistaken for this one. Returns
+ * `null` for anything else. Exported for test coverage.
+ */
+export function parseLanguageServerCmdline(entry: ProcessEntry): LanguageServerInfo | null {
+  if (!/language_server/i.test(entry.cmdline)) return null;
+  const args = parseProcessArgs(entry.cmdline);
+  const appDataDir = args.app_data_dir ?? '';
+  if (!/antigravity/i.test(appDataDir)) return null;
+
+  const port = Number(args.extension_server_port);
+  return {
+    pid: entry.pid,
+    csrfToken: args.csrf_token || undefined,
+    extensionServerCsrfToken: args.extension_server_csrf_token || undefined,
+    extensionServerPort: Number.isFinite(port) && port > 0 ? port : undefined,
+  };
+}
+
+/**
+ * Listening TCP ports belonging to `pid`, from `netstat -ano` output.
+ * Exported for test coverage.
+ */
+export function parseNetstatListeningPorts(text: string, pid: number): number[] {
+  const ports: number[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 5) continue;
+    if (!/^TCP$/i.test(parts[0])) continue;
+    if (!/^LISTENING$/i.test(parts[3])) continue;
+    if (Number(parts[4]) !== pid) continue;
+    const port = Number(parts[1].slice(parts[1].lastIndexOf(':') + 1));
+    if (Number.isFinite(port) && port > 0 && !ports.includes(port)) ports.push(port);
+  }
+  return ports.sort((a, b) => a - b);
+}
+
+/**
+ * Listening TCP ports from `lsof -nP -iTCP -sTCP:LISTEN` output (macOS and
+ * Linux). Exported for test coverage.
+ */
+export function parseLsofListeningPorts(text: string): number[] {
+  const ports: number[] = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/:(\d+)\s+\(LISTEN\)/);
+    if (!m) continue;
+    const port = Number(m[1]);
+    if (Number.isFinite(port) && port > 0 && !ports.includes(port)) ports.push(port);
+  }
+  return ports.sort((a, b) => a - b);
+}
+
+/**
+ * `Get-CimInstance ... | ConvertTo-Json` emits a bare object for a single
+ * match and an array for several. Exported for test coverage.
+ */
+export function parseWin32ProcessJson(text: string): ProcessEntry[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  const rows = Array.isArray(parsed) ? parsed : [parsed];
+  const out: ProcessEntry[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const r = row as Record<string, unknown>;
+    const pid = Number(r.ProcessId);
+    const cmdline = typeof r.CommandLine === 'string' ? r.CommandLine : '';
+    if (Number.isFinite(pid) && cmdline) out.push({ pid, cmdline });
+  }
+  return out;
+}
+
+const SHELL_TIMEOUT_MS = 3000;
+
+function runCommand(file: string, args: string[]): string | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { execFileSync } = require('child_process') as typeof import('child_process');
+    return execFileSync(file, args, {
+      encoding: 'utf8',
+      timeout: SHELL_TIMEOUT_MS,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    // A missing tool, a non-zero exit, or a timeout all mean "no answer".
+    return null;
+  }
+}
+
+/** Running processes, per platform. Returns `[]` when nothing can be listed. */
+function listProcesses(): ProcessEntry[] {
+  if (process.platform === 'win32') {
+    // `tasklist` alone does not report command lines, so CIM is used. A
+    // single call returns the whole command line, which is all we need.
+    const out = runCommand('powershell.exe', [
+      '-NoProfile',
+      '-Command',
+      "Get-CimInstance Win32_Process -Filter \"Name like 'language_server%'\" | " +
+        'Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress',
+    ]);
+    return out ? parseWin32ProcessJson(out) : [];
+  }
+
+  if (process.platform === 'linux') {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const fs = require('fs') as typeof import('fs');
+    const out: ProcessEntry[] = [];
+    let pids: string[];
+    try {
+      pids = fs.readdirSync('/proc').filter(n => /^\d+$/.test(n));
+    } catch {
+      return [];
+    }
+    for (const pid of pids) {
+      try {
+        // /proc/<pid>/cmdline separates arguments with NUL bytes.
+        const raw = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+        if (!raw) continue;
+        out.push({ pid: Number(pid), cmdline: raw.replace(/\0/g, ' ').trim() });
+      } catch {
+        // Process exited between readdir and read, or is not ours to read.
+      }
+    }
+    return out;
+  }
+
+  const out = runCommand('ps', ['-Ao', 'pid=,command=']);
+  if (!out) return [];
+  const entries: ProcessEntry[] = [];
+  for (const line of out.split(/\r?\n/)) {
+    const m = line.trim().match(/^(\d+)\s+(.*)$/);
+    if (!m) continue;
+    entries.push({ pid: Number(m[1]), cmdline: m[2] });
+  }
+  return entries;
+}
+
+/** Listening ports for a pid, used when the command line carries no port. */
+function listeningPortsFor(pid: number): number[] {
+  if (process.platform === 'win32') {
+    const out = runCommand('netstat', ['-ano', '-p', 'TCP']);
+    return out ? parseNetstatListeningPorts(out, pid) : [];
+  }
+  const out = runCommand('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', String(pid)]);
+  return out ? parseLsofListeningPorts(out) : [];
+}
+
+/**
+ * Finds the running Antigravity language server. `listProcesses` is
+ * injectable so tests never spawn a real process. Exported for test coverage.
+ */
+export function discoverLanguageServer(
+  processes: ProcessEntry[] = listProcesses(),
+): LanguageServerInfo | null {
+  for (const entry of processes) {
+    const info = parseLanguageServerCmdline(entry);
+    if (info) return info;
+  }
+  return null;
+}
+
+/**
+ * Every base URL worth trying for a discovered server, in priority order:
+ * the port from the command line first, then any other port the process is
+ * listening on, each over both schemes (file-header note 7). Exported for
+ * test coverage.
+ */
+export function candidateBaseUrls(info: LanguageServerInfo, extraPorts: number[] = []): string[] {
+  const ports: number[] = [];
+  if (info.extensionServerPort != null) ports.push(info.extensionServerPort);
+  for (const p of extraPorts) if (!ports.includes(p)) ports.push(p);
+
+  const urls: string[] = [];
+  for (const port of ports) {
+    for (const scheme of ['https', 'http']) {
+      urls.push(`${scheme}://127.0.0.1:${port}${RPC_SERVICE_PATH}`);
+    }
+  }
+  return urls;
+}
+
+/** The CSRF tokens to try, most specific first (file-header note 1). */
+export function candidateCsrfTokens(info: LanguageServerInfo): Array<string | null> {
+  const tokens: Array<string | null> = [];
+  if (info.extensionServerCsrfToken) tokens.push(info.extensionServerCsrfToken);
+  if (info.csrfToken && info.csrfToken !== info.extensionServerCsrfToken) tokens.push(info.csrfToken);
+  if (tokens.length === 0) tokens.push(null);
+  return tokens;
+}
+
+// --- Port-scan discovery (last resort, see file-header note 2) --------------
 
 const PROBE_TIMEOUT_MS = 300; // per-port — must stay far below the scan's total budget.
 const SCAN_TOTAL_BUDGET_MS = 4000; // whole-scan safety net regardless of port count.
@@ -334,10 +582,23 @@ export async function scanForLanguageServer(
 
 // --- Quota query + parsing ----------------------------------------------------
 
-// GUESS (see file-header note 4) — Connect-RPC unary-POST convention, tried
-// in order; the first that returns a recognisable shape wins.
+// Preferred first, legacy second (file-header note 5); the first method that
+// returns a recognisable shape wins.
 const RPC_METHODS = ['RetrieveUserQuotaSummary', 'GetUserStatus', 'GetCommandModelConfigs'];
 const RPC_SERVICE_PATH = '/exa.language_server_pb.LanguageServerService';
+
+/** The CSRF header this server expects (file-header note 3). */
+export const CSRF_HEADER = 'X-Codeium-Csrf-Token';
+
+/** The IDE metadata envelope the server expects (file-header note 4). */
+export const RPC_REQUEST_BODY = JSON.stringify({
+  metadata: {
+    ideName: 'antigravity',
+    extensionName: 'antigravity',
+    locale: 'en',
+    ideVersion: 'unknown',
+  },
+});
 /** Overall ceiling across the WHOLE `RPC_METHODS` fallback loop -- see
  * `raceWithBudget`'s doc comment for the hang this closes. 3 methods x
  * `QUERY_TIMEOUT_MS` (3000ms) each could otherwise take up to ~9s with no
@@ -544,6 +805,136 @@ export function mergePoolQuota(entries: RawModelQuotaEntry[]): QuotaBucket[] {
   return buckets;
 }
 
+// --- RetrieveUserQuotaSummary parsing (primary, file-header notes 5-6) ----
+
+/**
+ * `remainingFraction` is a 0..1 REMAINING fraction, so used% inverts it.
+ * Rounded to four decimals because `(1 - 0.9) * 100` evaluates to
+ * 9.999999999999998 in binary floating point, and that artifact would
+ * otherwise reach the UI. Exported for test coverage.
+ */
+export function usedPercentFromRemainingFraction(fraction: number): number {
+  const used = (1 - fraction) * 100;
+  return Math.min(100, Math.max(0, Math.round(used * 10_000) / 10_000));
+}
+
+/**
+ * Buckets from the `groups[].buckets[]` shape. `groups` is read from
+ * `response.groups` or from the top level, since tools report both. A bucket
+ * with no numeric `remainingFraction` is skipped rather than shown as zero.
+ * Exported for test coverage.
+ */
+export function parseQuotaSummary(json: unknown): QuotaBucket[] {
+  if (!json || typeof json !== 'object') return [];
+  const root = json as Record<string, unknown>;
+  const response = (root.response && typeof root.response === 'object' ? root.response : root) as Record<string, unknown>;
+  const groups = response.groups;
+  if (!Array.isArray(groups)) return [];
+
+  const buckets: QuotaBucket[] = [];
+  const seen = new Set<string>();
+  for (const rawGroup of groups) {
+    if (!rawGroup || typeof rawGroup !== 'object') continue;
+    const group = rawGroup as Record<string, unknown>;
+    const groupLabel = firstString(group.displayName, group.display_name);
+    const groupBuckets = group.buckets;
+    if (!Array.isArray(groupBuckets)) continue;
+
+    for (const rawBucket of groupBuckets) {
+      if (!rawBucket || typeof rawBucket !== 'object') continue;
+      const item = rawBucket as Record<string, unknown>;
+
+      const remainingRaw = item.remaining;
+      const fraction =
+        remainingRaw && typeof remainingRaw === 'object'
+          ? firstFiniteNumber(
+              (remainingRaw as Record<string, unknown>).remainingFraction,
+              (remainingRaw as Record<string, unknown>).remaining_fraction,
+            )
+          : null;
+      if (fraction == null) continue;
+
+      const bucketId = firstString(item.bucketId, item.bucket_id);
+      const bucketLabel = firstString(item.displayName, item.display_name);
+      // Bucket ids key persisted star/hide prefs, so they must be stable and
+      // unique; a response without one falls back to its label.
+      const id = bucketId ?? bucketLabel;
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+
+      const used = usedPercentFromRemainingFraction(fraction);
+      const bucket: QuotaBucket = {
+        id,
+        label: groupLabel && bucketLabel ? `${groupLabel} — ${bucketLabel}` : (bucketLabel ?? groupLabel ?? id),
+        used,
+        limit: 100,
+        remaining: Math.max(0, 100 - used),
+        unit: 'percent',
+        enabled: true,
+      };
+      const description = firstString(item.description);
+      if (description) bucket.note = description;
+
+      const resetRaw = firstFiniteNumber(item.resetTime, item.reset_time);
+      // No window length is reported here. A real reset time is still
+      // surfaced on its own; only a SYNTHESIZED window must never be paired
+      // with one, which is why `windowMs` is simply omitted.
+      if (resetRaw != null && resetRaw > 0) bucket.resetsAt = normalizeEpochMs(resetRaw);
+
+      buckets.push(bucket);
+    }
+  }
+  return buckets;
+}
+
+/**
+ * Legacy `GetUserStatus` shape: per-model quota under
+ * `userStatus.cascadeModelConfigData.clientModelConfigs[].quotaInfo`. These
+ * carry model ids, so they still feed the pool merge below. Exported for
+ * test coverage.
+ */
+export function parseLegacyUserStatus(json: unknown): RawModelQuotaEntry[] {
+  if (!json || typeof json !== 'object') return [];
+  const root = json as Record<string, unknown>;
+  const statusRaw = root.userStatus ?? root.user_status ?? root;
+  if (!statusRaw || typeof statusRaw !== 'object') return [];
+  const status = statusRaw as Record<string, unknown>;
+
+  const cascadeRaw = status.cascadeModelConfigData ?? status.cascade_model_config_data;
+  if (!cascadeRaw || typeof cascadeRaw !== 'object') return [];
+  const configs = (cascadeRaw as Record<string, unknown>).clientModelConfigs ??
+    (cascadeRaw as Record<string, unknown>).client_model_configs;
+  if (!Array.isArray(configs)) return [];
+
+  const out: RawModelQuotaEntry[] = [];
+  for (const rawConfig of configs) {
+    if (!rawConfig || typeof rawConfig !== 'object') continue;
+    const config = rawConfig as Record<string, unknown>;
+    const quotaRaw = config.quotaInfo ?? config.quota_info;
+    if (!quotaRaw || typeof quotaRaw !== 'object') continue;
+    const quota = quotaRaw as Record<string, unknown>;
+
+    const fraction = firstFiniteNumber(quota.remainingFraction, quota.remaining_fraction);
+    if (fraction == null) continue;
+
+    const modelId = firstString(config.model, config.modelId, config.model_id, config.name) ?? 'unknown';
+    const resetRaw = firstFiniteNumber(quota.resetTime, quota.reset_time);
+    const resetsAt = resetRaw != null && resetRaw > 0 ? normalizeEpochMs(resetRaw) : null;
+
+    out.push({
+      modelId,
+      usedPercent: usedPercentFromRemainingFraction(fraction),
+      resetsAt,
+      windowMs: null,
+      // ASSUMPTION, not sourced: the legacy shape reports no window length,
+      // and these per-model figures are treated as the session window. If
+      // they are in fact weekly, they land under the wrong bucket id.
+      windowKind: '5h',
+    });
+  }
+  return out;
+}
+
 // --- Quota query (RPC-method fallback loop, budget-bounded overall) --------
 
 export interface QuerySuccess {
@@ -569,9 +960,24 @@ function isQuerySuccess(outcome: QueryOutcome): outcome is QuerySuccess {
 export async function queryQuotaData(base: string, headers: Record<string, string>): Promise<QueryOutcome> {
   let lastStatus = 0;
   for (const method of RPC_METHODS) {
-    const res = await httpJsonLocal(`${base}/${method}`, { method: 'POST', headers, body: '{}' }, QUERY_TIMEOUT_MS);
+    const res = await httpJsonLocal(
+      `${base}/${method}`,
+      { method: 'POST', headers, body: RPC_REQUEST_BODY },
+      QUERY_TIMEOUT_MS,
+    );
     lastStatus = res.status;
     if (res.status !== 200) continue;
+
+    // Documented shape first, then the legacy per-model shape, then the
+    // original defensive probe (file-header note 5).
+    const summaryBuckets = parseQuotaSummary(res.json);
+    if (summaryBuckets.length > 0) return { buckets: summaryBuckets, source: `${base}/${method}` };
+
+    const legacyEntries = parseLegacyUserStatus(res.json);
+    if (legacyEntries.length > 0) {
+      const buckets = mergePoolQuota(legacyEntries);
+      if (buckets.length > 0) return { buckets, source: `${base}/${method}` };
+    }
 
     const entries = extractQuotaEntries(res.json);
     if (entries.length === 0) continue;
@@ -613,8 +1019,60 @@ class AntigravityQuotaProvider implements QuotaProvider {
     this.cfg = cfg;
   }
 
+  /**
+   * Tries every (base URL x CSRF token) candidate for a discovered server,
+   * inside one overall budget. Returns `null` — not a failed snapshot — when
+   * none answered, so `fetch` can still fall back to the port scan.
+   */
+  private async fetchFromDiscovered(
+    info: LanguageServerInfo,
+    fetchedAt: number,
+  ): Promise<QuotaSnapshot | null> {
+    const extraPorts = info.extensionServerPort == null ? listeningPortsFor(info.pid) : [];
+    const bases = candidateBaseUrls(info, extraPorts);
+    if (bases.length === 0) return null;
+
+    const tokens = candidateCsrfTokens(info);
+    const outcome = await queryQuotaDataWithBudget(async () => {
+      let last: QueryOutcome = { lastStatus: 0 };
+      for (const base of bases) {
+        for (const token of tokens) {
+          const headers: Record<string, string> = {
+            'Content-Type': 'application/json',
+            'Connect-Protocol-Version': '1',
+          };
+          if (token) headers[CSRF_HEADER] = token;
+          const result = await queryQuotaData(base, headers);
+          if (isQuerySuccess(result)) return result;
+          last = result;
+        }
+      }
+      return last;
+    });
+
+    if (outcome != null && isQuerySuccess(outcome)) {
+      return {
+        ok: true,
+        fetchedAt,
+        buckets: outcome.buckets,
+        displayMessages: [],
+        authMethod: 'csrf',
+        source: outcome.source,
+      };
+    }
+    return null;
+  }
+
   async fetch(): Promise<QuotaSnapshot> {
     const fetchedAt = Date.now();
+
+    // Process discovery first (file-header note 1) — the port is ephemeral,
+    // so the scan below is only a fallback.
+    const discovered = discoverLanguageServer();
+    if (discovered) {
+      const viaProcess = await this.fetchFromDiscovered(discovered, fetchedAt);
+      if (viaProcess) return viaProcess;
+    }
 
     const portInfo = parsePortRangeInfo(this.cfg.portRange as string | undefined);
     const match = await scanForLanguageServer(portInfo.ports);
@@ -633,7 +1091,9 @@ class AntigravityQuotaProvider implements QuotaProvider {
       return {
         ok: false,
         fetchedAt,
-        error: `Antigravity is not running — start the app to see quota.${truncationNote}`,
+        error:
+          'Antigravity does not appear to be running. Its quota is only readable from the local language ' +
+          `server that the app starts, so open Antigravity and try again.${truncationNote}`,
       };
     }
 
@@ -643,10 +1103,9 @@ class AntigravityQuotaProvider implements QuotaProvider {
       'Content-Type': 'application/json',
       'Connect-Protocol-Version': '1',
     };
-    // Threaded through from the probe response, per file-header note 3 --
-    // the discovery step is documented as CSRF-guarded, so a query call sent
-    // without this (when one was found) would be expected to fail closed.
-    if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
+    // Threaded through from the probe response. The header name is
+    // `X-Codeium-Csrf-Token` (file-header note 3), not `X-CSRF-Token`.
+    if (csrfToken) headers[CSRF_HEADER] = csrfToken;
 
     const outcome = await queryQuotaDataWithBudget(() => queryQuotaData(base, headers));
 

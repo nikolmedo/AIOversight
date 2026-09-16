@@ -265,6 +265,96 @@ describe('QuotaService', () => {
     assert.equal(fetchCalls, 4); // timer tick triggers a second usage + costs round
   });
 
+  it('skips the periodic tick while a failed connector is still backing off, keeping the previous snapshot', async () => {
+    // Arrange
+    const rt = rtConfig({ pollOverrideMinutes: { openai: 1 } });
+    mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+    await service.applyConfig(rt, 0);
+    await service.refresh('openai'); // fails: no admin key configured
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entry = (service as any).providers.get('openai');
+    assert.ok(entry.consecutiveFailures >= 1);
+    assert.ok(entry.nextAllowedFetchAt > Date.now());
+
+    let providerCalls = 0;
+    const failedSnapshot = service.get('openai');
+    entry.provider.fetch = () => {
+      providerCalls++;
+      return Promise.resolve({ ok: false, fetchedAt: Date.now(), error: 'should not run' });
+    };
+
+    // Act: the timer fires, but mock timers don't advance the real clock, so
+    // the gate is still closed.
+    mock.timers.tick(60_000);
+    for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve));
+
+    // Assert
+    assert.equal(providerCalls, 0);
+    assert.equal(service.get('openai'), failedSnapshot);
+  });
+
+  it('honours a snapshot\'s retryAfterMs over the exponential backoff, and lets an explicit refresh through the gate', async () => {
+    // Arrange
+    const rt = rtConfig({ pollOverrideMinutes: { openai: 1 } });
+    await service.applyConfig(rt, 0);
+    await service.refresh('openai');
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entry = (service as any).providers.get('openai');
+    let providerCalls = 0;
+    entry.provider.fetch = () => {
+      providerCalls++;
+      return Promise.resolve({
+        ok: false,
+        fetchedAt: Date.now(),
+        error: 'rate limited',
+        retryAfterMs: 5 * 60_000,
+      });
+    };
+
+    // Act
+    const before = Date.now();
+    const failuresBefore = entry.consecutiveFailures;
+    await service.refresh('openai');
+
+    // Assert: the vendor's 5 minutes wins over the exponential backoff, which
+    // at this failure count is still well under it.
+    assert.ok(entry.nextAllowedFetchAt - before >= 5 * 60_000 - 1000);
+    assert.equal(entry.consecutiveFailures, failuresBefore + 1);
+
+    // A second explicit refresh ignores the gate the first one just armed.
+    await service.refresh('openai');
+    assert.equal(providerCalls, 2);
+  });
+
+  it('clears the backoff gate after a successful fetch', async () => {
+    // Arrange
+    const ctx = runtime.contextFor((await import('../../src/main/connectors/registry')).findConnector('openai')!);
+    ctx.setSecret('adminApiKey', 'sk-admin-realistic-key-12345');
+    const rt = rtConfig();
+    await service.applyConfig(rt, 0);
+    await service.refresh('openai'); // fails: fetch is not stubbed yet
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entry = (service as any).providers.get('openai');
+    assert.ok(entry.nextAllowedFetchAt > 0);
+
+    globalThis.fetch = (async (input: string | URL) => {
+      const url = String(input);
+      if (url.includes('/usage/completions')) return jsonResponse(200, openAiUsageCompletionsResponse());
+      return jsonResponse(200, openAiCostsResponse());
+    }) as typeof globalThis.fetch;
+
+    // Act
+    const snapshot = await service.refresh('openai');
+
+    // Assert
+    assert.equal(snapshot?.ok, true);
+    assert.equal(entry.consecutiveFailures, 0);
+    assert.equal(entry.nextAllowedFetchAt, 0);
+  });
+
   it('removes a connector and emits "removed" when quota is disabled in a later applyConfig', async () => {
     // Arrange
     const rt = rtConfig();
@@ -326,6 +416,61 @@ describe('QuotaService', () => {
       assert.match(snapshot.error, /^Quota provider crashed: /);
       assert.match(snapshot.error, /unexpected null pointer/);
     }
+  });
+
+  it('times out a provider that never settles and arms the backoff', async () => {
+    // Arrange
+    mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+    await service.applyConfig(rtConfig({ pollOverrideMinutes: { openai: 1 } }), 0);
+    await service.refresh('openai'); // let the initial background fetch settle
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entry = (service as any).providers.get('openai');
+    const failuresBefore = entry.consecutiveFailures;
+    entry.provider.fetch = () => new Promise<QuotaSnapshot>(() => undefined);
+
+    // Act
+    const pending = service.refresh('openai');
+    mock.timers.tick(45_000);
+    const snapshot = await pending;
+
+    // Assert
+    assert.equal(snapshot?.ok, false);
+    if (snapshot && !snapshot.ok) assert.match(snapshot.error, /timed out/i);
+    assert.equal(entry.consecutiveFailures, failuresBefore + 1);
+    assert.ok(entry.nextAllowedFetchAt > Date.now());
+  });
+
+  it('discards a late provider resolution so it cannot overwrite a newer snapshot', async () => {
+    // Arrange
+    mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });
+    await service.applyConfig(rtConfig(), 0);
+    await service.refresh('openai');
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entry = (service as any).providers.get('openai');
+    let resolveLate: ((snap: QuotaSnapshot) => void) | null = null;
+    entry.provider.fetch = () =>
+      new Promise<QuotaSnapshot>(resolve => {
+        resolveLate = resolve;
+      });
+
+    const timedOut = service.refresh('openai');
+    mock.timers.tick(45_000);
+    await timedOut;
+
+    const fresh: QuotaSnapshot = { ok: true, fetchedAt: Date.now(), buckets: [], displayMessages: [] };
+    entry.provider.fetch = () => Promise.resolve(fresh);
+    await service.refresh('openai');
+
+    // Act — the abandoned call finally answers, long after it was given up on.
+    resolveLate!({ ok: true, fetchedAt: 1, buckets: [], displayMessages: [] });
+    for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve));
+
+    // Assert
+    assert.equal(service.get('openai'), fresh);
+    assert.equal(entry.consecutiveFailures, 0);
+    assert.equal(entry.nextAllowedFetchAt, 0);
   });
 
   it('refresh() returns null for a connector that is not enabled', async () => {

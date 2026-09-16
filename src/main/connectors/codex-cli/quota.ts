@@ -7,24 +7,47 @@ import { JsonlSpendScanner, SpendRecord } from '../shared/jsonl-spend-scanner';
 import { costCentsFor } from '../shared/model-pricing';
 
 const WHAM_USAGE_URL = 'https://chatgpt.com/backend-api/wham/usage';
-const WHAM_RESET_CREDITS_URL = 'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits';
-const OAUTH_TOKEN_URL = 'https://auth.openai.com/oauth/token';
-
-// Client id the official Codex CLI uses for its ChatGPT OAuth login. Not
-// publicly documented by OpenAI; sourced from the codex-rs login flow. If
-// this ever stops working, refresh will simply fail closed (ok:false) —
-// never silently fabricate data.
-const CODEX_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
 
 const FIVE_HOUR_MS = 18_000_000;
 const SEVEN_DAY_MS = 604_800_000;
+const ONE_DAY_MS = 86_400_000;
 
 // --- Credential file resolution --------------------------------------------
+//
+// READ-ONLY BY POLICY. This connector reads Codex CLI's `auth.json` and never
+// writes it, and never refreshes the OAuth session itself. Both halves of that
+// rule exist for verified reasons:
+//
+//   1. OpenAI's refresh tokens ROTATE. Redeeming one invalidates it, and
+//      replaying a spent token is a permanent failure ("refresh token was
+//      already used. Please log out and sign in again") that can only be
+//      cleared by a fresh `codex login`. An earlier version of this file
+//      POSTed to auth.openai.com/oauth/token and wrote the rotated tokens
+//      back — so a refresh racing Codex's own refresh locked the user out of
+//      the tool we are only supposed to be observing.
+//   2. Codex's own `storage.rs` saves `auth.json` with a plain truncate+write
+//      and no lock, and OpenAI's CI/CD guidance says not to share this file
+//      between concurrent writers. There is no safe way for a second process
+//      to write it, atomic temp-file rename included: the clobber happens
+//      between Codex's read and its write, not during ours.
+//
+// Additionally, the old refresh body sent `scope: 'openid profile email'`,
+// which Codex's own `RefreshRequest` does not have — we were sending a field
+// the vendor client never sends.
+//
+// So: use the stored access token; when it is rejected, hand the user back to
+// `codex login`. Do not add a refresh path here.
 
 /** Candidate `auth.json` paths, in lookup order. Mirrors the session-path
  * defaults already declared in `index.ts`'s `configSchema` (`~/.codex`,
  * `%APPDATA%\codex`), plus `$CODEX_HOME` when set. All file-based — no
- * keychain, matching this connector's other credential reads. */
+ * keychain, matching this connector's other credential reads.
+ *
+ * Which means a missing `auth.json` does NOT prove the user never logged in:
+ * Codex supports `cli_auth_credentials_store = keyring`, under which the
+ * tokens live in the OS keychain and no file is written at all. That is a
+ * legitimate signed-in state this connector simply cannot read, so the
+ * "not found" copy must say so rather than telling the user to log in again. */
 function candidateAuthPaths(): string[] {
   const home = os.homedir();
   const out: string[] = [];
@@ -38,32 +61,20 @@ function candidateAuthPaths(): string[] {
   return out;
 }
 
-interface AuthTokensRaw {
-  id_token?: string;
-  access_token?: string;
-  refresh_token?: string;
-  account_id?: string;
-}
-
 interface AuthFileRaw {
   OPENAI_API_KEY?: string | null;
-  tokens?: AuthTokensRaw;
-  last_refresh?: string;
-  [key: string]: unknown;
-}
-
-interface AuthTokens {
-  idToken?: string;
-  accessToken?: string;
-  refreshToken?: string;
-  accountId?: string;
-  apiKey?: string;
+  tokens?: {
+    id_token?: string;
+    access_token?: string;
+    account_id?: string;
+  };
 }
 
 interface LoadedAuth {
   path: string;
-  raw: AuthFileRaw;
-  tokens: AuthTokens;
+  accessToken?: string;
+  accountId?: string;
+  apiKey?: string;
 }
 
 function loadAuthFile(): LoadedAuth | null {
@@ -74,14 +85,9 @@ function loadAuthFile(): LoadedAuth | null {
       const t = raw.tokens ?? {};
       return {
         path: p,
-        raw,
-        tokens: {
-          idToken: t.id_token,
-          accessToken: t.access_token,
-          refreshToken: t.refresh_token,
-          accountId: t.account_id,
-          apiKey: raw.OPENAI_API_KEY ?? undefined,
-        },
+        accessToken: t.access_token,
+        accountId: t.account_id,
+        apiKey: raw.OPENAI_API_KEY ?? undefined,
       };
     } catch {
       // Malformed file — try the next candidate rather than failing outright.
@@ -91,88 +97,27 @@ function loadAuthFile(): LoadedAuth | null {
   return null;
 }
 
-/** Writes `data` to `filePath` atomically via a same-directory temp file +
- * rename, so a crash/interrupt mid-write leaves the original untouched
- * instead of truncated. The rename only fires once the temp write fully
- * succeeded. Preserves the original file's permission mode (e.g. `0600`) by
- * `chmod`-ing the temp file before the rename — a plain `writeFileSync` would
- * otherwise silently widen it to Node's default `0666`-minus-umask on every
- * refresh. If the file doesn't exist yet, defaults to owner-only `0600`.
- * Returns whether it succeeded. Exported for smoke coverage. */
-export function atomicWriteFile(filePath: string, data: string): boolean {
-  const tmpPath = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  let mode = 0o600;
-  try {
-    mode = fs.statSync(filePath).mode;
-  } catch {
-    // Original doesn't exist yet (first-ever write) — keep the 0o600 default.
-  }
-  try {
-    fs.writeFileSync(tmpPath, data);
-    fs.chmodSync(tmpPath, mode);
-    fs.renameSync(tmpPath, filePath);
-    return true;
-  } catch {
-    try {
-      fs.unlinkSync(tmpPath);
-    } catch {
-      // best-effort cleanup
-    }
-    return false;
-  }
-}
-
-/** Write rotated tokens back into the same auth.json, preserving unknown
- * fields. This is the only connector that writes to another tool's own
- * credential store — a failed write must never corrupt the original file
- * (see `atomicWriteFile`) and must be visible rather than silently
- * swallowed, since it can otherwise lock the separate `codex` CLI out. */
-function writeTokensBack(auth: LoadedAuth, ctx: ConnectorContext): void {
-  const next: AuthFileRaw = {
-    ...auth.raw,
-    tokens: {
-      ...(auth.raw.tokens ?? {}),
-      id_token: auth.tokens.idToken,
-      access_token: auth.tokens.accessToken,
-      refresh_token: auth.tokens.refreshToken,
-      account_id: auth.tokens.accountId,
-    },
-    last_refresh: new Date().toISOString(),
-  };
-  const ok = atomicWriteFile(auth.path, JSON.stringify(next, null, 2));
-  if (!ok) {
-    ctx.log('warn', '[codex-cli] failed to persist refreshed auth.json — original file left untouched', {
-      path: auth.path,
-    });
-  }
-}
-
 // --- HTTP helpers ------------------------------------------------------------
 
 async function httpJson(
   url: string,
-  init: { method?: string; headers: Record<string, string>; body?: string },
+  headers: Record<string, string>,
 ): Promise<{ status: number; json: unknown }> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { net } = require('electron') as typeof import('electron');
     if (net?.fetch) {
       // net.fetch has no built-in timeout -- without this, a single hung
-      // wham/usage or OAuth-refresh call never settles. QuotaService's
-      // fetchOne() clears `inFlight` only in its `finally`, so the dead
-      // promise wedges every future poll AND the Refresh button for this
-      // connector until the app restarts -- and, via refreshAll()'s
-      // Promise.all, every other connector's refresh with it.
+      // wham/usage call never settles. QuotaService's fetchOne() clears
+      // `inFlight` only in its `finally`, so the dead promise wedges every
+      // future poll AND the Refresh button for this connector until the app
+      // restarts -- and, via refreshAll()'s Promise.all, every other
+      // connector's refresh with it.
       // Pattern matches the fixed helpers in zai/grok/openrouter.
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 15_000);
       try {
-        const res = await net.fetch(url, {
-          method: init.method ?? 'GET',
-          headers: init.headers,
-          body: init.body,
-          signal: controller.signal,
-        });
+        const res = await net.fetch(url, { headers, signal: controller.signal });
         const txt = await res.text();
         try {
           return { status: res.status, json: txt ? JSON.parse(txt) : {} };
@@ -196,28 +141,20 @@ async function httpJson(
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const https = require('https') as typeof import('https');
   return new Promise((resolve, reject) => {
-    const headers = { ...init.headers };
-    if (init.body) headers['Content-Length'] = String(Buffer.byteLength(init.body));
-    const req = https.request(
-      url,
-      { method: init.method ?? 'GET', headers },
-      res => {
-        const chunks: Buffer[] = [];
-        res.on('data', c => chunks.push(c));
-        res.on('end', () => {
-          const body = Buffer.concat(chunks).toString('utf8');
-          try {
-            resolve({ status: res.statusCode ?? 0, json: body ? JSON.parse(body) : {} });
-          } catch {
-            resolve({ status: res.statusCode ?? 0, json: {} });
-          }
-        });
-      },
-    );
+    const req = https.get(url, { headers }, res => {
+      const chunks: Buffer[] = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        try {
+          resolve({ status: res.statusCode ?? 0, json: body ? JSON.parse(body) : {} });
+        } catch {
+          resolve({ status: res.statusCode ?? 0, json: {} });
+        }
+      });
+    });
     req.on('error', reject);
     req.setTimeout(15_000, () => req.destroy(new Error('Codex API timeout')));
-    if (init.body) req.write(init.body);
-    req.end();
   });
 }
 
@@ -230,68 +167,62 @@ function authHeaders(accessToken: string, accountId?: string): Record<string, st
   return headers;
 }
 
-/** Refresh the ChatGPT OAuth session. Returns null (never throws) on any failure. */
-async function refreshAccessToken(
-  refreshToken: string,
-): Promise<{ accessToken: string; refreshToken?: string; idToken?: string } | null> {
-  try {
-    const res = await httpJson(OAUTH_TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({
-        client_id: CODEX_OAUTH_CLIENT_ID,
-        grant_type: 'refresh_token',
-        refresh_token: refreshToken,
-        scope: 'openid profile email',
-      }),
-    });
-    if (res.status >= 400) return null;
-    const json = res.json as { access_token?: string; refresh_token?: string; id_token?: string };
-    if (!json.access_token) return null;
-    return {
-      accessToken: json.access_token,
-      refreshToken: json.refresh_token,
-      idToken: json.id_token,
-    };
-  } catch {
-    return null;
-  }
-}
-
-/** GET with exactly one 401/403 retry after a token refresh, rotating auth.json on success. */
-async function fetchWithRefresh(
-  url: string,
-  auth: LoadedAuth,
-  ctx: ConnectorContext,
-): Promise<{ status: number; json: unknown }> {
-  if (!auth.tokens.accessToken) return { status: 401, json: {} };
-  let res = await httpJson(url, { headers: authHeaders(auth.tokens.accessToken, auth.tokens.accountId) });
-  if ((res.status === 401 || res.status === 403) && auth.tokens.refreshToken) {
-    const refreshed = await refreshAccessToken(auth.tokens.refreshToken);
-    if (refreshed) {
-      auth.tokens.accessToken = refreshed.accessToken;
-      if (refreshed.refreshToken) auth.tokens.refreshToken = refreshed.refreshToken;
-      if (refreshed.idToken) auth.tokens.idToken = refreshed.idToken;
-      writeTokensBack(auth, ctx);
-      res = await httpJson(url, { headers: authHeaders(auth.tokens.accessToken, auth.tokens.accountId) });
-    }
-  }
-  return res;
+/** Authenticated GET against the ChatGPT backend. No refresh-on-401: see the
+ * read-only policy note above the credential-file section. */
+async function fetchAuthed(url: string, auth: LoadedAuth): Promise<{ status: number; json: unknown }> {
+  if (!auth.accessToken) return { status: 401, json: {} };
+  return httpJson(url, authHeaders(auth.accessToken, auth.accountId));
 }
 
 // --- Response parsing ---------------------------------------------------------
 //
-// `wham/usage` and `wham/rate-limit-reset-credits` are undocumented internal
-// endpoints. Field names below are best-effort and probed defensively (same
-// approach as `anthropic/quota.ts`'s `parseClaudeAiUsage`): an unrecognised
-// shape yields a missing bucket, never a fabricated `0` or a `NaN`.
+// `wham/usage` is an undocumented internal endpoint, but its body is NOT a
+// guess any more: the shapes below are confirmed against the openai/codex
+// source tree (Sept 2026) --
+//   * `codex-rs/codex-backend-openapi-models/src/models/rate_limit_status_details.rs`
+//     (and its sibling window/credits models) for the field names, and
+//   * the app-server fixture in `codex-rs/app-server/tests/suite/v2/rate_limits.rs`
+//     for a full example body.
+//
+// An earlier version of this file read `rate_limits.primary.window_minutes` /
+// `resets_at`, which exists nowhere on the wire -- that is the INTERNAL
+// protocol/rollout shape, not the HTTP response. Every poll therefore produced
+// zero buckets and tripped the drift warning below. The real body is:
+//
+//   {
+//     "plan_type": "pro",
+//     "rate_limit": {                       // singular
+//       "allowed": true, "limit_reached": false,
+//       "primary_window":   { "used_percent": 12.5, "limit_window_seconds": 18000,
+//                             "reset_after_seconds": 1234, "reset_at": "..." },
+//       "secondary_window": { ... same shape, "limit_window_seconds": 604800 }
+//     },
+//     "additional_rate_limits": [
+//       { "limit_name": "...", "metered_feature": "...",
+//         "normal_model_slug": "gpt-5.3-codex", "rate_limit": { ...window... } }
+//     ],
+//     "credits": { "has_credits": true, "unlimited": false, "balance": 0, ... },
+//     "rate_limit_reset_credits": { "available_count": 0 }
+//   }
+//
+// Parsing stays defensive anyway (same approach as `anthropic/quota.ts`'s
+// `parseClaudeAiUsage`): an unrecognised shape yields a missing bucket, never
+// a fabricated `0` or a `NaN`.
 
+/** `Number('')` is `0`, so an empty or whitespace-only string is rejected
+ * before it can become a fabricated measured zero — the same guard cursor,
+ * zai, devin, grok and antigravity carry. */
 function firstFiniteNumber(...vals: unknown[]): number | null {
   for (const v of vals) {
+    if (typeof v === 'string' && v.trim() === '') continue;
     const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
     if (Number.isFinite(n)) return n;
   }
   return null;
+}
+
+function asRecord(raw: unknown): Record<string, unknown> | null {
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : null;
 }
 
 /** Epoch ms from a timestamp field, OR from a "resets in N seconds" field. */
@@ -312,15 +243,20 @@ interface ParsedWindow {
   resetsAt: number | null;
 }
 
-function parseRateWindow(raw: unknown): ParsedWindow | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const r = raw as Record<string, unknown>;
-  const usedPercent = firstFiniteNumber(r.used_percent, r.usage_percent, r.percent_used);
+/** One `RateLimitWindow`. `limit_window_seconds` is SECONDS (the old code read
+ * a `window_minutes` field that does not exist), and the reset timestamp is
+ * `reset_at`, with `reset_after_seconds` as the relative form. */
+export function parseRateWindow(raw: unknown): ParsedWindow | null {
+  const r = asRecord(raw);
+  if (!r) return null;
+  const usedPercent = firstFiniteNumber(r.used_percent);
   if (usedPercent == null) return null;
-  const windowMinutes = firstFiniteNumber(r.window_minutes, r.window_duration_minutes);
-  const windowMs = windowMinutes != null ? windowMinutes * 60_000 : null;
-  const resetsAt = resetsAtFrom(r.resets_at ?? r.reset_at, r.resets_in_seconds ?? r.reset_after_seconds);
-  return { usedPercent, windowMs, resetsAt };
+  const windowSeconds = firstFiniteNumber(r.limit_window_seconds);
+  return {
+    usedPercent,
+    windowMs: windowSeconds != null ? windowSeconds * 1000 : null,
+    resetsAt: resetsAtFrom(r.reset_at, r.reset_after_seconds),
+  };
 }
 
 function windowBucket(
@@ -347,90 +283,190 @@ function windowBucket(
   return bucket;
 }
 
-/** Normalizes a model name into a stable bucket-id fragment, independent of
- * whether the API response used an array or a keyed-object shape — bucket
- * ids are permanent settings keys, so two shapes describing the same model
- * must never mint two different ids. Exported for smoke coverage. */
+type WindowSlot = 'session' | 'weekly';
+
+/**
+ * Which bucket a window belongs in, decided by its DURATION rather than by
+ * which JSON key carried it. Since ~July 2026 OpenAI has been observed
+ * returning the weekly window (`limit_window_seconds: 604800`) as
+ * `primary_window`, with the 5-hour window in the secondary slot or under
+ * `additional_rate_limits` — so slot position is not a reliable label. Same
+ * heuristic (and the same strict `<`, so an exactly-24h window reads as the
+ * longer cadence) as `zai/quota.ts`'s classifier. `positional` is only the
+ * last resort for a window that reports no duration at all.
+ */
+function classifyWindow(w: ParsedWindow, positional: WindowSlot): WindowSlot {
+  if (w.windowMs == null) return positional;
+  return w.windowMs < ONE_DAY_MS ? 'session' : 'weekly';
+}
+
+/** Normalizes a model name into a stable bucket-id fragment. Bucket ids are
+ * permanent settings keys, so two spellings of the same model (casing or
+ * whitespace) must never mint two different ids. Exported for smoke coverage. */
 export function slugifyModel(name: string): string {
   return name.trim().toLowerCase().replace(/\s+/g, '-');
 }
 
-/** Builds the per-model "Spark" buckets, deduped by normalized model slug
- * (last entry for a given slug wins) so a slug collision within one response
- * — from casing/whitespace differences or the array-vs-object shape — still
- * produces exactly one bucket, not two competing for the same id. */
-export function buildSparkBuckets(
-  perModel: Array<Record<string, unknown>> | Record<string, unknown> | undefined,
-): QuotaBucket[] {
+/** The per-entry `rate_limit` in `additional_rate_limits[]` is sometimes a
+ * bare window and sometimes the same primary/secondary container as the
+ * top-level field, so yield whatever windows it holds with their positional
+ * default. */
+function windowsOf(raw: unknown): Array<{ window: ParsedWindow; positional: WindowSlot }> {
+  const out: Array<{ window: ParsedWindow; positional: WindowSlot }> = [];
+  const container = asRecord(raw);
+  if (!container) return out;
+  if ('primary_window' in container || 'secondary_window' in container) {
+    const primary = parseRateWindow(container.primary_window);
+    if (primary) out.push({ window: primary, positional: 'session' });
+    const secondary = parseRateWindow(container.secondary_window);
+    if (secondary) out.push({ window: secondary, positional: 'weekly' });
+    return out;
+  }
+  const bare = parseRateWindow(container);
+  if (bare) out.push({ window: bare, positional: 'session' });
+  return out;
+}
+
+/**
+ * Per-model / per-feature buckets from `additional_rate_limits[]`. This
+ * replaced a `per_model` / `spark` / `model_limits` probe that was written
+ * against a shape nobody ever observed; no user has prefs keyed to those old
+ * `spark-*` ids, so the id namespace changed to `model-<slug>-<slot>` with
+ * it. Deduped by id (last entry wins) so a slug collision inside one response
+ * produces exactly one bucket, not two competing for the same settings key.
+ * Exported for smoke coverage.
+ */
+export function buildAdditionalLimitBuckets(raw: unknown): QuotaBucket[] {
+  if (!Array.isArray(raw)) return [];
   const out = new Map<string, QuotaBucket>();
-  const add = (rawModel: string | undefined, raw: unknown) => {
-    if (!rawModel) return;
-    const w = parseRateWindow(raw);
-    if (!w) return;
-    const slug = slugifyModel(rawModel);
-    out.set(slug, windowBucket(`spark-${slug}`, `${rawModel} (Spark)`, w, FIVE_HOUR_MS));
-  };
-  if (Array.isArray(perModel)) {
-    for (const entry of perModel) {
-      const model =
-        typeof entry.model === 'string' ? entry.model : typeof entry.name === 'string' ? entry.name : undefined;
-      add(model, entry);
+  for (const entry of raw) {
+    const e = asRecord(entry);
+    if (!e) continue;
+    const slugSource =
+      typeof e.normal_model_slug === 'string' && e.normal_model_slug.trim()
+        ? e.normal_model_slug
+        : typeof e.limit_name === 'string' && e.limit_name.trim()
+          ? e.limit_name
+          : typeof e.metered_feature === 'string' && e.metered_feature.trim()
+            ? e.metered_feature
+            : null;
+    if (!slugSource) continue;
+    const label =
+      (typeof e.limit_name === 'string' && e.limit_name.trim() ? e.limit_name.trim() : null) ??
+      slugSource.trim();
+    const slug = slugifyModel(slugSource);
+
+    for (const { window, positional } of windowsOf(e.rate_limit)) {
+      const slot = classifyWindow(window, positional);
+      const id = `model-${slug}-${slot}`;
+      const suffix = slot === 'session' ? '5h' : 'weekly';
+      out.set(
+        id,
+        windowBucket(id, `${label} (${suffix})`, window, slot === 'session' ? FIVE_HOUR_MS : SEVEN_DAY_MS),
+      );
     }
-  } else if (perModel && typeof perModel === 'object') {
-    for (const [model, raw] of Object.entries(perModel)) add(model, raw);
   }
   return [...out.values()];
 }
 
-function parseUsageBuckets(json: Record<string, unknown>): { buckets: QuotaBucket[]; planType?: string } {
-  const buckets: QuotaBucket[] = [];
-  const rateLimits = (json.rate_limits as Record<string, unknown> | undefined) ?? json;
-
-  const primary = parseRateWindow(rateLimits.primary ?? json.session ?? json.five_hour);
-  if (primary) buckets.push(windowBucket('session', 'Session (5h)', primary, FIVE_HOUR_MS));
-
-  const secondary = parseRateWindow(rateLimits.secondary ?? json.weekly ?? json.seven_day);
-  if (secondary) buckets.push(windowBucket('weekly', 'Weekly', secondary, SEVEN_DAY_MS));
-
-  const perModel = (rateLimits.per_model ?? rateLimits.spark ?? json.spark ?? json.model_limits) as
-    | Array<Record<string, unknown>>
-    | Record<string, unknown>
-    | undefined;
-  buckets.push(...buildSparkBuckets(perModel));
-
-  const planType = typeof json.plan_type === 'string' ? json.plan_type : undefined;
-  return { buckets, planType };
-}
-
-function expiryTierNote(resetsAt: number, now: number): string {
-  const diff = resetsAt - now;
-  if (diff <= 0) return 'expired';
-  if (diff < 48 * 3_600_000) return 'expires in <48h';
-  if (diff < 7 * 24 * 3_600_000) return 'expires in <1wk';
-  return 'expires in >1wk';
-}
-
-function parseResetCreditsBucket(json: Record<string, unknown>, now: number): QuotaBucket | null {
-  const remaining = firstFiniteNumber(json.credits, json.remaining_credits, json.balance);
-  const granted = firstFiniteNumber(json.granted_credits, json.total_credits);
-  const resetsAt = resetsAtFrom(json.expires_at ?? json.resets_at, json.expires_in_seconds);
-  if (remaining == null && granted == null && resetsAt == null) return null;
-
+/** `credits`: prepaid Codex credit balance. `unlimited` accounts have no
+ * meaningful number, so they render as an unlimited bucket rather than a
+ * fabricated `0`. */
+function parseCreditsBucket(raw: unknown): QuotaBucket | null {
+  const r = asRecord(raw);
+  if (!r) return null;
+  if (r.unlimited === true) {
+    return {
+      id: 'credits',
+      label: 'Credits (unlimited)',
+      used: null,
+      limit: null,
+      remaining: null,
+      unit: 'credits',
+      enabled: true,
+      defaultVisibility: 'onDemand',
+    };
+  }
+  const balance = firstFiniteNumber(r.balance);
+  if (balance == null) return null;
   const bucket: QuotaBucket = {
-    id: 'reset-credits',
-    label: 'Reset credits',
+    id: 'credits',
+    label: 'Credits',
     used: null,
-    limit: granted,
-    remaining,
+    limit: null,
+    remaining: balance,
     unit: 'credits',
     enabled: true,
     defaultVisibility: 'onDemand',
   };
-  if (resetsAt != null) {
-    bucket.resetsAt = resetsAt;
-    bucket.note = expiryTierNote(resetsAt, now);
-  }
+  if (r.has_credits === false) bucket.note = 'no credits available';
   return bucket;
+}
+
+/** `rate_limit_reset_credits`: one-off credits that clear a hit rate limit
+ * early. The wire shape carries a single `available_count` — the old probe
+ * for `granted_credits` / `expires_at` and an expiry-tier note was written
+ * against a shape that does not exist. */
+function parseResetCreditsBucket(raw: unknown): QuotaBucket | null {
+  const r = asRecord(raw);
+  if (!r) return null;
+  const available = firstFiniteNumber(r.available_count);
+  if (available == null) return null;
+  return {
+    id: 'reset-credits',
+    label: 'Reset credits',
+    used: null,
+    limit: null,
+    remaining: available,
+    unit: 'credits',
+    enabled: true,
+    defaultVisibility: 'onDemand',
+  };
+}
+
+export interface ParsedUsage {
+  buckets: QuotaBucket[];
+  planType?: string;
+  /** How many rate-limit windows were recognised. The drift warning keys on
+   * this, not on `buckets.length`: a body carrying only `credits` would
+   * otherwise look healthy while every usage meter was silently missing. */
+  windowCount: number;
+}
+
+/** Exported for smoke coverage. */
+export function parseUsageBuckets(json: Record<string, unknown>): ParsedUsage {
+  const buckets: QuotaBucket[] = [];
+  const claimed = new Map<WindowSlot, QuotaBucket>();
+  let windowCount = 0;
+
+  for (const { window, positional } of windowsOf(json.rate_limit)) {
+    windowCount += 1;
+    const slot = classifyWindow(window, positional);
+    if (claimed.has(slot)) continue;
+    claimed.set(
+      slot,
+      slot === 'session'
+        ? windowBucket('session', 'Session (5h)', window, FIVE_HOUR_MS)
+        : windowBucket('weekly', 'Weekly', window, SEVEN_DAY_MS),
+    );
+  }
+  const session = claimed.get('session');
+  if (session) buckets.push(session);
+  const weekly = claimed.get('weekly');
+  if (weekly) buckets.push(weekly);
+
+  const modelBuckets = buildAdditionalLimitBuckets(json.additional_rate_limits);
+  windowCount += modelBuckets.length;
+  buckets.push(...modelBuckets);
+
+  const credits = parseCreditsBucket(json.credits);
+  if (credits) buckets.push(credits);
+
+  const resetCredits = parseResetCreditsBucket(json.rate_limit_reset_credits);
+  if (resetCredits) buckets.push(resetCredits);
+
+  const planType = typeof json.plan_type === 'string' ? json.plan_type : undefined;
+  return { buckets, planType, windowCount };
 }
 
 // --- Local spend scan (Phase 4) -----------------------------------------------
@@ -559,14 +595,6 @@ function scheduleCumulativeStateWrite(cacheDir: string): void {
   if (typeof cumulativeStateWriteTimer.unref === 'function') cumulativeStateWriteTimer.unref();
 }
 
-function firstFiniteNumberLocal(...vals: unknown[]): number | null {
-  for (const v of vals) {
-    const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
-    if (Number.isFinite(n)) return n;
-  }
-  return null;
-}
-
 function firstNonEmptyString(...vals: unknown[]): string | undefined {
   for (const v of vals) {
     if (typeof v === 'string' && v.trim()) return v.trim();
@@ -602,9 +630,9 @@ export function extractCodexSpend(line: unknown, file: string): SpendRecord | nu
       ? (infoRaw.total_token_usage as Record<string, unknown>)
       : infoRaw;
 
-  const rawInputTokens = firstFiniteNumberLocal(usageRaw.input_tokens) ?? 0;
-  const rawCachedInputTokens = firstFiniteNumberLocal(usageRaw.cached_input_tokens) ?? 0;
-  const rawOutputTokens = firstFiniteNumberLocal(usageRaw.output_tokens) ?? 0;
+  const rawInputTokens = firstFiniteNumber(usageRaw.input_tokens) ?? 0;
+  const rawCachedInputTokens = firstFiniteNumber(usageRaw.cached_input_tokens) ?? 0;
+  const rawOutputTokens = firstFiniteNumber(usageRaw.output_tokens) ?? 0;
 
   // Correction item 1: apply the same numeric-epoch handling `resetsAtFrom`
   // already has above, and return null (never `Date.now()`) when the
@@ -712,15 +740,17 @@ class CodexCliQuotaProvider implements QuotaProvider {
         fetchedAt,
         error:
           'No Codex auth.json found (looked at $CODEX_HOME, ~/.codex, and %APPDATA%\\codex). ' +
-          'Run `codex login` to sign in with ChatGPT.',
+          'Run `codex login` to sign in with ChatGPT — or, if Codex is configured with ' +
+          '`cli_auth_credentials_store = keyring`, your tokens live in the OS keychain ' +
+          'instead of a file and this connector cannot read them.',
       };
     }
-    if (!auth.tokens.accessToken) {
+    if (!auth.accessToken) {
       return {
         ok: false,
         fetchedAt,
         needsLogin: true,
-        error: auth.tokens.apiKey
+        error: auth.apiKey
           ? 'This Codex CLI session uses an OpenAI API key, which the ChatGPT usage endpoints don\'t accept. ' +
             'Run `codex login` with ChatGPT to see quota here, or use the OpenAI connector for API-key org usage.'
           : 'Codex CLI is not signed in. Run `codex login` to sign in with ChatGPT.',
@@ -729,13 +759,18 @@ class CodexCliQuotaProvider implements QuotaProvider {
     }
 
     try {
-      const usageRes = await fetchWithRefresh(WHAM_USAGE_URL, auth, this.ctx);
+      const usageRes = await fetchAuthed(WHAM_USAGE_URL, auth);
       if (usageRes.status === 401 || usageRes.status === 403) {
+        // Deliberately no in-process refresh — see the policy note above
+        // `candidateAuthPaths`. Starting Codex refreshes the session on its
+        // own, so the user usually does not even need an explicit login.
         return {
           ok: false,
           fetchedAt,
           needsLogin: true,
-          error: 'Codex session expired. Run `codex login` to sign in again.',
+          error:
+            'Codex session expired. Run `codex login` (or just start Codex, which refreshes ' +
+            'its own session) and refresh here.',
           source: auth.path,
         };
       }
@@ -743,25 +778,16 @@ class CodexCliQuotaProvider implements QuotaProvider {
         return { ok: false, fetchedAt, error: `Codex usage API HTTP ${usageRes.status}`, source: auth.path };
       }
 
-      const { buckets, planType } = parseUsageBuckets(usageRes.json as Record<string, unknown>);
-      if (buckets.length === 0) {
-        // A 200 with no recognisable rate-limit fields means the undocumented
+      const { buckets, planType, windowCount } = parseUsageBuckets(
+        (usageRes.json ?? {}) as Record<string, unknown>,
+      );
+      if (windowCount === 0) {
+        // A 200 with no recognisable rate-limit window means the undocumented
         // API shape drifted, not that usage is genuinely empty — surface it
         // so this doesn't silently look like a normal quiet connector.
-        this.ctx.log('warn', '[codex-cli] wham/usage returned 200 but no recognisable rate-limit fields', {
+        this.ctx.log('warn', '[codex-cli] wham/usage returned 200 but no recognisable rate-limit window', {
           keys: Object.keys((usageRes.json as Record<string, unknown>) ?? {}),
         });
-      }
-
-      // Reset-credits is optional — failure here doesn't fail the whole fetch.
-      try {
-        const creditsRes = await fetchWithRefresh(WHAM_RESET_CREDITS_URL, auth, this.ctx);
-        if (creditsRes.status < 400) {
-          const creditsBucket = parseResetCreditsBucket(creditsRes.json as Record<string, unknown>, fetchedAt);
-          if (creditsBucket) buckets.push(creditsBucket);
-        }
-      } catch {
-        // skip
       }
 
       return {

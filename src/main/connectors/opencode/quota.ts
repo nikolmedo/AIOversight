@@ -6,10 +6,36 @@ import { ConnectorContext, QuotaBucket, QuotaProvider, QuotaSnapshot, SpendTile 
 import { costCentsFor } from '../shared/model-pricing';
 
 /**
- * OpenCode connector — fully offline, zero API calls. Reads OpenCode's own
- * local SQLite database(s) (`opencode*.db`) plus an optional `auth.json`.
+ * OpenCode connector — quota windows from the official OpenCode Zen usage
+ * API, local spend from OpenCode's own SQLite database(s) (`opencode*.db`).
  *
  * CONFIDENCE NOTES (read before trusting a number):
+ *
+ * 0. Zen usage endpoint [C, from the vendor's own merged PR] —
+ *    `GET https://opencode.ai/zen/go/v1/usage` with
+ *    `Authorization: Bearer <OpenCode Go API key>`, answering
+ *    `{"usage":{"rolling":{...},"weekly":{...},"monthly":{...}}}` where each
+ *    window carries `status`, `percent` and `resetsAt`. DOLLAR AMOUNTS ARE
+ *    NOT EXPOSED, so these are percent buckets.
+ *
+ *    This replaces three fabricated dollar budgets ($12 session / $30 weekly
+ *    / $60 monthly) that earlier versions of this file presented as if they
+ *    were vendor limits. They never were: real limits vary by model tier
+ *    (the 5h window is 20% and the weekly 50% of the monthly cap, which is
+ *    roughly $60/month for cheap models but $15 for others), so that triple
+ *    was wrong for every user but one tier. The `weekly` and `monthly`
+ *    bucket ids survive from that version and now carry `unit: 'percent'`
+ *    instead of `unit: 'usd'` — acceptable only because the values they used
+ *    to carry were invented rather than measured.
+ *
+ *    Which `auth.json` provider id holds the Go key is UNCONFIRMED, so both
+ *    `opencode` and `opencode-go` are probed, and the key's own field is
+ *    assumed to be `key`. A user can always paste the key into the
+ *    connector's `apiKey` secret field instead.
+ *
+ *    `resetsAt` may be an ISO string or an epoch number; both are parsed.
+ *    The `status` string is deliberately ignored — its value space is
+ *    unknown, and guessing at it would put invented semantics on screen.
  *
  * 1. SQLite `session` table schema — column NAMES/TYPES are HIGH confidence
  *    (the `CREATE TABLE` text was read via `sqlite_master` from a real,
@@ -39,13 +65,10 @@ import { costCentsFor } from '../shared/model-pricing';
  *    summed into ONE unified total — a deliberate, documented deviation
  *    from the plan's literal wording.
  *
- * 3. $12 / $30 / $60 session / weekly / monthly dollar caps — these are the
- *    plan's directed figures, implemented as fixed local reference caps
- *    (not fetched from any account/subscription API — there is no such API
- *    call in this connector). No evidence in the verified schema ties these
- *    numbers to a real OpenCode-side plan/tier; treat them as this
- *    connector's own configured budget markers, not authoritative billing
- *    limits sourced from OpenCode itself.
+ * 3. Local session data is now a SPEND source only. It feeds the Total Spend
+ *    tiles and never quota buckets, because nothing in the local database
+ *    knows what the account's actual limits are — which is exactly the gap
+ *    the invented caps in note 0 used to paper over.
  *
  * 4. `auth.json` ("Go subscription detection") — LOW confidence,
  *    best-effort. This dev machine's real installation has NO `auth.json`
@@ -67,10 +90,7 @@ import { costCentsFor } from '../shared/model-pricing';
 // --- Constants -----------------------------------------------------------
 
 const DAY_MS = 24 * 3_600_000;
-const SESSION_WINDOW_MS = 18_000_000; // 5h
-const SESSION_CAP_CENTS = 1_200; // $12
-const WEEKLY_CAP_CENTS = 3_000; // $30
-const MONTHLY_CAP_CENTS = 6_000; // $60
+const ZEN_USAGE_URL = 'https://opencode.ai/zen/go/v1/usage';
 
 // --- Data directory resolution --------------------------------------------
 
@@ -343,86 +363,145 @@ export function toSpendRecords(rows: RawSessionRow[]): OpencodeSpendRecord[] {
   return out;
 }
 
-// --- Session / weekly / monthly cap buckets (UTC-anchored) -----------------
+// --- OpenCode Zen usage API (see file-header note 0) ----------------------
 
-function utcMondayStart(now: number): number {
-  const d = new Date(now);
-  const daysSinceMonday = (d.getUTCDay() + 6) % 7; // Mon=0, Tue=1, ..., Sun=6
-  const utcMidnight = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-  return utcMidnight - daysSinceMonday * DAY_MS;
-}
-
-function utcMonthStart(now: number): number {
-  const d = new Date(now);
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
-}
-
-function utcNextMonthStart(now: number): number {
-  const d = new Date(now);
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
+/** `resetsAt` may arrive as an ISO string or as an epoch number, and the
+ * source did not say which. Both are accepted; anything else yields no reset
+ * time rather than a wrong one. */
+function parseResetsAt(raw: unknown): number | null {
+  if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
+    return raw > 1e10 ? raw : raw * 1000;
+  }
+  if (typeof raw === 'string' && raw.trim()) {
+    const ms = Date.parse(raw);
+    if (Number.isFinite(ms)) return ms;
+  }
+  return null;
 }
 
 /**
- * Session (rolling trailing 5h, $12), weekly (UTC-Monday-anchored calendar
- * week, $30), and monthly (UTC calendar month, $60) spend caps, summed from
- * local session cost data. The session bucket deliberately has no
- * `resetsAt`/`windowMs` — it's a continuously-sliding look-back with no
- * discrete reset moment, unlike weekly/monthly's real calendar boundaries
- * (never synthesize a reset that doesn't genuinely exist, matching
- * `codex-cli/quota.ts`'s `windowBucket` convention). Exported for smoke
- * coverage.
+ * The three windows the Zen endpoint reports, in display order. `windowMs`
+ * is only set where the duration is EXACT: a calendar month is 28-31 days,
+ * so pairing a synthesised 30-day window with a real `resetsAt` would make
+ * pace math read a negative elapsed fraction at the start of a long month.
+ * The monthly bucket therefore carries its reset time and no window length.
  */
-export function buildCapBuckets(records: OpencodeSpendRecord[], now: number): QuotaBucket[] {
-  const sessionStart = now - SESSION_WINDOW_MS;
-  const weekStart = utcMondayStart(now);
-  const weekEnd = weekStart + 7 * DAY_MS;
-  const monthStart = utcMonthStart(now);
-  const monthEnd = utcNextMonthStart(now);
+const ZEN_WINDOWS: Array<{ key: string; id: string; label: string; windowMs?: number }> = [
+  { key: 'rolling', id: 'rolling', label: 'Rolling (5h)', windowMs: 18_000_000 },
+  { key: 'weekly', id: 'weekly', label: 'Weekly', windowMs: 7 * DAY_MS },
+  { key: 'monthly', id: 'monthly', label: 'Monthly' },
+];
 
-  let sessionCents = 0;
-  let weekCents = 0;
-  let monthCents = 0;
-  for (const r of records) {
-    if (r.costCents == null) continue;
-    if (r.ts >= sessionStart && r.ts <= now) sessionCents += r.costCents;
-    if (r.ts >= weekStart && r.ts < weekEnd) weekCents += r.costCents;
-    if (r.ts >= monthStart && r.ts < monthEnd) monthCents += r.costCents;
+/**
+ * Builds percent buckets from the Zen usage response. Dollar figures are not
+ * exposed by this API, so `percent` is the only measure available. A window
+ * with no numeric `percent` is omitted rather than shown as zero. Exported
+ * for test coverage.
+ */
+export function buildZenBuckets(json: unknown): QuotaBucket[] {
+  const usage = (json as { usage?: unknown } | undefined)?.usage;
+  if (!usage || typeof usage !== 'object') return [];
+  const windows = usage as Record<string, unknown>;
+
+  const buckets: QuotaBucket[] = [];
+  for (const spec of ZEN_WINDOWS) {
+    const raw = windows[spec.key];
+    if (!raw || typeof raw !== 'object') continue;
+    const entry = raw as Record<string, unknown>;
+    const percent = toNumber(entry.percent);
+    if (percent == null) continue;
+
+    const used = Math.min(100, Math.max(0, percent));
+    const bucket: QuotaBucket = {
+      id: spec.id,
+      label: spec.label,
+      used,
+      limit: 100,
+      remaining: Math.max(0, 100 - used),
+      unit: 'percent',
+      enabled: true,
+    };
+    if (spec.windowMs != null) bucket.windowMs = spec.windowMs;
+    const resetsAt = parseResetsAt(entry.resetsAt ?? entry.resets_at);
+    if (resetsAt != null) bucket.resetsAt = resetsAt;
+    buckets.push(bucket);
+  }
+  return buckets;
+}
+
+// --- Zen API key resolution ------------------------------------------------
+
+/** Provider ids probed in `auth.json` — which one holds the Go key is
+ * unconfirmed (file-header note 0), so both are tried. */
+const ZEN_PROVIDER_IDS = ['opencode', 'opencode-go'];
+
+/**
+ * Pulls an OpenCode Zen key out of an `auth.json` payload. The file's
+ * conventional shape is `{ "<providerId>": { "type": "api", "key": "..." } }`,
+ * so `key` is the field read. Exported for test coverage.
+ */
+export function extractZenApiKey(raw: unknown): string | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  for (const id of ZEN_PROVIDER_IDS) {
+    const entry = obj[id];
+    if (entry && typeof entry === 'object') {
+      const key = (entry as Record<string, unknown>).key;
+      if (typeof key === 'string' && key.trim()) return key.trim();
+    }
+    if (typeof entry === 'string' && entry.trim()) return entry.trim();
+  }
+  return null;
+}
+
+async function fetchZenUsage(apiKey: string): Promise<{ status: number; json: unknown }> {
+  const headers = { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' };
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { net } = require('electron') as typeof import('electron');
+    if (net?.fetch) {
+      // net.fetch has no built-in timeout, and QuotaService clears its
+      // per-connector lock only in a `finally`, so an unsettled request
+      // wedges every later poll and the Refresh button.
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15_000);
+      try {
+        const res = await net.fetch(ZEN_USAGE_URL, { headers, signal: controller.signal });
+        const txt = await res.text();
+        try {
+          return { status: res.status, json: txt ? JSON.parse(txt) : {} };
+        } catch {
+          return { status: res.status, json: {} };
+        }
+      } catch (err) {
+        if (controller.signal.aborted) return { status: 408, json: {} };
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  } catch {
+    // fall through to Node's https module (e.g. headless smoke tests)
   }
 
-  return [
-    {
-      id: 'session',
-      label: 'Session (rolling 5h)',
-      used: sessionCents,
-      limit: SESSION_CAP_CENTS,
-      remaining: Math.max(0, SESSION_CAP_CENTS - sessionCents),
-      unit: 'usd',
-      enabled: true,
-      note: 'Rolling trailing 5-hour spend, not a fixed reset time',
-    },
-    {
-      id: 'weekly',
-      label: 'Weekly (UTC, resets Monday)',
-      used: weekCents,
-      limit: WEEKLY_CAP_CENTS,
-      remaining: Math.max(0, WEEKLY_CAP_CENTS - weekCents),
-      unit: 'usd',
-      enabled: true,
-      resetsAt: weekEnd,
-      windowMs: 7 * DAY_MS,
-    },
-    {
-      id: 'monthly',
-      label: 'Monthly (UTC calendar month)',
-      used: monthCents,
-      limit: MONTHLY_CAP_CENTS,
-      remaining: Math.max(0, MONTHLY_CAP_CENTS - monthCents),
-      unit: 'usd',
-      enabled: true,
-      resetsAt: monthEnd,
-      windowMs: monthEnd - monthStart,
-    },
-  ];
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const https = require('https') as typeof import('https');
+  return new Promise((resolve, reject) => {
+    const req = https.get(ZEN_USAGE_URL, { headers }, res => {
+      const chunks: Buffer[] = [];
+      res.on('data', c => chunks.push(c));
+      res.on('end', () => {
+        const body = Buffer.concat(chunks).toString('utf8');
+        try {
+          resolve({ status: res.statusCode ?? 0, json: body ? JSON.parse(body) : {} });
+        } catch {
+          resolve({ status: res.statusCode ?? 0, json: {} });
+        }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(15_000, () => req.destroy(new Error('OpenCode Zen API timeout')));
+  });
 }
 
 // --- Today / Yesterday / Last-30d spend tiles (local time) -----------------
@@ -533,21 +612,26 @@ class OpencodeQuotaProvider implements QuotaProvider {
     private readonly ctx: ConnectorContext,
   ) {}
 
+  /** Secret field first, then the environment, then whichever `auth.json`
+   * in a data directory carries a Zen provider entry. */
+  private resolveApiKey(existingDirs: string[]): string | null {
+    const fromSecret = this.ctx.secret('apiKey');
+    if (fromSecret && fromSecret.trim()) return fromSecret.trim();
+    const fromEnv = process.env.OPENCODE_API_KEY;
+    if (fromEnv && fromEnv.trim()) return fromEnv.trim();
+    for (const dir of existingDirs) {
+      const key = extractZenApiKey(readAuthFile(dir));
+      if (key) return key;
+    }
+    return null;
+  }
+
   async fetch(): Promise<QuotaSnapshot> {
     const fetchedAt = Date.now();
     const dirs = resolveDataDirs(this.config, this.ctx);
     const existingDirs = dirs.filter(d => fs.existsSync(d));
 
-    if (existingDirs.length === 0) {
-      return {
-        ok: false,
-        fetchedAt,
-        error:
-          `No OpenCode data directory found (looked in ${dirs.join(', ')}). Run OpenCode at least once, ` +
-          'or set $OPENCODE_DATA_DIR / the data directory setting.',
-      };
-    }
-
+    // --- Local spend (see file-header note 3) -----------------------------
     const dbFiles: string[] = [];
     for (const dir of existingDirs) dbFiles.push(...findDbFiles(dir));
 
@@ -565,44 +649,88 @@ class OpencodeQuotaProvider implements QuotaProvider {
       }
     }
 
-    // CRITICAL fix: distinguish "confirmed zero usage" from "couldn't
-    // determine" -- see `noUsableSessionData`'s doc comment.
-    if (noUsableSessionData(dbFiles.length, sessionReadsOk)) {
+    // Spend stays `undefined` rather than a zero-filled tile set when no
+    // database could be read -- "couldn't determine" is not "$0 spent".
+    const haveSpend = !noUsableSessionData(dbFiles.length, sessionReadsOk);
+    const spend = haveSpend ? buildSpendTiles(toSpendRecords(allRows), fetchedAt) : undefined;
+
+    // --- Quota windows (see file-header note 0) ---------------------------
+    const apiKey = this.resolveApiKey(existingDirs);
+
+    if (!apiKey) {
+      if (!haveSpend) {
+        return {
+          ok: false,
+          fetchedAt,
+          error:
+            'No OpenCode Zen API key and no readable opencode*.db. Paste a key in the OpenCode Quota ' +
+            'section (or set OPENCODE_API_KEY) for quota windows, and run OpenCode at least once for ' +
+            'local spend.',
+          source: existingDirs[0],
+        };
+      }
       return {
-        ok: false,
+        ok: true,
         fetchedAt,
-        error:
-          dbFiles.length === 0
-            ? `No opencode*.db file found in ${existingDirs.join(', ')}. Run OpenCode at least once to ` +
-              'generate local usage data.'
-            : `Found ${dbFiles.length} OpenCode database file(s) but could not read session data from any ` +
-              'of them (see the Logs tab for details).',
+        buckets: [],
+        membershipType: this.membershipFrom(existingDirs),
+        displayMessages: [
+          'No OpenCode Zen API key set, so quota windows are unavailable. Local spend is shown below.',
+        ],
         source: dbFiles[0] ?? existingDirs[0],
+        spend,
       };
     }
 
-    let membershipType: string | undefined;
-    for (const dir of existingDirs) {
-      const label = extractAuthLabel(readAuthFile(dir));
-      if (label) {
-        membershipType = label;
-        break;
-      }
+    const res = await fetchZenUsage(apiKey);
+    if (res.status === 401 || res.status === 403) {
+      return {
+        ok: false,
+        fetchedAt,
+        needsLogin: true,
+        error:
+          `OpenCode Zen rejected the API key (HTTP ${res.status}). Paste a current key into the OpenCode ` +
+          'Quota section, or sign in again with the OpenCode CLI to refresh it.',
+        source: ZEN_USAGE_URL,
+      };
+    }
+    if (res.status >= 400) {
+      return {
+        ok: false,
+        fetchedAt,
+        error: `Could not fetch OpenCode Zen usage: HTTP ${res.status}`,
+        source: ZEN_USAGE_URL,
+      };
     }
 
-    const records = toSpendRecords(allRows);
-    const buckets = buildCapBuckets(records, fetchedAt);
-    const spend = buildSpendTiles(records, fetchedAt);
+    const buckets = buildZenBuckets(res.json);
+    if (buckets.length === 0) {
+      return {
+        ok: false,
+        fetchedAt,
+        error: 'OpenCode Zen returned no recognisable usage windows.',
+        source: ZEN_USAGE_URL,
+      };
+    }
 
     return {
       ok: true,
       fetchedAt,
       buckets,
-      membershipType,
+      membershipType: this.membershipFrom(existingDirs),
       displayMessages: [],
-      source: dbFiles[0] ?? existingDirs[0],
+      authMethod: 'api-key',
+      source: ZEN_USAGE_URL,
       spend,
     };
+  }
+
+  private membershipFrom(existingDirs: string[]): string | undefined {
+    for (const dir of existingDirs) {
+      const label = extractAuthLabel(readAuthFile(dir));
+      if (label) return label;
+    }
+    return undefined;
   }
 }
 

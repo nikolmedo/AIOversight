@@ -6,11 +6,23 @@ const OpencodeConnector: Connector = {
   name: 'OpenCode',
   vendor: 'OpenCode',
   description:
-    'Reads OpenCode\'s local session data (opencode*.db, no API calls) to estimate session/weekly/monthly ' +
-    'spend against reference dollar caps, plus a 30-day spend history for the Total Spend card.',
+    'Tracks OpenCode Zen rolling/weekly/monthly quota windows from the official usage API, plus spend and ' +
+    'a 30-day history read from OpenCode\'s local session database.',
   enabledByDefault: false,
   quotaEnabledByDefault: true,
   configSchema: [
+    {
+      key: 'apiKey',
+      label: 'OpenCode Zen API key',
+      type: 'secret',
+      section: 'quota',
+      requiresEnabled: 'quota',
+      default: '',
+      help:
+        'Needed for the quota windows. Left blank, the key is looked up in OpenCode\'s own auth.json, then ' +
+        'the OPENCODE_API_KEY environment variable; local spend works without it. Stays encrypted on this ' +
+        'machine.',
+    },
     {
       key: 'dataDirs',
       label: 'OpenCode data directories',

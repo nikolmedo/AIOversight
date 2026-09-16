@@ -1,8 +1,33 @@
 import { ConnectorContext, QuotaBucket, QuotaProvider, QuotaSnapshot, SpendTile } from '../types';
 import { fetchClaudeUsage } from './browser-session';
-import { ClaudeCodeCliQuotaProvider } from './cli-quota';
 import { JsonlSpendScanner, SpendRecord } from '../shared/jsonl-spend-scanner';
 import { costCentsFor } from '../shared/model-pricing';
+
+/**
+ * Plan-usage source policy for this connector.
+ *
+ * ONLY source: the claude.ai browser session (`browser-session.ts`).
+ *
+ * REMOVED — `claude /usage` CLI scraping (was `cli-quota.ts`). Verified on
+ * 2026-09-16 on a machine with Claude Code installed: `/usage` is a TUI-only
+ * Ink dialog, and BOTH `claude /usage` and `claude -p "/usage"` hang until
+ * killed rather than printing anything parseable. There is no headless
+ * equivalent — anthropics/claude-code#40793 (`claude usage --json`) was closed
+ * unimplemented. The old code therefore burned a 5s spawn-and-kill on every
+ * poll before falling through to the browser session it always ended up
+ * using. Do not reintroduce a CLI scrape without first confirming a
+ * non-interactive output mode exists.
+ *
+ * DELIBERATELY NOT USED — `GET api.anthropic.com/api/oauth/usage`. It works
+ * with a Claude Code OAuth token, but Anthropic stated (Feb 2026) that using
+ * Claude Free/Pro/Max OAuth credentials from other products violates their
+ * Consumer Terms. That is a product decision this repo's owner has not made,
+ * so it stays out regardless of convenience. The officially sanctioned local
+ * alternative is Claude Code's `statusLine` hook, whose stdin JSON carries
+ * `rate_limits.five_hour` / `rate_limits.seven_day` with no credentials at
+ * all — that is the intended future direction if this connector ever needs a
+ * second source.
+ */
 
 const FIVE_HOUR_MS = 18_000_000;
 const SEVEN_DAY_MS = 604_800_000;
@@ -86,8 +111,12 @@ interface UsageResponse {
   extra_usage?: ExtraUsage;
 }
 
+/** `Number('')` is `0`, so an empty or whitespace-only string is rejected
+ * before it can become a fabricated measured zero — the same guard cursor,
+ * zai, devin, grok and antigravity carry. */
 function firstFiniteNumber(...vals: unknown[]): number | null {
   for (const v of vals) {
+    if (typeof v === 'string' && v.trim() === '') continue;
     const n = typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : NaN;
     if (Number.isFinite(n)) return n;
   }
@@ -130,8 +159,8 @@ class ClaudeCodeQuotaProvider implements QuotaProvider {
   }
 
   /** Local-spend scan (Phase 4) over Claude Code's own transcript files —
-   * a completely different data source from `fetchQuota()`'s claude.ai /
-   * CLI plan-usage buckets above. Non-fatal: any failure here is caught by
+   * a completely different data source from `fetchQuota()`'s claude.ai
+   * plan-usage buckets below. Non-fatal: any failure here is caught by
    * `fetch()` and simply omits `spend`, never fails the whole snapshot. */
   private async computeSpend(): Promise<SpendTile[]> {
     const rawPaths = this.config.paths as string[] | undefined;
@@ -148,13 +177,6 @@ class ClaudeCodeQuotaProvider implements QuotaProvider {
   }
 
   private async fetchQuota(): Promise<QuotaSnapshot> {
-    // Try the claude CLI first — already authenticated, no browser session needed
-    try {
-      return await new ClaudeCodeCliQuotaProvider().fetch();
-    } catch {
-      // CLI unavailable, timed out, or output unparseable — fall through to browser session
-    }
-
     const fetchedAt = Date.now();
     const result = await fetchClaudeUsage();
 
@@ -186,13 +208,10 @@ class ClaudeCodeQuotaProvider implements QuotaProvider {
 
     // Phase 3: this endpoint's `resets_at` is a real per-window reset
     // timestamp, so we set `resetsAt`/`windowMs` here (activating
-    // paceStateFor's projected-exhaustion branch) — unlike cli-quota.ts's
-    // parallel path, which only has a human string ("Resets 3am") and must
-    // stay on the static-threshold fallback because it has no real timestamp
-    // to set `resetsAt` from. Only do this when the value is a REAL API
-    // timestamp, never a synthesized one (Phase 2a's reverted mistake, where
-    // an over-eager version of this exact pattern set resetsAt/windowMs from
-    // data that wasn't actually a real reset).
+    // paceStateFor's projected-exhaustion branch). Only do this when the value
+    // is a REAL API timestamp, never a synthesized one (Phase 2a's reverted
+    // mistake, where an over-eager version of this exact pattern set
+    // resetsAt/windowMs from data that wasn't actually a real reset).
     const addWindow = (
       id: string,
       label: string,
