@@ -2,6 +2,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { BrowserWindow, Tray, ipcMain, screen } from 'electron';
 import type { ConnectorMetadata, QuotaSnapshot } from './connectors/types';
+import type { UpdateState } from './updater';
 
 /**
  * Best-effort "is this Windows 11 22H2 or later" heuristic. Electron's own
@@ -23,12 +24,14 @@ export interface TrayPopupActions {
   openSettings: () => void;
   getQuotas: () => Record<string, QuotaSnapshot>;
   getConnectors: () => ConnectorMetadata[];
+  getUpdateState: () => UpdateState;
 }
 
 export interface TrayPopupHandle {
   toggle: (tray: Tray) => void;
   hide: () => void;
   sendQuota: (quotas: Record<string, QuotaSnapshot>) => void;
+  sendUpdateState: (state: UpdateState) => void;
   /**
    * Applies (or removes) the platform-conditional "Increase transparency"
    * effect to the live popup window. Windows: `setBackgroundMaterial` +
@@ -208,6 +211,7 @@ export function createTrayPopup(actions: TrayPopupActions, initialTransparent = 
       win.show();
       win.focus();
       win.webContents.send('trayPopup:quotas', actions.getQuotas());
+      win.webContents.send('trayPopup:updateState', actions.getUpdateState());
     };
 
     if (win.webContents.isLoading()) {
@@ -230,6 +234,11 @@ export function createTrayPopup(actions: TrayPopupActions, initialTransparent = 
     sendQuota(quotas) {
       if (popup && !popup.isDestroyed()) {
         popup.webContents.send('trayPopup:quotas', quotas);
+      }
+    },
+    sendUpdateState(state) {
+      if (popup && !popup.isDestroyed()) {
+        popup.webContents.send('trayPopup:updateState', state);
       }
     },
     setTransparent(enabled) {

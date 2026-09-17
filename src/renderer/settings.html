@@ -58,6 +58,7 @@
     </aside>
 
     <main class="content" id="content">
+      <div id="updateBanner" class="update-banner-slot"></div>
       <!-- Overview -->
       <section class="page" data-page="overview" aria-labelledby="overviewTitle">
         <header class="page-header">
@@ -129,6 +130,29 @@
             <label class="row">
               <span class="row-text"><span class="row-label">Launch at system startup</span></span>
               <input type="checkbox" class="switch" id="launchAtLogin" />
+            </label>
+          </div>
+        </section>
+
+        <section class="group">
+          <h2 class="overline">Updates</h2>
+          <div class="surface-block">
+            <div class="row">
+              <span class="row-text">
+                <span class="row-label" id="appVersion">AI Oversight</span>
+                <span class="row-desc" id="updateStatus" aria-live="polite"></span>
+              </span>
+              <span class="control-cluster">
+                <button type="button" id="updateActionBtn" class="btn btn-primary" hidden></button>
+                <button type="button" id="checkUpdatesBtn" class="btn btn-secondary">Check for updates</button>
+              </span>
+            </div>
+            <label class="row">
+              <span class="row-text">
+                <span class="row-label">Check for updates automatically</span>
+                <span class="row-desc">Looks for a new release on GitHub shortly after launch and every 6 hours</span>
+              </span>
+              <input type="checkbox" class="switch" id="checkForUpdates" />
             </label>
           </div>
         </section>
@@ -353,6 +377,7 @@
 
   <script src="quota-math.js" defer></script>
   <script src="quota-view.js" defer></script>
+  <script src="update-banner.js" defer></script>
   <script src="settings.js" defer></script>
 </body>
 </html>

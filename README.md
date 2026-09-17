@@ -27,7 +27,8 @@ You start Claude Code, Cursor, or Codex on a long task, and then what? You alt-t
 - **Universal HTTP webhook.** One `curl` line integrates any agent, script, or framework that can make an HTTP request.
 - **Generic JSONL watcher.** Point it at any transcript file to get waiting/finished detection for custom tools.
 - **Local-first and private.** Runs entirely on your machine: no cloud, no telemetry. Credentials are encrypted at rest with Electron `safeStorage` (Keychain on macOS, DPAPI on Windows).
-- **Deliberately minimal.** Vanilla TypeScript, two runtime dependencies, no bundler, no framework.
+- **Updates itself.** Checks GitHub Releases for your platform's package. The Windows installer and the Linux AppImage update in place; other packages link to the release page.
+- **Deliberately minimal.** Vanilla TypeScript, three runtime dependencies, no bundler, no framework.
 
 ## Screenshots
 
@@ -125,9 +126,9 @@ Then open **Settings → Integrations** and turn on the connectors you use.
 ### Build distributable installers
 
 ```bash
-npm run package:mac   # .dmg + .zip in release/
-npm run package:win   # .exe (NSIS) + portable .exe in release/
-npm run package:linux # AppImage + .deb + .tar.gz in release/
+npm run package:mac   # aioversight-<version>-mac-<arch>.dmg / .zip + latest-mac.yml in release/
+npm run package:win   # aioversight-<version>-setup-x64.exe (NSIS), -portable-x64.exe + latest.yml in release/
+npm run package:linux # AppImage + .deb + .tar.gz + latest-linux.yml in release/
 ```
 
 > [!NOTE]
@@ -226,13 +227,13 @@ The settings window has a sidebar with four main pages and an **Advanced** group
 | **Overview** | Quota meters for every integration with quota tracking on (pace coloring and reset countdowns), estimated spend for today / yesterday / 30 days, and the latest agent activity. |
 | **Integrations** | Every connector grouped by vendor, with its status and independent **Notifications** / **Quota** switches. Click one to open its detail drawer: config fields, live quota meters, auto-refresh override, and sign-in where supported. Secret fields are masked and encrypted at rest. |
 | **Activity** | The last 50 notifications, each with a `waiting` / `finished` pill, the agent, and its source path. |
-| **Preferences** | Startup, notifications (master switch, per-kind toggles, cooldown, test), quiet hours, quota polling and tray summary, appearance (theme, density, time format, estimated spend), tray popup (transparency, global shortcut), and display (show, star, and reorder usage meters). |
+| **Preferences** | Updates (current version, check now, automatic checks), startup, notifications (master switch, per-kind toggles, cooldown, test), quiet hours, quota polling and tray summary, appearance (theme, density, time format, estimated spend), tray popup (transparency, global shortcut), and display (show, star, and reorder usage meters). |
 | **Advanced → Webhook** | Copy-paste `curl` example with your live host, port, and token, plus a sample hook payload. |
 | **Advanced → Logs** | Diagnostic output from each connector, the runtime, and the notifier. |
 
 ## Privacy & security
 
-- **Everything stays local.** No cloud service, no telemetry, no account.
+- **Everything stays local.** No cloud service, no telemetry, no account. The only request the app makes for itself is the update check against this repository's GitHub Releases, which you can turn off in **Preferences → Updates**.
 - **Credentials are encrypted.** API keys, cookies, and PATs are encrypted with Electron's `safeStorage` (Keychain on macOS, DPAPI on Windows) and stored in `secrets.json`, separate from `settings.json`, which never contains credentials.
 - **Secrets never reach the UI process.** The renderer can write a secret but can never read one back.
 

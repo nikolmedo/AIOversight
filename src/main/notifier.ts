@@ -109,6 +109,44 @@ export class Notifier {
     return { shown: true };
   }
 
+  /**
+   * OS notification for a newly available app update. Honors the master
+   * `showNotifications` switch only: pause and quiet hours are about agent
+   * events, and `UpdateService` already limits this to once per version.
+   */
+  notifyUpdate(
+    update: { latestVersion: string; canInstall: boolean },
+    onClick: () => void,
+  ): NotifyResult {
+    if (!this.settings.get().showNotifications) {
+      this.log('info', '[notifier] update notification suppressed (notifications disabled in settings)');
+      return { shown: false, reason: 'disabled' };
+    }
+    if (!Notification.isSupported()) {
+      this.log('warn', '[notifier] OS reports notifications are not supported');
+      return { shown: false, reason: 'unsupported' };
+    }
+    const note = new Notification({
+      title: `AI Oversight ${update.latestVersion} is available`,
+      body: update.canInstall
+        ? 'Open AI Oversight to update now.'
+        : 'Open AI Oversight to download the new version.',
+      silent: true,
+      icon: this.iconPath,
+    });
+    note.on('failed', (_e, err) =>
+      this.log('error', '[notifier] OS rejected update notification', { err: String(err) }),
+    );
+    note.on('click', onClick);
+    try {
+      note.show();
+    } catch (err) {
+      this.log('error', '[notifier] threw on show()', { err: String(err) });
+      return { shown: false, reason: 'unsupported' };
+    }
+    return { shown: true };
+  }
+
   private inQuietHours(window: { startHour: number; endHour: number } | null, now: Date): boolean {
     if (!window) return false;
     const hour = now.getHours();

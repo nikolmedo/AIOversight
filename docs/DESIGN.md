@@ -90,6 +90,7 @@ The theme setting (system / light / dark) is applied in the main process through
   - The bar carries no elapsed-time ("even pace") marker. One existed and was removed at the owner's request as visual noise; pace is expressed only through colour and the reset countdown.
 - **Bucket placement**: buckets with no limit, or marked `defaultVisibility: 'onDemand'`, render in the compact "More metrics" section below the main meters (`renderMeterGroup` in `quota-view.ts`).
 - **Status**: small dot plus text. "App not running" (`status-app-not-running`) uses a `--text-3` dot and `--text-2` text: it is expected, not an error. Pills (`.pill-waiting`, `.pill-finished`) use the status colour on its `-soft` background.
+- **Update banner** (`.update-banner`, `renderUpdateBanner` in `update-banner.ts`): `--accent-soft` background with a hairline border, `--accent` download icon, `--text` copy, one small `btn-primary` action (*Update now* / *Restart to update* where the package can install, *Download* to the release page otherwise) and a ghost dismiss button. While downloading, a 4px `--accent-solid` progress bar replaces the action. Settings window: above the page content, same max width as `.page`. Tray popup: compact variant between the header and the scroll area, divided by a hairline.
 - **Neutral notice** (`.inline-notice`, `renderAppNotRunningNotice` in `quota-view.ts`): info icon plus `--text-2` text, used instead of the red error styling for `appNotRunning` snapshots. The tray popup does not show those connectors at all.
 
 ## Known gaps

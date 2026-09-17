@@ -13,18 +13,32 @@ jobs:
     strategy:
       matrix:
         include:
+          # latest*.yml and *.blockmap are the auto-update metadata
+          # electron-updater downloads; a release without them makes update
+          # checks fail for that platform. The macOS zip is what MacUpdater
+          # installs from, so it ships alongside the dmg. A single `--mac`
+          # run builds x64 and arm64 and writes one latest-mac.yml for both.
           - os: macos-latest
             build_script: npm run package:mac
-            artifact_path: release/*.dmg
+            artifact_path: |
+              release/*.dmg
+              release/*.zip
+              release/*.blockmap
+              release/latest-mac.yml
           - os: windows-latest
             build_script: npm run package:win
-            artifact_path: release/*.exe
+            artifact_path: |
+              release/*.exe
+              release/*.blockmap
+              release/latest.yml
           - os: ubuntu-latest
             build_script: npm run package:linux
             artifact_path: |
               release/*.deb
               release/*.tar.gz
               release/*.AppImage
+              release/*.blockmap
+              release/latest-linux*.yml
 
     permissions:
       contents: write

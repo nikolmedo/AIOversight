@@ -9,6 +9,7 @@ const $$ = <T extends HTMLElement>(sel: string): T[] =>
 let initial: InitialPayload;
 let paused = false;
 let quotas: Record<string, QuotaSnapshot> = {};
+let updateState: UpdateState | null = null;
 
 async function main() {
   initial = await window.aw.getInitial();
@@ -29,6 +30,7 @@ async function main() {
   bindCopyButtons();
   loadLogs();
   reflectPaused();
+  setupUpdates(initial.updates);
 
   bindResetChips(document);
   bindTotalSpendCard(document, renderTotalSpendCardPanel);
@@ -1019,6 +1021,7 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
   const transparentPopup = $('#transparentPopup') as HTMLInputElement;
   const transparentPopupHint = $('#transparentPopupHint');
   const showSpendCard = $('#showSpendCard') as HTMLInputElement;
+  const checkForUpdates = $('#checkForUpdates') as HTMLInputElement;
   const popupShortcut = $('#popupShortcut') as HTMLInputElement;
   const popupShortcutStatus = $('#popupShortcutStatus');
 
@@ -1037,6 +1040,7 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
   timeFormat.value = s.timeFormat ?? 'auto';
   transparentPopup.checked = !!s.transparentPopup;
   showSpendCard.checked = s.showSpendCard !== false;
+  checkForUpdates.checked = s.checkForUpdates !== false;
   popupShortcut.value = s.popupShortcut ?? '';
   $('#settingsPath').textContent = `Settings file: ${settingsPath}`;
 
@@ -1067,6 +1071,7 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
       timeFormat: timeFormat.value as AppSettings['timeFormat'],
       transparentPopup: transparentPopup.checked,
       showSpendCard: showSpendCard.checked,
+      checkForUpdates: checkForUpdates.checked,
     });
     applyDensityClass(density.value as 'default' | 'compact');
     setTimeFormatPref(timeFormat.value as 'auto' | '12h' | '24h');
@@ -1092,6 +1097,7 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
     timeFormat,
     transparentPopup,
     showSpendCard,
+    checkForUpdates,
   ]) {
     el.addEventListener('change', persist);
     el.addEventListener('input', persist);
@@ -1111,6 +1117,78 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
     const res = await window.aw.setPopupShortcut('');
     popupShortcutStatus.textContent = res.ok ? 'Shortcut cleared.' : `Failed to clear: ${res.reason ?? 'unknown error'}`;
   });
+}
+
+// ---------------------------------------------------------------------------
+// Updates
+// ---------------------------------------------------------------------------
+
+function setupUpdates(state: UpdateState): void {
+  bindUpdateBanner($('#updateBanner'), {
+    download: () => void window.aw.downloadUpdate().then(renderUpdates),
+    install: () => void window.aw.installUpdate(),
+    'open-release': () => void window.aw.openRelease(),
+    dismiss: () => void window.aw.dismissUpdate().then(renderUpdates),
+  });
+
+  const checkBtn = $('#checkUpdatesBtn') as HTMLButtonElement;
+  checkBtn.addEventListener('click', async () => {
+    checkBtn.disabled = true;
+    try {
+      renderUpdates(await window.aw.checkForUpdates());
+    } finally {
+      if (updateState) renderUpdates(updateState);
+    }
+  });
+
+  // Mirrors the banner's primary action, which stays reachable here after
+  // the banner is dismissed.
+  const actionBtn = $('#updateActionBtn') as HTMLButtonElement;
+  actionBtn.addEventListener('click', () => {
+    const action = actionBtn.dataset.action;
+    actionBtn.disabled = action === 'download' || action === 'install';
+    if (action === 'download') void window.aw.downloadUpdate().then(renderUpdates);
+    else if (action === 'install') void window.aw.installUpdate();
+    else if (action === 'open-release') void window.aw.openRelease();
+  });
+
+  window.aw.onUpdateState(renderUpdates);
+  renderUpdates(state);
+}
+
+function renderUpdates(state: UpdateState): void {
+  updateState = state;
+  $('#updateBanner').innerHTML = renderUpdateBanner(state);
+
+  $('#appVersion').textContent = `AI Oversight ${state.currentVersion}`;
+  let status = updateStatusText(state);
+  if (state.lastChecked && (state.status === 'not-available' || state.status === 'error')) {
+    status += ` Last checked ${formatTime(state.lastChecked)}.`;
+  }
+  $('#updateStatus').textContent = status;
+
+  const checkBtn = $('#checkUpdatesBtn') as HTMLButtonElement;
+  checkBtn.disabled =
+    state.status === 'disabled' ||
+    state.status === 'checking' ||
+    state.status === 'downloading' ||
+    state.status === 'downloaded';
+
+  const actionBtn = $('#updateActionBtn') as HTMLButtonElement;
+  let action = '';
+  let label = '';
+  if (state.status === 'available') {
+    action = state.canInstall ? 'download' : 'open-release';
+    label = state.canInstall ? 'Update now' : 'Download';
+  } else if (state.status === 'downloaded') {
+    action = 'install';
+    // A failed install stays 'downloaded' with an error; retry from here.
+    label = state.error ? 'Try again' : 'Restart to update';
+  }
+  actionBtn.hidden = !action;
+  actionBtn.disabled = false;
+  actionBtn.dataset.action = action;
+  actionBtn.textContent = label;
 }
 
 // ---------------------------------------------------------------------------

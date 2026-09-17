@@ -33,6 +33,7 @@ import {
   ConnectorMetadata as MainConnectorMetadata,
   MAX_STARRED_PER_CONNECTOR as MAIN_MAX_STARRED_PER_CONNECTOR,
 } from './types';
+import { UpdateState as MainUpdateState } from '../updater';
 
 type AssertAssignable<Target, Source extends Target> = Source;
 
@@ -72,3 +73,6 @@ export type _BucketPrefParityBA = AssertAssignable<MainBucketPref, BucketPref>;
 
 export type _ConnectorMetadataParityAB = AssertAssignable<ConnectorMetadata, MainConnectorMetadata>;
 export type _ConnectorMetadataParityBA = AssertAssignable<MainConnectorMetadata, ConnectorMetadata>;
+
+export type _UpdateStateParityAB = AssertAssignable<UpdateState, MainUpdateState>;
+export type _UpdateStateParityBA = AssertAssignable<MainUpdateState, UpdateState>;

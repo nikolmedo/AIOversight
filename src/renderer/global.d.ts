@@ -27,6 +27,7 @@ interface InitialPayload {
   /** `process.platform` from the main process — used to disable platform-conditional
    * settings (e.g. tray transparency has no Linux implementation). */
   platform: string;
+  updates: UpdateState;
 }
 
 interface LogEntry {
@@ -63,6 +64,14 @@ interface AgentWatcherAPI {
   getQuotas(): Promise<Record<string, QuotaSnapshot>>;
   refreshQuota(id?: string): Promise<QuotaSnapshot | Record<string, QuotaSnapshot>>;
   connectorLogin(id: string): Promise<boolean>;
+  getUpdateState(): Promise<UpdateState>;
+  /** Never rejects; resolves with the state after the check settles. */
+  checkForUpdates(): Promise<UpdateState>;
+  downloadUpdate(): Promise<UpdateState>;
+  installUpdate(): Promise<void>;
+  openRelease(): Promise<void>;
+  dismissUpdate(): Promise<UpdateState>;
+  onUpdateState(cb: (state: UpdateState) => void): () => void;
   onEvent(cb: (e: RecentEvent) => void): () => void;
   onLog(cb: (e: LogEntry) => void): () => void;
   onPaused(cb: (paused: boolean) => void): () => void;

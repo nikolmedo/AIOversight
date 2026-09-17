@@ -237,3 +237,43 @@ describe('Notifier.handle()', () => {
     assert.equal(recent[0].kind, 'waiting');
   });
 });
+
+describe('Notifier.notifyUpdate()', () => {
+  let dir: string;
+  let store: SettingsStore;
+  let notifier: Notifier;
+
+  beforeEach(() => {
+    dir = makeTempDir('aioversight-notifier-update-');
+    setUserDataPath(dir);
+    resetElectronStub();
+    store = new SettingsStore(connectorDefaults());
+    notifier = new Notifier(store, '/path/to/icon.png');
+  });
+
+  afterEach(() => {
+    removeTempDir(dir);
+  });
+
+  it('shows a notification whose click runs the handler, even during quiet hours', () => {
+    store.update({ quietHours: { startHour: 0, endHour: 23 } });
+    let clicks = 0;
+
+    const result = notifier.notifyUpdate({ latestVersion: '1.1.0', canInstall: true }, () => clicks++);
+
+    assert.deepEqual(result, { shown: true });
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0].options.title, 'AI Oversight 1.1.0 is available');
+    for (const handler of notifications[0].handlers['click'] ?? []) handler();
+    assert.equal(clicks, 1);
+  });
+
+  it('respects the showNotifications master switch', () => {
+    store.update({ showNotifications: false });
+
+    const result = notifier.notifyUpdate({ latestVersion: '1.1.0', canInstall: false }, () => {});
+
+    assert.deepEqual(result, { shown: false, reason: 'disabled' });
+    assert.equal(notifications.length, 0);
+  });
+});

@@ -25,6 +25,12 @@ const api = {
   getQuotas: () => ipcRenderer.invoke('quota:get'),
   refreshQuota: (id?: string) => ipcRenderer.invoke('quota:refresh', id),
   connectorLogin: (id: string) => ipcRenderer.invoke(`connector:login:${id}`),
+  getUpdateState: () => ipcRenderer.invoke('updates:get'),
+  checkForUpdates: () => ipcRenderer.invoke('updates:check'),
+  downloadUpdate: () => ipcRenderer.invoke('updates:download'),
+  installUpdate: () => ipcRenderer.invoke('updates:install'),
+  openRelease: () => ipcRenderer.invoke('updates:openRelease'),
+  dismissUpdate: () => ipcRenderer.invoke('updates:dismiss'),
   onEvent: (cb: (e: unknown) => void) => {
     const listener = (_: unknown, e: unknown) => cb(e);
     ipcRenderer.on('event', listener);
@@ -39,6 +45,11 @@ const api = {
     const listener = (_: unknown, p: boolean) => cb(p);
     ipcRenderer.on('paused', listener);
     return () => ipcRenderer.removeListener('paused', listener);
+  },
+  onUpdateState: (cb: (state: unknown) => void) => {
+    const listener = (_: unknown, state: unknown) => cb(state);
+    ipcRenderer.on('updates:state', listener);
+    return () => ipcRenderer.removeListener('updates:state', listener);
   },
   onQuotaUpdate: (cb: (e: { id: string; snapshot: unknown }) => void) => {
     const listener = (_: unknown, e: { id: string; snapshot: unknown }) => cb(e);

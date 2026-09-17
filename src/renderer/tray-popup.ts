@@ -193,10 +193,32 @@
     requestAnimationFrame(() => requestAnimationFrame(reportSize));
   }
 
+  let lastUpdateBannerHtml = '';
+
+  function renderUpdate(state: UpdateState): void {
+    const slot = document.getElementById('updateBanner');
+    if (!slot) return;
+    const html = renderUpdateBanner(state, true);
+    // Progress pushes arrive often while downloading; skip no-op re-renders.
+    if (html === lastUpdateBannerHtml) return;
+    lastUpdateBannerHtml = html;
+    slot.innerHTML = html;
+    requestAnimationFrame(() => requestAnimationFrame(reportSize));
+  }
+
+  bindUpdateBanner($('#updateBanner'), {
+    download: () => void window.awPopup.downloadUpdate().then(renderUpdate),
+    install: () => void window.awPopup.installUpdate(),
+    'open-release': () => void window.awPopup.openRelease(),
+    dismiss: () => void window.awPopup.dismissUpdate().then(renderUpdate),
+  });
+  window.awPopup.onUpdateState(renderUpdate);
+
   async function bootstrap(): Promise<void> {
     connectors = (await window.awPopup.getConnectors()) as ConnectorMetadata[];
     bucketPrefs = (await window.awPopup.getBucketPrefs()) as Record<string, Record<string, BucketPref>>;
     await applyUiPrefs();
+    renderUpdate(await window.awPopup.getUpdateState());
     const quotas = (await window.awPopup.getQuotas()) as Record<string, QuotaSnapshot>;
     render(quotas);
     requestAnimationFrame(() => requestAnimationFrame(reportSize));

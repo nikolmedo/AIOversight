@@ -1,5 +1,18 @@
 appId: com.aioversight.app
 productName: AI Oversight
+# Space-free artifact names. GitHub renames uploaded assets whose names
+# contain spaces (spaces become dots), which would break the file URLs that
+# latest*.yml points electron-updater at. Keep these in sync with
+# `assetMatchesTarget` in src/main/updater.ts.
+artifactName: ${name}-${version}-${os}-${arch}.${ext}
+# Generates latest.yml / latest-linux.yml / latest-mac.yml next to the
+# artifacts and bakes app-update.yml into resources/. The package scripts
+# still pass `--publish never`: CI uploads the files with
+# softprops/action-gh-release (see .github/workflows/release.yml).
+publish:
+  provider: github
+  owner: nikolmedo
+  repo: AIOversight
 directories:
   output: release
   buildResources: assets
@@ -34,9 +47,12 @@ win:
       arch: [x64]
   icon: assets/icon.png
 nsis:
+  artifactName: ${name}-${version}-setup-${arch}.${ext}
   oneClick: false
   allowToChangeInstallationDirectory: true
   perMachine: false
+portable:
+  artifactName: ${name}-${version}-portable-${arch}.${ext}
 linux:
   target:
     - AppImage

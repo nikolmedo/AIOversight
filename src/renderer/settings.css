@@ -315,6 +315,22 @@ label.row:has(.switch) { cursor: pointer; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* ── Update banner (shared renderUpdateBanner markup) ───── */
+.update-banner-slot:empty { display: none; }
+.update-banner-slot { max-width: 760px; margin: 0 auto 16px; }
+.update-banner {
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 8px 8px 14px;
+}
+.update-banner-row { display: flex; align-items: center; gap: 10px; min-width: 0; min-height: 28px; }
+.update-banner-row > .icon { color: var(--accent); }
+.update-banner-text { flex: 1; min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
+.update-banner-actions { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.update-banner-bar { height: 4px; margin: 6px 6px 2px 24px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.update-banner-fill { height: 100%; width: var(--fill, 0%); background: var(--accent-solid); transition: width var(--dur) var(--ease); }
+
 /* Neutral counterpart of .inline-error for an expected state (appNotRunning). */
 .inline-notice { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--text-2); }
 .inline-notice .icon { flex-shrink: 0; }

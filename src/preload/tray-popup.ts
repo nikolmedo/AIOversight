@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { QuotaSnapshot, ConnectorMetadata, BucketPref } from '../main/connectors/types';
+import type { UpdateState } from '../main/updater';
 
 interface TrayPopupUiPrefs {
   theme: 'system' | 'light' | 'dark';
@@ -28,6 +29,16 @@ contextBridge.exposeInMainWorld('awPopup', {
     ipcRenderer.invoke('trayPopup:setBucketPref', connectorId, bucketId, patch) as Promise<
       Record<string, Record<string, BucketPref>>
     >,
+  getUpdateState: () => ipcRenderer.invoke('trayPopup:getUpdateState') as Promise<UpdateState>,
+  downloadUpdate: () => ipcRenderer.invoke('trayPopup:downloadUpdate') as Promise<UpdateState>,
+  installUpdate: () => ipcRenderer.invoke('trayPopup:installUpdate'),
+  openRelease: () => ipcRenderer.invoke('trayPopup:openRelease'),
+  dismissUpdate: () => ipcRenderer.invoke('trayPopup:dismissUpdate') as Promise<UpdateState>,
+  onUpdateState: (cb: (state: UpdateState) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, state: UpdateState) => cb(state);
+    ipcRenderer.on('trayPopup:updateState', listener);
+    return () => ipcRenderer.removeListener('trayPopup:updateState', listener);
+  },
   onQuotas: (cb: (q: Record<string, QuotaSnapshot>) => void) => {
     const listener = (_e: Electron.IpcRendererEvent, q: Record<string, QuotaSnapshot>) => cb(q);
     ipcRenderer.on('trayPopup:quotas', listener);
