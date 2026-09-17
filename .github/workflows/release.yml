@@ -61,13 +61,15 @@ jobs:
               release/*.exe
               release/*.blockmap
               release/latest.yml
+          # No *.blockmap here: electron-builder writes the AppImage's block
+          # map inside the AppImage itself (latest-linux.yml carries its
+          # blockMapSize), so Linux produces no standalone blockmap file.
           - os: ubuntu-latest
             build_script: npm run package:linux
             artifact_path: |
               release/*.deb
               release/*.tar.gz
               release/*.AppImage
-              release/*.blockmap
               release/latest-linux*.yml
 
     permissions:
