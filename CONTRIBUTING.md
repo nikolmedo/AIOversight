@@ -229,7 +229,26 @@ What each package does with an update:
 | Windows portable, Linux `.deb` / `.tar.gz` | Banner and notification; **Download** opens the release page |
 | macOS | Same as above. Installing in place needs a code-signed (and notarized) app with the `zip` target; the workflow has no signing secrets, so the Mac build is notify-only |
 
-The package scripts pass `--publish never`: electron-builder only writes `latest*.yml` and bakes `resources/app-update.yml` into the app (from the `publish:` block), and `softprops/action-gh-release` uploads the files.
+The package scripts pass `--publish never`: electron-builder only writes `latest*.yml` and bakes `resources/app-update.yml` into the app (from the `publish:` block), and the workflow's upload step attaches the files with `gh release upload`.
+
+**Asset uploads are flaky, and the workflow expects that.** GitHub's release
+asset endpoint intermittently returns a 500 (`Error saving asset`, `Error
+creating asset temp dir`) with no relation to file size, upload order or
+platform. Two things follow:
+
+- A rejected upload still registers the asset, in `starter` state. Such an
+  asset is listed on the release but cannot be downloaded. It is the residue of
+  a failed upload, not a cause of one, and it is safe to delete:
+  `gh api -X DELETE repos/<owner>/<repo>/releases/assets/<id>`.
+- The upload step retries each file up to five times with `--clobber`, then
+  re-reads the release and fails unless every file it uploaded reports
+  `uploaded`. A green job is not on its own proof that the release is complete.
+
+To audit a release by hand:
+
+```bash
+gh api repos/<owner>/<repo>/releases/tags/vX.Y.Z -q '.assets[] | .name + " " + .state'
+```
 
 To check a build before tagging, run `npm run package:win` (or `:mac` / `:linux`) and confirm that `release/latest*.yml` has a `url:` equal to a real file name in `release/`, and that `app-update.yml` exists in the unpacked app's `resources/`.
 
