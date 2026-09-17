@@ -7,8 +7,36 @@ on:
   workflow_dispatch:
 
 jobs:
+  # The release is created as a draft here, by a single job, and published only
+  # after every platform has uploaded. Two reasons. A published release with
+  # part of its assets is what electron-updater clients resolve to, and they
+  # then fail on the missing latest*.yml. And three matrix jobs racing to
+  # create it would produce duplicate drafts, because GitHub enforces tag
+  # uniqueness only for published releases.
+  prepare_release:
+    name: Create draft release
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists, reusing it"
+          else
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --notes ""
+          fi
+
   build_and_release:
     name: Build and Release for ${{ matrix.os }}
+    needs: prepare_release
     runs-on: ${{ matrix.os }}
     strategy:
       # One platform's upload flaking must not cancel the other two builds.
@@ -63,14 +91,16 @@ jobs:
 
       # GitHub's release asset endpoint returns intermittent 500s ("Error
       # saving asset", "Error creating asset temp dir") unrelated to file size,
-      # upload order or platform. A rejected upload still registers the asset
-      # in `starter` state, so every attempt needs --clobber to replace it.
-      # softprops/action-gh-release rethrows 5xx without retrying, which turned
-      # a single flaky request into a failed release, so the retry lives here.
+      # upload order or platform; on 2026-09-17 it failed roughly half of all
+      # requests for several hours. A rejected upload still registers the asset
+      # in `starter` state, so a plain retry would collide with it and every
+      # attempt needs --clobber. softprops/action-gh-release rethrows 5xx
+      # without retrying, which is why one flaky request failed whole releases.
       - name: Upload Binaries to GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
           ARTIFACT_PATHS: ${{ matrix.artifact_path }}
         run: |
@@ -81,23 +111,17 @@ jobs:
           shopt -s failglob
           files=( $ARTIFACT_PATHS )
 
-          # Whichever platform job arrives first creates the release; the
-          # trailing view turns the resulting race into success.
-          gh release view "$TAG" >/dev/null 2>&1 \
-            || gh release create "$TAG" --verify-tag --title "$TAG" --notes "" \
-            || gh release view "$TAG" >/dev/null
-
           failed=""
           for file in "${files[@]}"; do
             uploaded=""
-            for attempt in 1 2 3 4 5; do
+            for attempt in 1 2 3 4 5 6; do
               if gh release upload "$TAG" "$file" --clobber; then
                 uploaded="yes"
                 break
               fi
               echo "attempt $attempt failed for $file"
-              if [ "$attempt" -lt 5 ]; then
-                sleep $(( attempt * 15 ))
+              if [ "$attempt" -lt 6 ]; then
+                sleep $(( attempt * 20 ))
               fi
             done
             if [ -z "$uploaded" ]; then
@@ -113,15 +137,61 @@ jobs:
           # An upload can report success and still leave the asset in `starter`
           # state, which is listed but not downloadable. A green step is not
           # proof, so check the published state of every file.
-          assets=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
-            --jq '.assets[] | .name + "=" + .state')
+          assets=$(gh release view "$TAG" --json assets)
           incomplete=0
           for file in "${files[@]}"; do
             name=$(basename "$file")
-            state=$(printf '%s\n' "$assets" | sed -n "s/^${name}=//p")
+            state=$(NAME="$name" node -e '
+              const a = JSON.parse(require("fs").readFileSync(0, "utf8")).assets;
+              const hit = a.find(x => x.name === process.env.NAME);
+              process.stdout.write(hit ? hit.state : "missing");
+            ' <<< "$assets")
             if [ "$state" != "uploaded" ]; then
-              echo "::error::$name is '${state:-missing}', expected 'uploaded'"
+              echo "::error::$name is '$state', expected 'uploaded'"
               incomplete=1
             fi
           done
           exit "$incomplete"
+
+  # Runs only if all three platform jobs succeeded, so a partially uploaded
+  # release stays a draft and never reaches electron-updater clients.
+  publish_release:
+    name: Publish release
+    needs: build_and_release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Verify assets and publish
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          assets=$(gh release view "$TAG" --json assets)
+
+          # Every asset must be downloadable, and each platform needs its
+          # manifest or update checks there fail silently.
+          problems=$(node -e '
+            const { assets } = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            const out = [];
+            for (const a of assets) {
+              if (a.state !== "uploaded") out.push(`${a.name} is '"'"'${a.state}'"'"', expected '"'"'uploaded'"'"'`);
+            }
+            for (const m of ["latest.yml", "latest-mac.yml", "latest-linux.yml"]) {
+              if (!assets.some(a => a.name === m)) out.push(`${m} is missing from the release`);
+            }
+            process.stdout.write(out.join(String.fromCharCode(10)));
+          ' <<< "$assets")
+
+          if [ -n "$problems" ]; then
+            while IFS= read -r problem; do
+              echo "::error::$problem"
+            done <<< "$problems"
+            exit 1
+          fi
+
+          gh release edit "$TAG" --draft=false --latest
+          echo "published $TAG"
