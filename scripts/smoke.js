@@ -461,7 +461,7 @@ function testQuotaView() {
         remainingOnlyCompactHtml.includes('$12.34') && !remainingOnlyCompactHtml.includes('No data'),
         remainingOnlyCompactHtml);
 
-  // --- resetsAt + windowMs -> reset chip + even-pace tick -----------------
+  // --- resetsAt + windowMs -> reset chip, no pace marker on the bar --------
   const windowMs = 18_000_000; // 5h
   const resetsAt = now + windowMs / 2;
   const resetHtml = sandbox.renderMeterRow(bucket({ resetsAt, windowMs }), undefined, { now });
@@ -471,8 +471,8 @@ function testQuotaView() {
         resetHtml.includes(`data-resets-at="${resetsAt}"`));
   check('renderMeterRow: reset-chip starts in countdown mode',
         resetHtml.includes('data-mode="countdown"'));
-  check('renderMeterRow: resetsAt+windowMs renders an even-pace tick',
-        resetHtml.includes('--tick:'), resetHtml);
+  check('renderMeterRow: resetsAt+windowMs renders no pace marker on the bar',
+        !resetHtml.includes('pace-tick') && !resetHtml.includes('--tick:'), resetHtml);
 
   // --- unit:'percent', limit:100 -> denominator suppressed -----------------
   const pctHtml = sandbox.renderMeterRow(

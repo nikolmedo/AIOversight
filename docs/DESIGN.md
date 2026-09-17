@@ -87,6 +87,7 @@ The theme setting (system / light / dark) is applied in the main process through
 - **Meters**: 4px bar on a `--surface-2` track. Fill and percentage colour come from `paceStateFor` in `src/renderer/quota-math.ts`:
   - Without both `resetsAt` and `windowMs`, or when less than 5% of the window has elapsed, or the window has already passed: static bands, warn at 75% used, critical at 90% (rounded percent).
   - Otherwise pace-projected: `projected = used fraction / elapsed fraction`; warn when projected is at least 0.9, critical when projected is at least 1.0 or usage has reached 100%.
+  - The bar carries no elapsed-time ("even pace") marker. One existed and was removed at the owner's request as visual noise; pace is expressed only through colour and the reset countdown.
 - **Bucket placement**: buckets with no limit, or marked `defaultVisibility: 'onDemand'`, render in the compact "More metrics" section below the main meters (`renderMeterGroup` in `quota-view.ts`).
 - **Status**: small dot plus text. "App not running" (`status-app-not-running`) uses a `--text-3` dot and `--text-2` text: it is expected, not an error. Pills (`.pill-waiting`, `.pill-finished`) use the status colour on its `-soft` background.
 - **Neutral notice** (`.inline-notice`, `renderAppNotRunningNotice` in `quota-view.ts`): info icon plus `--text-2` text, used instead of the red error styling for `appNotRunning` snapshots. The tray popup does not show those connectors at all.
