@@ -193,6 +193,25 @@
     requestAnimationFrame(() => requestAnimationFrame(reportSize));
   }
 
+  /**
+   * Re-fetches `bucketPrefs` and re-renders with it. Same staleness as
+   * `refreshConnectors` above: settings.ts's Customize tab (star / hide /
+   * visibility / reorder) writes straight to `initial.settings` in the
+   * settings window and re-renders its own Overview immediately, but there's
+   * no push channel for bucketPrefs into the popup, and this was previously
+   * fetched exactly once in `bootstrap()`. A reorder made in Customize while
+   * the popup sat hidden (or was never reopened) left it rendering the old
+   * order — including `sortBucketsByDisplayOrder`'s `order`-first sort in
+   * `renderMeterGroup`, which the popup shares with the Overview via
+   * `renderProviderBlock`. Called on every show, same rationale as
+   * `refreshConnectors`/`applyUiPrefs`.
+   */
+  async function refreshBucketPrefs(): Promise<void> {
+    bucketPrefs = (await window.awPopup.getBucketPrefs()) as Record<string, Record<string, BucketPref>>;
+    render(lastQuotas);
+    requestAnimationFrame(() => requestAnimationFrame(reportSize));
+  }
+
   let lastUpdateBannerHtml = '';
 
   function renderUpdate(state: UpdateState): void {
@@ -229,6 +248,7 @@
       startAutoRefresh();
       void applyUiPrefs();
       void refreshConnectors();
+      void refreshBucketPrefs();
     } else {
       stopAutoRefresh();
     }
