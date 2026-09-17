@@ -11,6 +11,8 @@ jobs:
     name: Build and Release for ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      # One platform's upload flaking must not cancel the other two builds.
+      fail-fast: false
       matrix:
         include:
           # latest*.yml and *.blockmap are the auto-update metadata
@@ -59,13 +61,67 @@ jobs:
       - name: Package Application
         run: ${{ matrix.build_script }}
 
+      # GitHub's release asset endpoint returns intermittent 500s ("Error
+      # saving asset", "Error creating asset temp dir") unrelated to file size,
+      # upload order or platform. A rejected upload still registers the asset
+      # in `starter` state, so every attempt needs --clobber to replace it.
+      # softprops/action-gh-release rethrows 5xx without retrying, which turned
+      # a single flaky request into a failed release, so the retry lives here.
       - name: Upload Binaries to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ matrix.artifact_path }}
-          # Upload one asset at a time. The macOS job ships ~500 MB across two
-          # dmgs and two zips; uploading those in parallel made GitHub's asset
-          # API return a 500 and left assets stuck in `starter` state.
-          preserve_order: true
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          ARTIFACT_PATHS: ${{ matrix.artifact_path }}
+        run: |
+          set -euo pipefail
+          # A glob matching nothing means the build did not produce a file this
+          # release needs. Fail loudly instead of publishing a release with
+          # missing auto-update metadata.
+          shopt -s failglob
+          files=( $ARTIFACT_PATHS )
+
+          # Whichever platform job arrives first creates the release; the
+          # trailing view turns the resulting race into success.
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --verify-tag --title "$TAG" --notes "" \
+            || gh release view "$TAG" >/dev/null
+
+          failed=""
+          for file in "${files[@]}"; do
+            uploaded=""
+            for attempt in 1 2 3 4 5; do
+              if gh release upload "$TAG" "$file" --clobber; then
+                uploaded="yes"
+                break
+              fi
+              echo "attempt $attempt failed for $file"
+              if [ "$attempt" -lt 5 ]; then
+                sleep $(( attempt * 15 ))
+              fi
+            done
+            if [ -z "$uploaded" ]; then
+              failed="$failed $file"
+            fi
+          done
+
+          if [ -n "$failed" ]; then
+            echo "::error::gave up uploading:$failed"
+            exit 1
+          fi
+
+          # An upload can report success and still leave the asset in `starter`
+          # state, which is listed but not downloadable. A green step is not
+          # proof, so check the published state of every file.
+          assets=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+            --jq '.assets[] | .name + "=" + .state')
+          incomplete=0
+          for file in "${files[@]}"; do
+            name=$(basename "$file")
+            state=$(printf '%s\n' "$assets" | sed -n "s/^${name}=//p")
+            if [ "$state" != "uploaded" ]; then
+              echo "::error::$name is '${state:-missing}', expected 'uploaded'"
+              incomplete=1
+            fi
+          done
+          exit "$incomplete"
