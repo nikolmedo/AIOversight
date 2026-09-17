@@ -187,9 +187,21 @@ Do not add `Co-Authored-By` lines.
 Releases are fully automated via GitHub Actions (`release.yml`). To cut a release:
 
 1. Bump `version` in `package.json`
-2. Commit: `git commit -m "chore: bump version to X.Y.Z"`
-3. Tag: `git tag vX.Y.Z`
-4. Push: `git push origin main --tags`
+2. **Before committing, verify the bump is real.** Compare against `main` and the
+   published tags, and stop if the new version is not strictly higher:
+
+   ```bash
+   git show origin/main:package.json | grep '"version"'   # what main ships today
+   git tag --list 'v*' --sort=-v:refname | head -1        # highest released tag
+   node -p "require('./package.json').version"            # what you are about to commit
+   ```
+
+   Reusing or lowering a version is not a cosmetic mistake: the tag push fails if
+   `vX.Y.Z` already exists, and an installed app only updates when the release
+   version is higher than the one it is running.
+3. Commit: `git commit -m "chore: bump version to X.Y.Z"`
+4. Tag: `git tag vX.Y.Z`
+5. Push: `git push origin main --tags`
 
 The workflow triggers on `v*` tags, builds for all three platforms (macOS, Windows, Linux), and uploads artifacts to a GitHub Release automatically.
 
