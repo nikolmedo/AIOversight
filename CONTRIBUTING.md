@@ -229,7 +229,37 @@ What each package does with an update:
 | Windows portable, Linux `.deb` / `.tar.gz` | Banner and notification; **Download** opens the release page |
 | macOS | Same as above. Installing in place needs a code-signed (and notarized) app with the `zip` target; the workflow has no signing secrets, so the Mac build is notify-only |
 
-The package scripts pass `--publish never`: electron-builder only writes `latest*.yml` and bakes `resources/app-update.yml` into the app (from the `publish:` block), and `softprops/action-gh-release` uploads the files.
+The package scripts pass `--publish never`: electron-builder only writes `latest*.yml` and bakes `resources/app-update.yml` into the app (from the `publish:` block), and the workflow's upload step attaches the files with `gh release upload`.
+
+**The release is built as a draft and published last.** `prepare_release`
+creates the draft, the three platform jobs upload into it, and
+`publish_release` runs only if all three succeeded. It re-reads the release,
+fails if any asset is not in `uploaded` state or if a `latest*.yml` is missing,
+and only then flips the draft to published. A build that loses a platform
+therefore leaves a draft nobody can update to, instead of a published release
+that half the users fail to update from.
+
+**Asset uploads are flaky, and the workflow expects that.** GitHub's release
+asset endpoint intermittently returns a 500 (`Error saving asset`, `Error
+creating asset temp dir`) with no relation to file size, upload order or
+platform. On 2026-09-17 it failed roughly half of all requests for several
+hours, across unrelated repositories and with no entry on githubstatus.com.
+Two things follow:
+
+- A rejected upload still registers the asset, in `starter` state. Such an
+  asset is listed on the release but cannot be downloaded. It is the residue of
+  a failed upload, not a cause of one, and it is safe to delete:
+  `gh api -X DELETE repos/<owner>/<repo>/releases/assets/<id>`.
+- The upload step retries each file six times with `--clobber`, which replaces
+  any `starter` residue from the previous attempt. If a file still exhausts its
+  retries, re-run that platform's job; `fail-fast: false` keeps the other two
+  from being cancelled.
+
+To audit a release by hand:
+
+```bash
+gh release view vX.Y.Z --json assets -q '.assets[] | .name + " " + .state'
+```
 
 To check a build before tagging, run `npm run package:win` (or `:mac` / `:linux`) and confirm that `release/latest*.yml` has a `url:` equal to a real file name in `release/`, and that `app-update.yml` exists in the unpacked app's `resources/`.
 
