@@ -1,6 +1,6 @@
 {
   "name": "aioversight",
-  "version": "0.3.0",
+  "version": "0.3.2",
   "private": true,
   "description": "Lightweight, framework-agnostic monitoring tool for autonomous AI agents — execution alerts, human-in-the-loop interventions, and universal token/quota tracking.",
   "main": "dist/main/index.js",
@@ -33,6 +33,7 @@
   },
   "dependencies": {
     "chokidar": "^3.6.0",
+    "electron-updater": "^6.8.9",
     "sql.js": "^1.14.1"
   }
 }

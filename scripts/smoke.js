@@ -2503,6 +2503,62 @@ function testTrayRepresentations() {
         trayRepresentationsToLoad({ tray24: false, tray32: false }).length === 0);
 }
 
+// --------------------------------------------------------------------------
+// updater.ts capability matrix + update-banner.js markup (headless). The
+// release pipeline's artifact names must keep matching `assetMatchesTarget`,
+// and the banner must never offer an install button to a notify-only build.
+// --------------------------------------------------------------------------
+function testUpdater() {
+  console.log('updater: capability matrix and update banner markup');
+  const { computeUpdateCapability, assetMatchesTarget } = require('../dist/main/updater.js');
+  const cap = env => computeUpdateCapability({ env: {}, isPackaged: true, ...env });
+  check('win nsis installs', cap({ platform: 'win32' }).canInstall === true);
+  check('win portable is notify-only', cap({ platform: 'win32', env: { PORTABLE_EXECUTABLE_DIR: 'X' } }).canInstall === false);
+  check('linux AppImage installs', cap({ platform: 'linux', env: { APPIMAGE: '/a' } }).canInstall === true);
+  check('linux deb is notify-only', cap({ platform: 'linux', packageType: 'deb' }).target === 'deb');
+  check('linux tar.gz is notify-only', cap({ platform: 'linux' }).target === 'archive');
+  check('mac is notify-only', cap({ platform: 'darwin' }).canInstall === false);
+  check('dev is disabled', cap({ platform: 'win32', isPackaged: false }).enabled === false);
+
+  // Names produced by electron-builder.yml's artifactName templates.
+  const yml = fs.readFileSync(path.join(__dirname, '..', 'electron-builder.yml'), 'utf8');
+  check('electron-builder.yml publishes to GitHub', /provider:\s*github/.test(yml));
+  check('electron-builder.yml artifact names contain no ${productName}', !yml.includes('${productName}'));
+  check('setup exe matches nsis only',
+        assetMatchesTarget('aioversight-0.4.0-setup-x64.exe', 'nsis') &&
+          !assetMatchesTarget('aioversight-0.4.0-setup-x64.exe', 'portable'));
+  check('portable exe matches portable only',
+        assetMatchesTarget('aioversight-0.4.0-portable-x64.exe', 'portable') &&
+          !assetMatchesTarget('aioversight-0.4.0-portable-x64.exe', 'nsis'));
+
+  const mathFile = path.join(__dirname, '..', 'dist', 'renderer', 'quota-math.js');
+  const viewFile = path.join(__dirname, '..', 'dist', 'renderer', 'quota-view.js');
+  const bannerFile = path.join(__dirname, '..', 'dist', 'renderer', 'update-banner.js');
+  const code = [mathFile, viewFile, bannerFile].map(f => fs.readFileSync(f, 'utf8')).join('\n');
+  const sandbox = {};
+  vm.createContext(sandbox);
+  vm.runInContext(code, sandbox, { filename: bannerFile });
+  const base = { currentVersion: '0.3.0', latestVersion: '0.4.0', dismissed: false };
+
+  const installable = sandbox.renderUpdateBanner({ ...base, status: 'available', canInstall: true });
+  check('banner: installable build offers Update now', installable.includes('data-update-action="download"'), installable);
+  const notifyOnly = sandbox.renderUpdateBanner({ ...base, status: 'available', canInstall: false });
+  check('banner: notify-only build links to the release, no install',
+        notifyOnly.includes('data-update-action="open-release"') &&
+          !notifyOnly.includes('data-update-action="download"') &&
+          !notifyOnly.includes('data-update-action="install"'), notifyOnly);
+  const downloading = sandbox.renderUpdateBanner({ ...base, status: 'downloading', canInstall: true, progress: 42 });
+  check('banner: downloading shows progress', downloading.includes('--fill:42%') && downloading.includes('42%'), downloading);
+  const downloaded = sandbox.renderUpdateBanner({ ...base, status: 'downloaded', canInstall: true }, true);
+  check('banner: downloaded offers Restart to update', downloaded.includes('Restart to update'), downloaded);
+  check('banner: hidden when dismissed',
+        sandbox.renderUpdateBanner({ ...base, status: 'available', canInstall: true, dismissed: true }) === '');
+  check('banner: hidden when up to date',
+        sandbox.renderUpdateBanner({ currentVersion: '0.3.0', status: 'not-available', canInstall: true, dismissed: false }) === '');
+  check('banner: escapes the version',
+        !sandbox.renderUpdateBanner({ ...base, latestVersion: '<b>', status: 'available', canInstall: false }).includes('<b>'));
+}
+
 (async () => {
   testIcons();
   testTrayICO();
@@ -2511,6 +2567,7 @@ function testTrayRepresentations() {
   testSettingsStore();
   testQuotaMath();
   testQuotaView();
+  testUpdater();
   testTrayLine();
   testConnectorClassifiers();
   testConnectorHelpers();

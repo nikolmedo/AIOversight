@@ -28,6 +28,7 @@ Electron main process (src/main/)
   ├── index.ts              — app entry, IPC handlers, tray, settings window
   ├── settings-store.ts     — disk persistence (OS userData/settings.json)
   ├── notifier.ts           — notification dispatch policy
+  ├── updater.ts            — update checks / install via electron-updater (platform capability matrix)
   ├── autostart.ts          — launch-at-login
   ├── tray.ts / tray-popup.ts
   └── connectors/
@@ -46,6 +47,7 @@ Renderer (src/renderer/)        — vanilla TypeScript, no framework, CommonJS o
   ├── settings.ts / settings.html / settings.css
   ├── tray-popup.ts / tray-popup.html / tray-popup.css
   ├── quota-view.ts / quota-math.ts — meter rendering + pace/format math shared by both windows
+  ├── update-banner.ts      — "update available" banner markup shared by both windows
   ├── tokens.css            — design tokens shared by both windows
   └── global.d.ts / tray-popup-global.d.ts / quota-types.d.ts — ambient types
 ```
@@ -81,7 +83,7 @@ A quota snapshot sets `appNotRunning: true` only when its sole source is a deskt
 
 | Channel | Arguments | Returns |
 |---|---|---|
-| `settings:get` | — | `{ connectors: ConnectorMetadata[], settings: AppSettings, paused, settingsPath, quotas, platform }` |
+| `settings:get` | — | `{ connectors: ConnectorMetadata[], settings: AppSettings, paused, settingsPath, quotas, platform, updates: UpdateState }` |
 | `connectors:setEnabled` | `id, { notifications?, quota? }` | `AppSettings` |
 | `connectors:setConfig` | `id, config` | `AppSettings` |
 | `connectors:setSecret` | `id, key, value \| null` | `ConnectorMetadata[]` |
@@ -96,6 +98,12 @@ A quota snapshot sets `appNotRunning: true` only when its sole source is a deskt
 | `quota:get` | — | `Record<string, QuotaSnapshot>` |
 | `quota:refresh` | `id?` | `QuotaSnapshot \| null` (with `id`) or `Record<string, QuotaSnapshot>`; bypasses the poller's backoff gate |
 | `connector:login:${id}` | — | `true` |
+| `updates:get` | — | `UpdateState` |
+| `updates:check` | — | `UpdateState` (never rejects; failures end in `status: 'error'`) |
+| `updates:download` | — | `UpdateState`; no-op unless `canInstall` and `status: 'available'` |
+| `updates:install` | — | — (quits and installs; no-op unless `status: 'downloaded'`) |
+| `updates:openRelease` | — | — (opens the GitHub release page for `latestVersion`) |
+| `updates:dismiss` | — | `UpdateState` (hides the banner for this version until restart) |
 
 ### Main → settings window (push)
 
@@ -105,6 +113,7 @@ A quota snapshot sets `appNotRunning: true` only when its sole source is a deskt
 | `log` | `LogEntry` |
 | `paused` | `boolean` |
 | `quota:update` | `{ id: string; snapshot: QuotaSnapshot }` |
+| `updates:state` | `UpdateState` |
 
 ### Tray popup IPC
 
@@ -119,9 +128,15 @@ Channels prefixed with `trayPopup:` — bridge in `src/preload/tray-popup.ts` (`
 | `trayPopup:getUiPrefs` | invoke | — | `{ theme, density, timeFormat, transparentPopup, showSpendCard }` |
 | `trayPopup:refresh` | invoke | `id?` | `{ [id]: QuotaSnapshot }` (with `id`) or the full map |
 | `trayPopup:setBucketPref` | invoke | `id, bucketId, Partial<BucketPref>` | `bucketPrefs` map |
+| `trayPopup:getUpdateState` | invoke | — | `UpdateState` |
+| `trayPopup:downloadUpdate` | invoke | — | `UpdateState` |
+| `trayPopup:installUpdate` | invoke | — | — |
+| `trayPopup:openRelease` | invoke | — | — |
+| `trayPopup:dismissUpdate` | invoke | — | `UpdateState` |
 | `trayPopup:resize` | send (popup → main) | `height` | — |
 | `trayPopup:quotas` | push (main → popup) | `Record<string, QuotaSnapshot>` | — |
 | `trayPopup:visibility` | push (main → popup) | `boolean` | — |
+| `trayPopup:updateState` | push (main → popup) | `UpdateState` | — |
 
 ---
 
@@ -203,7 +218,8 @@ npm run dev
 `scripts/smoke.js` is a headless Node.js integration test that runs against the compiled `dist/`. It does not require Electron. It covers:
 
 - Registry integrity (all connectors present, field types valid)
-- Renderer math and markup run headless: `quota-math` (pace / format), `quota-view` (meter rows, groups, spend card), and the tray line formatter
+- Renderer math and markup run headless: `quota-math` (pace / format), `quota-view` (meter rows, groups, spend card), `update-banner` (install vs. notify-only actions), and the tray line formatter
+- `updater` capability matrix and the release artifact names it matches
 - Quota parsers and helpers for individual connectors (Cursor, Z.ai, Codex CLI, OpenCode, Claude Code, Grok, Devin, Antigravity)
 - `model-pricing` rates and the JSONL spend scanner cache
 - `settings-store` bucket-pref sanitizing

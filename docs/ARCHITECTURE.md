@@ -54,7 +54,7 @@ AppSettings shape:
   showNotifications, notifyOnWaiting, notifyOnFinished,
   perSessionCooldownMs, quietHours, quotaPollMinutes, showQuotaInTray,
   launchAtLogin, theme, density, timeFormat, transparentPopup,
-  showSpendCard, popupShortcut,
+  showSpendCard, popupShortcut, checkForUpdates, lastNotifiedUpdateVersion,
   connectors: { enabled, config, pollOverrideMinutes, bucketPrefs },
   recentEvents
 }
@@ -100,6 +100,35 @@ Applies notification policy before dispatching to the OS:
 - Kind filter — `notifyOnWaiting` and `notifyOnFinished` toggles
 - Quiet hours — compares wall-clock hour against `[startHour, endHour)` range
 - Electron `Notification` — includes the app icon, dispatches click handler to reveal the source file in Finder/Explorer
+- `notifyUpdate()` — the update notification; honors only `showNotifications` (not pause or quiet hours); click opens the settings window
+
+### UpdateService (`updater.ts`)
+
+Checks GitHub Releases (`nikolmedo/AIOversight`) for a newer version and installs it where the package allows. Built on `electron-updater`, which `index.ts` (`createUpdateService`) injects and only `require`s in packaged builds. `updater.ts` imports neither `electron` nor `electron-updater`, so `tests/unit/updater.test.ts` drives it with a fake emitter.
+
+Capability matrix (`computeUpdateCapability`):
+
+| Running from | Detection | Check source | Install |
+|---|---|---|---|
+| Not packaged (`npm run dev`) | `!app.isPackaged` | none, status `disabled` | no |
+| Windows NSIS | `win32`, no `PORTABLE_EXECUTABLE_DIR` | `latest.yml` | yes, silent, relaunch |
+| Windows portable | `PORTABLE_EXECUTABLE_DIR` set | `latest.yml` | no, release page |
+| Linux AppImage | `APPIMAGE` set | `latest-linux.yml` | yes, relaunch |
+| Linux deb | `resources/package-type` is `deb` | `latest-linux.yml` (DebUpdater) | no, release page |
+| Linux tar.gz | none of the above | GitHub API `releases/latest`, asset ending in `.tar.gz` | no, release page |
+| macOS | `darwin` | `latest-mac.yml` | no (unsigned; Squirrel.Mac requires signing), release page |
+
+The GitHub API fallback runs whenever `autoUpdater.checkForUpdates()` resolves `null` (electron-updater inactive for that layout) and only reports an update when the latest release has an asset for the running package format (`assetMatchesTarget`).
+
+Behavior:
+- `autoDownload = false`: the user starts the download from the banner. `autoInstallOnAppQuit = true`, so a downloaded update is applied on the next quit even without clicking *Restart to update*.
+- First check 30 s after launch, then every 6 h, only while `checkForUpdates` is on. The manual *Check for updates* button always works. No checks while a download runs or after it finished.
+- States: `disabled`, `idle`, `checking`, `available`, `not-available`, `downloading` (with `progress`), `downloaded`, `error`. A failed check or download after an update was found keeps `available` and sets `error`, so the banner stays.
+- Errors (offline, 404 for a release without `latest*.yml`) are logged at `warn` and never notify.
+- One OS notification per version: `lastNotifiedUpdateVersion` is persisted in settings.
+- The banner ignores pause. *Dismiss* hides it for that version until the app restarts (kept in memory in `UpdateService`, shared by both windows).
+- `install()` runs `beforeInstall` (unregister shortcuts, destroy the popup and settings windows), then `quitAndInstall(true, true)`. Nothing in the app vetoes quitting (no `preventDefault` on `close` or `before-quit`), so the quit goes through.
+- Every state change is pushed to the settings window (`updates:state`) and the tray popup (`trayPopup:updateState`). Both render `renderUpdateBanner` from `src/renderer/update-banner.ts`.
 
 ---
 
@@ -223,6 +252,9 @@ npm install (postinstall):
 
 `electron-builder` reads `electron-builder.yml`. Key decisions:
 
+- `publish: github` makes electron-builder write `latest*.yml` next to the artifacts and `resources/app-update.yml` into the app; the scripts still pass `--publish never` and CI uploads the files (see `CONTRIBUTING.md`, Release process)
+- `artifactName` templates use `${name}` (no spaces) with distinct `-setup-` / `-portable-` names on Windows, so GitHub does not rename assets and the `latest.yml` URLs stay valid
+- Production dependencies (`chokidar`, `electron-updater` and its dependency tree) are collected into the asar by electron-builder automatically; the `files` list does not need to name them
 - `sql.js` is explicitly whitelisted in `files` because it ships its own WASM binary that electron-builder would otherwise exclude
 - macOS builds require `hardenedRuntime: true` and entitlements for notarization
 - Windows NSIS installer is non-destructive (`oneClick: false`) and supports per-user install
@@ -237,7 +269,7 @@ Complete reference in `CLAUDE.md`. The short invariants:
 
 - All channels are handled in `registerIpc()` in `src/main/index.ts`
 - Login channels (`connector:login:${id}`) are registered dynamically for connectors that declare `login`
-- Tray popup channels are prefixed `trayPopup:`; `trayPopup:resize` (an `ipcMain.on` listener) and the `trayPopup:quotas` / `trayPopup:visibility` pushes live in `src/main/tray-popup.ts`
+- Tray popup channels are prefixed `trayPopup:`; `trayPopup:resize` (an `ipcMain.on` listener) and the `trayPopup:quotas` / `trayPopup:visibility` / `trayPopup:updateState` pushes live in `src/main/tray-popup.ts`
 - Push channels (main → renderer) use `webContents.send()`; the renderer subscribes via the preload bridge's `on*` methods
 
 ---
@@ -249,7 +281,8 @@ Confirmed against the code on 2026-09-16; none of these are fixed yet.
 - **QuotaService stale-write race.** `applyConfig` deletes and recreates a provider entry when config or secrets change. If a fetch from the old entry is still in flight, its closure in `fetchOne` still calls `this.snapshots.set(id, snap)` and emits `update`, so a snapshot from the old config can overwrite the new one. Fix: in `fetchOne`, skip the write and emit when `this.providers.get(id) !== entry`.
 - **sql.js reads of live IDE databases.** Cursor (`state.vscdb`) and OpenCode (`opencode*.db`) are opened with `new SQL.Database(fs.readFileSync(dbPath))`. That is a plain file snapshot taken while the IDE may be writing; it ignores the `-wal` file and could read a torn state.
 - **`.gitignore` vs tracked icons.** `assets/ai-icon.png` and `assets/ai-icon-no-bkg.png` are listed in `.gitignore` but tracked (see Packaging above).
-- **macOS `.zip` not uploaded.** `electron-builder.yml` builds a macOS `zip` target, but `release.yml` only uploads `release/*.dmg` (also noted in `CONTRIBUTING.md`, Release process).
+- **macOS cannot auto-install updates.** The app is not code-signed, so `UpdateService` treats macOS as notify-only. Adding signing and notarization secrets to `release.yml` would allow turning on `canInstall` for `darwin` in `computeUpdateCapability`.
+- **Linux `.deb` is notify-only by choice.** electron-updater 6.x ships a `DebUpdater` (installs through `pkexec` / `sudo dpkg -i`), but it is not enabled here.
 - **Dev settings folder unverified.** `productName: AI Oversight` is set only in `electron-builder.yml`. Under `npm run dev`, Electron derives the userData folder from `package.json`, which has `name: aioversight` and no `productName`, so the dev folder is expected to be `aioversight` rather than `AI Oversight`. This has not been checked, and no Linux path is documented.
 - **Devin server URL handling is inconsistent.** `resolveServerUrl` in `connectors/devin/quota.ts` throws for plain `http://` to a non-loopback host, but an `ftp://` or unparseable value silently falls back to the default `https://server.codeium.com`.
 - **Not implemented** (sources and rationale in [CONNECTOR-SOURCES.md](CONNECTOR-SOURCES.md)):

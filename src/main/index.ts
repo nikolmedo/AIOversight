@@ -1,5 +1,16 @@
+import * as fs from 'fs';
 import * as path from 'path';
-import { app, BrowserWindow, ipcMain, Tray, Notification, nativeTheme, globalShortcut } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  Tray,
+  Notification,
+  nativeTheme,
+  globalShortcut,
+  net,
+  shell,
+} from 'electron';
 import { SettingsStore, ConnectorDefaults } from './settings-store';
 import { applyAutoStart } from './autostart';
 import { Notifier } from './notifier';
@@ -9,6 +20,7 @@ import { ConnectorRuntime, ALL_CONNECTORS } from './connectors/runtime';
 import { QuotaService } from './connectors/quota-service';
 import { SecretStore } from './connectors/secret-store';
 import { QuotaSnapshot, Connector, ConnectorEnabled, BucketPref } from './connectors/types';
+import { UpdateService, UpdateState, UpdaterLike } from './updater';
 
 let tray: Tray | null = null;
 let trayHandle: TrayHandle | null = null;
@@ -19,12 +31,15 @@ let quotaService: QuotaService | null = null;
 let secretStore: SecretStore | null = null;
 let notifier: Notifier | null = null;
 let settings: SettingsStore | null = null;
+let updates: UpdateService | null = null;
 let paused = false;
 /** Accelerator currently registered via `globalShortcut`, or `null` when none
  * is. Tracked so `applyPopupShortcut` can unregister the old one before
  * registering a new one — `globalShortcut.unregisterAll()` would also nuke
  * any accelerator another part of the app might register in the future. */
 let registeredPopupShortcut: string | null = null;
+/** Budget for the updater's GitHub API fallback request. */
+const UPDATE_FETCH_BUDGET_MS = 30_000;
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -153,6 +168,7 @@ app.whenReady().then(async () => {
       openSettings,
       getQuotas: () => quotaService!.state(),
       getConnectors: () => runtime!.metadata(settings!.get().connectors.enabled),
+      getUpdateState: () => updates!.getState(),
     },
     !!settings.get().transparentPopup,
   );
@@ -171,6 +187,23 @@ app.whenReady().then(async () => {
     });
     settings.update({ popupShortcut: '' });
   }
+
+  try {
+    updates = createUpdateService(true);
+  } catch (err) {
+    // An unhandled throw here (electron-updater rejects a non-semver app
+    // version, for one) would skip registerIpc() and break every channel. A
+    // disabled service never loads electron-updater and still answers IPC.
+    runtime.log('error', '[main] update service failed to start — updates are off for this session', {
+      err: String(err),
+    });
+    updates = createUpdateService(false);
+  }
+  updates.onChange(state => {
+    settingsWindow?.webContents.send('updates:state', state);
+    trayPopup?.sendUpdateState(state);
+  });
+  updates.start();
 
   registerIpc();
   refreshTrayQuotaSummary();
@@ -191,6 +224,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', async () => {
   globalShortcut.unregisterAll();
+  updates?.stop();
   quotaService?.destroy();
   trayPopup?.destroy();
   await runtime?.stopAllDetectors();
@@ -233,6 +267,7 @@ function registerIpc(): void {
     settingsPath: settings!.filePath(),
     quotas: quotaService!.state(),
     platform: process.platform,
+    updates: updates!.getState(),
   }));
 
   ipcMain.handle(
@@ -305,7 +340,12 @@ function registerIpc(): void {
   );
 
   ipcMain.handle('settings:update', async (_e, patch: Record<string, unknown>) => {
+    const wasCheckingForUpdates = settings!.get().checkForUpdates !== false;
     const next = settings!.update(patch);
+    if ('checkForUpdates' in patch && next.checkForUpdates && !wasCheckingForUpdates) {
+      // Re-enabled: check now instead of waiting for the next scheduled run.
+      void updates!.check();
+    }
     if ('quotaPollMinutes' in patch || 'showQuotaInTray' in patch) {
       await quotaService!.applyConfig(next.connectors, next.quotaPollMinutes);
       refreshTrayQuotaSummary();
@@ -371,6 +411,13 @@ function registerIpc(): void {
 
   ipcMain.handle('quota:get', () => quotaService!.state());
 
+  ipcMain.handle('updates:get', () => updates!.getState());
+  ipcMain.handle('updates:check', () => updates!.check());
+  ipcMain.handle('updates:download', () => updates!.download());
+  ipcMain.handle('updates:install', () => updates!.install());
+  ipcMain.handle('updates:openRelease', () => updates!.openRelease());
+  ipcMain.handle('updates:dismiss', () => updates!.dismiss());
+
   ipcMain.handle('quota:refresh', async (_e, id?: string) => {
     if (id) {
       const snap = await quotaService!.refresh(id);
@@ -393,6 +440,11 @@ function registerIpc(): void {
   });
 
   ipcMain.handle('trayPopup:getQuotas', () => quotaService!.state());
+  ipcMain.handle('trayPopup:getUpdateState', () => updates!.getState());
+  ipcMain.handle('trayPopup:downloadUpdate', () => updates!.download());
+  ipcMain.handle('trayPopup:installUpdate', () => updates!.install());
+  ipcMain.handle('trayPopup:openRelease', () => updates!.openRelease());
+  ipcMain.handle('trayPopup:dismissUpdate', () => updates!.dismiss());
   ipcMain.handle('trayPopup:getConnectors', () => runtime!.metadata(settings!.get().connectors.enabled));
   ipcMain.handle('trayPopup:getBucketPrefs', () => settings!.get().connectors.bucketPrefs ?? {});
   ipcMain.handle('trayPopup:getUiPrefs', () => {
@@ -429,6 +481,70 @@ function registerIpc(): void {
       return settings!.get().connectors.bucketPrefs ?? {};
     },
   );
+}
+
+/**
+ * Wires `UpdateService` to Electron. `electron-updater` is required lazily
+ * (only when the capability is enabled, i.e. in a packaged build) so dev runs
+ * never load it.
+ */
+function createUpdateService(enabled: boolean): UpdateService {
+  let packageType: string | undefined;
+  try {
+    // electron-builder writes this for deb/rpm/pacman packages only.
+    packageType = fs.readFileSync(path.join(process.resourcesPath, 'package-type'), 'utf8');
+  } catch {
+    packageType = undefined;
+  }
+  return new UpdateService({
+    createUpdater: () =>
+      (require('electron-updater') as typeof import('electron-updater')).autoUpdater as unknown as UpdaterLike,
+    environment: {
+      platform: process.platform,
+      env: process.env,
+      isPackaged: app.isPackaged && enabled,
+      packageType,
+    },
+    currentVersion: app.getVersion(),
+    fetchJson: async url => {
+      // Unbounded, a hung request would leave the check in flight forever and
+      // freeze the state at 'checking' (cf. QuotaService's fetch budget).
+      const res = await net.fetch(url, {
+        headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'AI-Oversight' },
+        signal: AbortSignal.timeout(UPDATE_FETCH_BUDGET_MS),
+      }).catch((err: Error) => {
+        throw err.name === 'TimeoutError' || err.name === 'AbortError'
+          ? new Error(`Update check timed out after ${UPDATE_FETCH_BUDGET_MS / 1000}s`)
+          : err;
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status} from ${url}`);
+      return res.json();
+    },
+    notify: (state: UpdateState) => {
+      if (!state.latestVersion) return false;
+      return notifier!.notifyUpdate(
+        { latestVersion: state.latestVersion, canInstall: state.canInstall },
+        openSettings,
+      ).shown;
+    },
+    openExternal: url => {
+      void shell.openExternal(url);
+    },
+    log: (lvl, msg, meta) => runtime!.log(lvl, msg, meta),
+    isAutoCheckEnabled: () => settings!.get().checkForUpdates !== false,
+    getLastNotifiedVersion: () => settings!.get().lastNotifiedUpdateVersion ?? '',
+    setLastNotifiedVersion: version => {
+      settings!.update({ lastNotifiedUpdateVersion: version });
+    },
+    beforeInstall: () => {
+      // Nothing in this app vetoes quitting (no close/before-quit
+      // preventDefault), but release the windows and the global shortcut up
+      // front so the installer never finds a lingering process holding files.
+      globalShortcut.unregisterAll();
+      trayPopup?.destroy();
+      if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.destroy();
+    },
+  });
 }
 
 function refreshTrayQuotaSummary(): void {

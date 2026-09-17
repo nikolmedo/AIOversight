@@ -55,6 +55,10 @@ export interface AppSettings {
   showSpendCard: boolean;
   /** Electron accelerator string to toggle the tray popup, or '' when unset. */
   popupShortcut: string;
+  /** Check GitHub Releases for a newer version on launch and every few hours. */
+  checkForUpdates: boolean;
+  /** Last version an update notification was shown for, so each version notifies once. */
+  lastNotifiedUpdateVersion: string;
   connectors: ConnectorRuntimeConfig;
   recentEvents: RecentEventRecord[];
 }
@@ -75,6 +79,8 @@ function defaults(d: ConnectorDefaults): AppSettings {
     transparentPopup: false,
     showSpendCard: true,
     popupShortcut: '',
+    checkForUpdates: true,
+    lastNotifiedUpdateVersion: '',
     connectors: {
       enabled: d.enabled,
       config: d.config,
@@ -178,6 +184,12 @@ export class SettingsStore {
         showSpendCard:
           typeof raw.showSpendCard === 'boolean' ? raw.showSpendCard : base.showSpendCard,
         popupShortcut: typeof raw.popupShortcut === 'string' ? raw.popupShortcut : base.popupShortcut,
+        checkForUpdates:
+          typeof raw.checkForUpdates === 'boolean' ? raw.checkForUpdates : base.checkForUpdates,
+        lastNotifiedUpdateVersion:
+          typeof raw.lastNotifiedUpdateVersion === 'string'
+            ? raw.lastNotifiedUpdateVersion
+            : base.lastNotifiedUpdateVersion,
         connectors,
         recentEvents,
       };

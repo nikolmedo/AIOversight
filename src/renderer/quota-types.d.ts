@@ -154,6 +154,32 @@ interface AppSettings {
   showSpendCard: boolean;
   /** Electron accelerator string, or '' when no shortcut is set. */
   popupShortcut: string;
+  checkForUpdates: boolean;
+  lastNotifiedUpdateVersion: string;
   connectors: ConnectorRuntimeConfig;
   recentEvents: RecentEvent[];
+}
+
+/** Mirrors `UpdateState` in `src/main/updater.ts` (parity-checked in `types-parity.ts`). */
+type UpdateStatus =
+  | 'disabled'
+  | 'idle'
+  | 'checking'
+  | 'available'
+  | 'not-available'
+  | 'downloading'
+  | 'downloaded'
+  | 'error';
+
+interface UpdateState {
+  status: UpdateStatus;
+  currentVersion: string;
+  latestVersion?: string;
+  releaseUrl?: string;
+  canInstall: boolean;
+  progress?: number;
+  error?: string;
+  errorPhase?: 'check' | 'download' | 'install';
+  lastChecked?: number;
+  dismissed: boolean;
 }

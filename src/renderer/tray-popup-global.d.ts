@@ -25,6 +25,12 @@ interface TrayPopupAPI {
     bucketId: string,
     patch: Partial<BucketPref>,
   ): Promise<Record<string, Record<string, BucketPref>>>;
+  getUpdateState(): Promise<UpdateState>;
+  downloadUpdate(): Promise<UpdateState>;
+  installUpdate(): Promise<void>;
+  openRelease(): Promise<void>;
+  dismissUpdate(): Promise<UpdateState>;
+  onUpdateState(cb: (state: UpdateState) => void): () => void;
   onQuotas(cb: (q: Record<string, QuotaSnapshot>) => void): () => void;
   onVisibilityChange(cb: (visible: boolean) => void): () => void;
   resize(height: number): void;

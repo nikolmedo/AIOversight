@@ -197,11 +197,29 @@ The workflow triggers on `v*` tags, builds for all three platforms (macOS, Windo
 
 | Platform | Files |
 |---|---|
-| macOS | `.dmg` (x64, arm64) |
-| Windows | NSIS installer `.exe`, portable `.exe` (x64) |
-| Linux | AppImage, `.deb`, `.tar.gz` |
+| macOS | `aioversight-X.Y.Z-mac-{x64,arm64}.dmg` and `.zip`, `*.blockmap`, `latest-mac.yml` |
+| Windows | `aioversight-X.Y.Z-setup-x64.exe` (NSIS), `aioversight-X.Y.Z-portable-x64.exe`, `*.blockmap`, `latest.yml` |
+| Linux | `.AppImage`, `.deb`, `.tar.gz`, `*.blockmap`, `latest-linux.yml` |
 
-`electron-builder.yml` also builds macOS `.zip` files, but the workflow only uploads `release/*.dmg`.
+**Auto-update requirements.** Installed copies find new versions through these files, so a release only reaches the updater when:
+
+- `latest.yml` / `latest-linux.yml` / `latest-mac.yml` and the `*.blockmap` files are attached to the release. Without the yml for a platform, update checks there fail (logged as a warning, no notification).
+- The release is published, not a draft or a pre-release. electron-updater's GitHub provider skips both.
+- Artifact names contain no spaces. `productName` is `AI Oversight`, and GitHub renames uploaded assets with spaces (spaces become dots), which breaks the URLs inside `latest*.yml`. `electron-builder.yml` sets `artifactName` templates based on `${name}` for this; do not switch them back to `${productName}`. The NSIS and portable names differ (`-setup-` / `-portable-`) so they don't overwrite each other, and `assetMatchesTarget` in `src/main/updater.ts` relies on those names.
+- The tag matches `version` in `package.json`, and it is higher than the installed version.
+
+What each package does with an update:
+
+| Package | Behavior |
+|---|---|
+| Windows NSIS installer | Downloads, verifies sha512, installs silently and relaunches |
+| Linux AppImage | Downloads, verifies, replaces the AppImage and relaunches |
+| Windows portable, Linux `.deb` / `.tar.gz` | Banner and notification; **Download** opens the release page |
+| macOS | Same as above. Installing in place needs a code-signed (and notarized) app with the `zip` target; the workflow has no signing secrets, so the Mac build is notify-only |
+
+The package scripts pass `--publish never`: electron-builder only writes `latest*.yml` and bakes `resources/app-update.yml` into the app (from the `publish:` block), and `softprops/action-gh-release` uploads the files.
+
+To check a build before tagging, run `npm run package:win` (or `:mac` / `:linux`) and confirm that `release/latest*.yml` has a `url:` equal to a real file name in `release/`, and that `app-update.yml` exists in the unpacked app's `resources/`.
 
 To build locally for the current platform: `npm run package`. Platform-specific: `npm run package:mac`, `npm run package:win`, `npm run package:linux`.
 
