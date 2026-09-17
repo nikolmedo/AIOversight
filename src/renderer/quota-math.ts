@@ -107,13 +107,6 @@ function projectedRemainingFraction(bucket: PaceBucket, now: number): number | n
   return Math.max(0, 1 - projected);
 }
 
-/** `f * 100` (elapsed fraction of the window, as a percent) when computable, else `null`. */
-function evenPaceTickPercent(bucket: PaceBucket, now: number): number | null {
-  if (bucket.resetsAt == null || bucket.windowMs == null || bucket.windowMs <= 0) return null;
-  const elapsed = Math.min(bucket.windowMs, Math.max(0, bucket.windowMs - (bucket.resetsAt - now)));
-  return (elapsed / bucket.windowMs) * 100;
-}
-
 /** e.g. "3h 25m", "12m", "now" for <=0. */
 function formatCountdown(msRemaining: number): string {
   if (msRemaining <= 0) return 'now';
