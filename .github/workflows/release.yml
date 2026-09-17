@@ -63,5 +63,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.artifact_path }}
+          # Upload one asset at a time. The macOS job ships ~500 MB across two
+          # dmgs and two zips; uploading those in parallel made GitHub's asset
+          # API return a 500 and left assets stuck in `starter` state.
+          preserve_order: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

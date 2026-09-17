@@ -150,6 +150,7 @@ Channels prefixed with `trayPopup:` — bridge in `src/preload/tray-popup.ts` (`
 - **Connector IDs are stable.** A connector's `id` string is a settings key stored on disk. Never rename it after release.
 - **Secrets never leave the main process.** The preload bridge never sends raw secret values; it only sends which keys *exist* (`setSecretKeys`). The renderer uses `setConnectorSecret` to write, never to read.
 - **`tsc --noEmit` is the linter.** There is no ESLint or Prettier. TypeScript strict mode is the style enforcer.
+- **Version bumps are verified last.** Before committing a `version` change in `package.json`, re-check it against `main` (`git show origin/main:package.json`) and the highest published tag (`git tag --list 'v*' --sort=-v:refname | head -1`). The new version must be strictly higher than both; a repeated version makes the tag push fail and leaves installed apps without an update.
 - **Branches.** Name branches `YYMMDD-short-description` (e.g. `260805-update`, `260916-ui-redesign`). Work lands on `main` via PR.
 - **License is Apache-2.0.** `LICENSE`, `README.md` and `package.json` must agree.
 - **Connector sources are recorded.** When changing a connector's data source, auth, or parsing, re-verify the source and update its section in `docs/CONNECTOR-SOURCES.md` (grade and "Last verified" date).
