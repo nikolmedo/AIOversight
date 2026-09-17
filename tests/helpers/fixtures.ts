@@ -407,3 +407,111 @@ export function quotaSnapshotWithoutLimits(): Record<string, unknown> {
     displayMessages: [],
   };
 }
+
+// --- claude.ai /api/organizations/{uuid}/usage ---
+
+/**
+ * A real claude.ai usage body captured on 2026-09-17 (no personal data).
+ * Trimmed to a few of the null/zero codename keys, which the parser must
+ * ignore. `limits[]` is the only place the Fable weekly limit appears.
+ */
+export function claudeUsageLiveResponse(): Record<string, unknown> {
+  return {
+    five_hour: {
+      utilization: 3,
+      resets_at: '2026-09-17T08:10:00.352021+00:00',
+      limit_dollars: null,
+      used_dollars: null,
+      remaining_dollars: null,
+      locked_reason: null,
+    },
+    seven_day: {
+      utilization: 49,
+      resets_at: '2026-09-18T15:59:59.352040+00:00',
+      limit_dollars: null,
+      used_dollars: null,
+      remaining_dollars: null,
+      locked_reason: null,
+    },
+    seven_day_opus: null,
+    seven_day_sonnet: null,
+    tangelo: null,
+    nimbus_quill: {
+      utilization: 0,
+      resets_at: null,
+      limit_dollars: null,
+      used_dollars: null,
+      remaining_dollars: null,
+      locked_reason: null,
+    },
+    cinder_cove: null,
+    extra_usage: {
+      is_enabled: false,
+      monthly_limit: 4000,
+      used_credits: 0,
+      utilization: 0,
+      currency: 'USD',
+      decimal_places: 2,
+      disabled_reason: 'out_of_credits',
+      user_disabled: false,
+      spend_limit_reached: false,
+      credits_ever_enabled: true,
+      daily: null,
+      weekly: null,
+    },
+    limits: [
+      {
+        kind: 'session',
+        group: 'session',
+        percent: 3,
+        severity: 'normal',
+        resets_at: '2026-09-17T08:10:00.352021+00:00',
+        scope: null,
+        is_active: false,
+      },
+      {
+        kind: 'weekly_all',
+        group: 'weekly',
+        percent: 49,
+        severity: 'normal',
+        resets_at: '2026-09-18T15:59:59.352040+00:00',
+        scope: null,
+        is_active: true,
+      },
+      {
+        kind: 'weekly_scoped',
+        group: 'weekly',
+        percent: 45,
+        severity: 'normal',
+        resets_at: '2026-09-18T15:59:59.352216+00:00',
+        scope: { model: { id: null, display_name: 'Fable' }, surface: null },
+        is_active: false,
+      },
+    ],
+    spend: {
+      used: { amount_minor: 0, currency: 'USD', exponent: 2 },
+      limit: { amount_minor: 4000, currency: 'USD', exponent: 2 },
+      percent: 0,
+      severity: 'normal',
+      enabled: false,
+      disabled_reason: 'out_of_credits',
+      cap: { money: null, credits: { amount_minor: 4000, exponent: 2 } },
+      balance: null,
+      auto_reload: null,
+      disclaimer: 'Usage credits cover you when you hit your plan limits.',
+      can_purchase_credits: false,
+      can_toggle: false,
+    },
+    member_dashboard_available: false,
+    seven_day_breakdown: {
+      as_of: '2026-09-17T03:14:05.386821+00:00',
+      window_started_at: '2026-09-11T15:59:59.352040+00:00',
+      rows: [
+        { key: 'claude_code', display_name: 'Claude Code', percent: 93 },
+        { key: 'chat', display_name: 'Chats', percent: 1 },
+        { key: 'cowork', display_name: 'Cowork', percent: 6 },
+        { key: 'other', display_name: 'Other', percent: 0 },
+      ],
+    },
+  };
+}

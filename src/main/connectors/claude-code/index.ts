@@ -9,7 +9,7 @@ const ClaudeCodeConnector: Connector = {
   vendor: 'Anthropic',
   description:
     'Watches ~/.claude/projects transcripts for permission prompts and finished turns. ' +
-    'Enable Quota to track your claude.ai plan usage (5-hour and 7-day limits) — a sign-in window opens once, then it refreshes automatically.',
+    'Enable Quota to track your claude.ai plan usage (5-hour, 7-day and per-model weekly limits) — a sign-in window opens once, then it refreshes automatically.',
   enabledByDefault: true,
   configSchema: [
     {
