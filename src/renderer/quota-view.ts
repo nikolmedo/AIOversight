@@ -4,7 +4,7 @@
 //
 // Phase 2a scope: `renderMeterRow` is now the single shared meter-row
 // renderer for both settings.ts and tray-popup.ts — label / value / percent /
-// pace-colored bar / even-pace tick / reset countdown chip / on-demand
+// pace-colored bar / reset countdown chip / on-demand
 // grouping.
 //
 // Phase 2b scope: `renderTotalSpendCard` is the shared Total Spend card —
@@ -178,14 +178,9 @@ function renderMeterRow(b: QuotaBucket, pref: BucketPref | undefined, options?: 
   const hasNoData = b.used == null && b.remaining == null;
   const statsLine = hasNoData ? 'No data' : b.used == null ? remainingOnly : stats + remaining;
 
-  const tickPctRaw = pct != null ? evenPaceTickPercent(b, now) : null;
-  // Clamp below 100 so the 2px tick can't poke past the bar's right edge
-  // (e.g. when the reset time has passed but the bucket hasn't re-polled yet).
-  const tickPct = tickPctRaw != null ? Math.min(99, Math.round(tickPctRaw)) : null;
-  const tick = tickPct != null ? `<div class="pace-tick" style="--tick:${tickPct}%"></div>` : '';
   const bar =
     pct != null
-      ? `<div class="meter-bar"><div class="meter-bar-fill ${paceClass}" style="--fill:${pct}%"></div>${tick}</div>`
+      ? `<div class="meter-bar"><div class="meter-bar-fill ${paceClass}" style="--fill:${pct}%"></div></div>`
       : '';
 
   const pctEl = pct != null ? `<span class="meter-pct ${paceClass}">${pct}%</span>` : '';

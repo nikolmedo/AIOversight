@@ -28,7 +28,7 @@ const { dollarsToCents: copilotDollarsToCents } = require('../dist/main/connecto
 const { dollarsToCents: openrouterDollarsToCents, firstFiniteNumber: openrouterFirstFiniteNumber } = require('../dist/main/connectors/openrouter/quota.js');
 const { extractItems: zaiExtractItems, parseQuotaItems: zaiParseQuotaItems, resolveWindowPairing: zaiResolveWindowPairing, firstFiniteNumber: zaiFirstFiniteNumber } = require('../dist/main/connectors/zai/quota.js');
 const { slugifyModel, buildAdditionalLimitBuckets, parseUsageBuckets: parseCodexUsageBuckets, extractCodexSpend } = require('../dist/main/connectors/codex-cli/quota.js');
-const { extractClaudeCodeSpend } = require('../dist/main/connectors/claude-code/quota.js');
+const { extractClaudeCodeSpend, parseClaudeUsage } = require('../dist/main/connectors/claude-code/quota.js');
 const { JsonlSpendScanner } = require('../dist/main/connectors/shared/jsonl-spend-scanner.js');
 const { rateFor, costCentsFor } = require('../dist/main/connectors/shared/model-pricing.js');
 const {
@@ -461,7 +461,7 @@ function testQuotaView() {
         remainingOnlyCompactHtml.includes('$12.34') && !remainingOnlyCompactHtml.includes('No data'),
         remainingOnlyCompactHtml);
 
-  // --- resetsAt + windowMs -> reset chip + even-pace tick -----------------
+  // --- resetsAt + windowMs -> reset chip, no pace marker on the bar --------
   const windowMs = 18_000_000; // 5h
   const resetsAt = now + windowMs / 2;
   const resetHtml = sandbox.renderMeterRow(bucket({ resetsAt, windowMs }), undefined, { now });
@@ -471,8 +471,8 @@ function testQuotaView() {
         resetHtml.includes(`data-resets-at="${resetsAt}"`));
   check('renderMeterRow: reset-chip starts in countdown mode',
         resetHtml.includes('data-mode="countdown"'));
-  check('renderMeterRow: resetsAt+windowMs renders an even-pace tick',
-        resetHtml.includes('--tick:'), resetHtml);
+  check('renderMeterRow: resetsAt+windowMs renders no pace marker on the bar',
+        !resetHtml.includes('pace-tick') && !resetHtml.includes('--tick:'), resetHtml);
 
   // --- unit:'percent', limit:100 -> denominator suppressed -----------------
   const pctHtml = sandbox.renderMeterRow(
@@ -1471,6 +1471,50 @@ async function testSpendScanner() {
         JSON.stringify(dstSeries.slice(-3)));
   check('aggregate: yesterday tile uses the same calendar-day arithmetic as the series (20)',
         dstTiles.find(t => t.period === 'yesterday').costCents === 20);
+}
+
+// --------------------------------------------------------------------------
+// claude-code/quota.ts: claude.ai usage body -> buckets
+// --------------------------------------------------------------------------
+function testClaudeUsageParsing() {
+  console.log('claude-code/quota.js: parseClaudeUsage (limits[] primary, named keys fallback)');
+  const now = Date.parse('2026-09-17T03:14:05Z');
+  const resets = '2026-09-18T15:59:59Z';
+  const live = {
+    five_hour: { utilization: 3, resets_at: '2026-09-17T08:10:00Z' },
+    seven_day: { utilization: 49, resets_at: resets },
+    seven_day_opus: null,
+    nimbus_quill: { utilization: 0, resets_at: null },
+    limits: [
+      { kind: 'session', group: 'session', percent: 3, resets_at: '2026-09-17T08:10:00Z', scope: null },
+      { kind: 'weekly_all', group: 'weekly', percent: 49, resets_at: resets, scope: null },
+      { kind: 'weekly_scoped', group: 'weekly', percent: 45, resets_at: resets,
+        scope: { model: { id: null, display_name: 'Fable' }, surface: null } },
+    ],
+    spend: { used: { amount_minor: 0, currency: 'USD', exponent: 2 },
+             limit: { amount_minor: 4000, currency: 'USD', exponent: 2 }, enabled: true },
+    extra_usage: { monthly_limit: 4000, used_credits: 0, currency: 'USD', decimal_places: 2 },
+  };
+  const liveIds = parseClaudeUsage(live, now).buckets.map(b => b.id);
+  check('parseClaudeUsage: limits[] -> five-hour, seven-day, Fable weekly, one extra-usage; codename keys ignored',
+        JSON.stringify(liveIds) === JSON.stringify(['five-hour', 'seven-day', 'weekly-model-fable', 'extra-usage']),
+        JSON.stringify(liveIds));
+  const fable = parseClaudeUsage(live, now).buckets.find(b => b.id === 'weekly-model-fable');
+  check('parseClaudeUsage: Fable bucket label, window and default visibility',
+        !!fable && fable.label === 'Weekly Fable limit' && fable.used === 45 &&
+        fable.windowMs === 604800000 && fable.defaultVisibility === 'always',
+        JSON.stringify(fable));
+  const legacy = parseClaudeUsage({ five_hour: live.five_hour, seven_day: live.seven_day,
+    seven_day_sonnet: { utilization: 7, resets_at: resets } }, now).buckets;
+  check('parseClaudeUsage: without limits[] the legacy named keys keep their ids and defaults',
+        JSON.stringify(legacy.map(b => b.id)) === JSON.stringify(['five-hour', 'seven-day', 'weekly-sonnet']) &&
+        legacy[2].defaultVisibility === 'onDemand',
+        JSON.stringify(legacy.map(b => b.id)));
+  const nullPct = parseClaudeUsage({ limits: [{ kind: 'weekly_scoped', group: 'weekly', percent: null,
+    scope: { model: 'Fable' } }] }, now).buckets;
+  check('parseClaudeUsage: a null percent stays null (never 0)',
+        nullPct.length === 1 && nullPct[0].used === null && nullPct[0].remaining === null,
+        JSON.stringify(nullPct));
 }
 
 // --------------------------------------------------------------------------
@@ -2582,6 +2626,7 @@ function testUpdater() {
   testModelPricing();
   await testSpendScanner();
   testConnectorSpendExtractors();
+  testClaudeUsageParsing();
   await testCodexCumulativeStateRestart();
   await testTranscriptWatcher();
   await testWebhook();

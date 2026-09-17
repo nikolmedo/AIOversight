@@ -387,11 +387,6 @@ label.row:has(.switch) { cursor: pointer; }
 }
 .meter-bar-fill.warn { background: var(--warn); }
 .meter-bar-fill.critical { background: var(--danger); }
-.pace-tick {
-  position: absolute; top: -2px; bottom: -2px; left: var(--tick, 0%);
-  width: 2px; border-radius: 1px; background: var(--text-2);
-  pointer-events: none;
-}
 .meter-row-stats { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 5px; flex-wrap: wrap; }
 .meter-row-value { font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .meter-note { font-size: 11px; color: var(--text-2); margin-top: 3px; }
