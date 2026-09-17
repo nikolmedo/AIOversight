@@ -211,11 +211,11 @@ The workflow triggers on `v*` tags, builds for all three platforms (macOS, Windo
 |---|---|
 | macOS | `aioversight-X.Y.Z-mac-{x64,arm64}.dmg` and `.zip`, `*.blockmap`, `latest-mac.yml` |
 | Windows | `aioversight-X.Y.Z-setup-x64.exe` (NSIS), `aioversight-X.Y.Z-portable-x64.exe`, `*.blockmap`, `latest.yml` |
-| Linux | `.AppImage`, `.deb`, `.tar.gz`, `*.blockmap`, `latest-linux.yml` |
+| Linux | `.AppImage`, `.deb`, `.tar.gz`, `latest-linux.yml` |
 
 **Auto-update requirements.** Installed copies find new versions through these files, so a release only reaches the updater when:
 
-- `latest.yml` / `latest-linux.yml` / `latest-mac.yml` and the `*.blockmap` files are attached to the release. Without the yml for a platform, update checks there fail (logged as a warning, no notification).
+- `latest.yml` / `latest-linux.yml` / `latest-mac.yml` and the `*.blockmap` files are attached to the release. Without the yml for a platform, update checks there fail (logged as a warning, no notification). Linux is the exception to the blockmap rule: electron-builder embeds the AppImage's block map in the AppImage itself and records its size in `latest-linux.yml`, so the Linux build writes no standalone `.blockmap` file and the workflow does not look for one.
 - The release is published, not a draft or a pre-release. electron-updater's GitHub provider skips both.
 - Artifact names contain no spaces. `productName` is `AI Oversight`, and GitHub renames uploaded assets with spaces (spaces become dots), which breaks the URLs inside `latest*.yml`. `electron-builder.yml` sets `artifactName` templates based on `${name}` for this; do not switch them back to `${productName}`. The NSIS and portable names differ (`-setup-` / `-portable-`) so they don't overwrite each other, and `assetMatchesTarget` in `src/main/updater.ts` relies on those names.
 - The tag matches `version` in `package.json`, and it is higher than the installed version.
