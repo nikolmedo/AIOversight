@@ -21,7 +21,7 @@ import { QuotaService } from './connectors/quota-service';
 import { SecretStore } from './connectors/secret-store';
 import { QuotaSnapshot, Connector, ConnectorEnabled, BucketPref } from './connectors/types';
 import { UpdateService, UpdateState, UpdaterLike } from './updater';
-import { PopupShortcut, ShortcutResult } from './popup-shortcut';
+import { acceleratorRuleViolation, PopupShortcut, ShortcutResult } from './popup-shortcut';
 
 let tray: Tray | null = null;
 let trayHandle: TrayHandle | null = null;
@@ -40,6 +40,9 @@ let paused = false;
 const popupShortcut = new PopupShortcut(globalShortcut, () => {
   if (tray && trayPopup) trayPopup.toggle(tray);
 });
+/** Why a restore main ran on its own (blur, reload, crash) failed and cleared
+ * the shortcut; reported by the renderer's next resume, then forgotten. */
+let unreportedRestoreFailure: string | null = null;
 /** Budget for the updater's GitHub API fallback request. */
 const UPDATE_FETCH_BUDGET_MS = 30_000;
 
@@ -102,8 +105,15 @@ function resumePopupShortcut(): ShortcutResult {
       reason: result.reason,
     });
     settings?.update({ popupShortcut: '' });
+    unreportedRestoreFailure = result.reason ?? 'Another application took the shortcut.';
   }
   return result;
+}
+
+/** A shortcut IPC result plus the saved shortcut after the call, so the
+ * renderer never keeps showing a value main has cleared. */
+function withSavedShortcut(result: ShortcutResult): ShortcutResult & { shortcut: string } {
+  return { ...result, shortcut: settings?.get().popupShortcut ?? '' };
 }
 
 app.whenReady().then(async () => {
@@ -224,7 +234,7 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', async () => {
-  globalShortcut.unregisterAll();
+  popupShortcut.release();
   updates?.stop();
   quotaService?.destroy();
   trayPopup?.destroy();
@@ -374,6 +384,14 @@ function registerIpc(): void {
   // Separate from `settings:update` so a taken-accelerator failure is
   // attributable to this one field instead of the whole General-tab patch.
   ipcMain.handle('settings:setPopupShortcut', (_e, accelerator: string) => {
+    unreportedRestoreFailure = null;
+    const violation = acceleratorRuleViolation(String(accelerator ?? ''), process.platform);
+    if (violation) {
+      // Nothing was touched; still end a recorder suspension like a save does.
+      resumePopupShortcut();
+      unreportedRestoreFailure = null;
+      return withSavedShortcut({ ok: false, reason: violation });
+    }
     const previous = settings!.get().popupShortcut;
     const result = applyPopupShortcut(accelerator);
     if (result.ok) {
@@ -401,7 +419,7 @@ function registerIpc(): void {
         });
       }
     }
-    return result;
+    return withSavedShortcut(result);
   });
 
   // The recorder can't capture the current accelerator while the OS delivers
@@ -411,8 +429,16 @@ function registerIpc(): void {
     if (!settingsWindow || settingsWindow.isDestroyed() || e.sender !== settingsWindow.webContents) {
       return { ok: false, reason: 'Only the settings window can suspend the shortcut.' };
     }
-    if (suspend !== true) return resumePopupShortcut();
+    if (suspend !== true) {
+      const result = resumePopupShortcut();
+      // A restore main ran on blur may have failed before this call, which
+      // then finds nothing suspended: report that failure instead of ok.
+      const failure = unreportedRestoreFailure;
+      unreportedRestoreFailure = null;
+      return withSavedShortcut(failure && result.ok ? { ok: false, reason: failure } : result);
+    }
     if (!settingsWindow.isFocused()) return { ok: false, reason: 'The settings window is not focused.' };
+    unreportedRestoreFailure = null;
     popupShortcut.suspend();
     return { ok: true };
   });
@@ -563,7 +589,7 @@ function createUpdateService(enabled: boolean): UpdateService {
       // Nothing in this app vetoes quitting (no close/before-quit
       // preventDefault), but release the windows and the global shortcut up
       // front so the installer never finds a lingering process holding files.
-      globalShortcut.unregisterAll();
+      popupShortcut.release();
       trayPopup?.destroy();
       if (settingsWindow && !settingsWindow.isDestroyed()) settingsWindow.destroy();
     },

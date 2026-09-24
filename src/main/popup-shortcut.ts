@@ -9,10 +9,38 @@ export interface ShortcutResult {
   reason?: string;
 }
 
+const MODIFIER_TOKENS = new Set([
+  'command', 'cmd', 'control', 'ctrl', 'commandorcontrol', 'cmdorctrl',
+  'alt', 'option', 'altgr', 'shift', 'super', 'meta',
+]);
+
+/**
+ * The shortcut recorder's rule (`acceleratorFromKeyEvent` in
+ * src/renderer/accelerator.ts), applied to a typed accelerator string: a
+ * key needs Ctrl/Cmd, Alt or Super unless it is F1-F24 alone, because a
+ * global Shift+letter would swallow that capital letter in every app.
+ * Returns the reason a string breaks it, or `null` (also for `''`, which
+ * clears the shortcut). Syntax errors are left to Electron's parser.
+ *
+ * Lives in main, not in a module shared with the renderer: renderer files
+ * compile as non-module global scripts that main can't `require`. The
+ * recorder enforces the rule on key events; this checks everything that
+ * reaches `settings:setPopupShortcut`, so "Edit as text" can't bypass it.
+ */
+export function acceleratorRuleViolation(accelerator: string, platform: string): string | null {
+  const tokens = accelerator.split('+').map(t => t.trim().toLowerCase()).filter(Boolean);
+  const keys = tokens.filter(t => !MODIFIER_TOKENS.has(t));
+  if (keys.length === 0) return null;
+  const strong = tokens.some(t => MODIFIER_TOKENS.has(t) && t !== 'shift');
+  if (strong || /^f([1-9]|1[0-9]|2[0-4])$/.test(keys[keys.length - 1])) return null;
+  const needed = platform === 'darwin' ? '⌘, ⌃ or ⌥' : 'Ctrl or Alt';
+  return `Include ${needed} (F1–F24 also work on their own).`;
+}
+
 /**
  * Owns the global accelerator that toggles the tray popup. Every register /
- * unregister goes through here so `registered` never drifts from what the OS
- * holds.
+ * unregister goes through here, including the `release()` at quit and before
+ * an update installs, so `registered` never drifts from what the OS holds.
  *
  * `suspend()` releases the accelerator while the settings window records a
  * new one: a registered accelerator is delivered to its global handler, not
@@ -31,11 +59,6 @@ export class PopupShortcut {
     private readonly registrar: ShortcutRegistrar,
     private readonly onTrigger: () => void,
   ) {}
-
-  /** Accelerator the OS currently delivers to `onTrigger`, or `null`. */
-  current(): string | null {
-    return this.registered;
-  }
 
   isSuspended(): boolean {
     return this.suspended;
@@ -87,7 +110,7 @@ export class PopupShortcut {
     return this.apply(accelerator ?? '');
   }
 
-  /** Unregisters whatever is registered. Used at quit, when nothing is restored. */
+  /** Unregisters whatever is registered. Used at quit and before an update installs, when nothing is restored. */
   release(): void {
     if (!this.registered) return;
     try {

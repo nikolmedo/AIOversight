@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
-import { PopupShortcut, ShortcutRegistrar } from '../../src/main/popup-shortcut';
+import { acceleratorRuleViolation, PopupShortcut, ShortcutRegistrar } from '../../src/main/popup-shortcut';
 
 /** Records what is registered; `taken` accelerators fail like another app holds them. */
 function fakeRegistrar(taken: Set<string> = new Set()): ShortcutRegistrar & { held: Set<string>; calls: string[] } {
@@ -32,15 +32,15 @@ describe('PopupShortcut', () => {
     assert.deepEqual(shortcut.apply('Alt+J'), { ok: true });
 
     assert.deepEqual([...reg.held], ['Alt+J']);
-    assert.equal(shortcut.current(), 'Alt+J');
   });
 
   it('reports a taken or malformed accelerator without throwing', () => {
-    const shortcut = new PopupShortcut(fakeRegistrar(new Set(['Alt+K'])), () => {});
+    const reg = fakeRegistrar(new Set(['Alt+K']));
+    const shortcut = new PopupShortcut(reg, () => {});
 
     assert.equal(shortcut.apply('Alt+K').ok, false);
     assert.match(shortcut.apply('bad').reason ?? '', /not a valid shortcut/);
-    assert.equal(shortcut.current(), null);
+    assert.equal(reg.held.size, 0);
   });
 
   it('suspends and resumes the current accelerator', () => {
@@ -95,7 +95,7 @@ describe('PopupShortcut', () => {
     const result = shortcut.resume();
 
     assert.equal(result.ok, false);
-    assert.equal(shortcut.current(), null);
+    assert.equal(reg.held.size, 0);
     assert.equal(shortcut.isSuspended(), false);
   });
 
@@ -118,5 +118,30 @@ describe('PopupShortcut', () => {
     shortcut.apply('Alt+K');
     callback!();
     assert.equal(fired, 1);
+  });
+});
+
+describe('acceleratorRuleViolation', () => {
+  it('accepts a key with Ctrl/Cmd, Alt or Super, and an empty string', () => {
+    for (const accelerator of ['CommandOrControl+Shift+U', 'CmdOrCtrl+1', 'Alt+/', 'Super+K', 'control+alt+k', 'Option+Space', '']) {
+      assert.equal(acceleratorRuleViolation(accelerator, 'win32'), null, accelerator);
+    }
+  });
+
+  it('accepts F1-F24 alone or with Shift', () => {
+    for (const accelerator of ['F1', 'f12', 'Shift+F24']) {
+      assert.equal(acceleratorRuleViolation(accelerator, 'linux'), null, accelerator);
+    }
+  });
+
+  it('rejects a bare or Shift-only key with a platform-specific reason', () => {
+    for (const accelerator of ['U', 'Shift+U', ' shift + 1 ', 'Shift+/', 'Space', 'F25']) {
+      assert.match(acceleratorRuleViolation(accelerator, 'win32') ?? '', /Include Ctrl or Alt/, accelerator);
+    }
+    assert.match(acceleratorRuleViolation('Shift+U', 'darwin') ?? '', /Include ⌘, ⌃ or ⌥/);
+  });
+
+  it("leaves modifier-only strings to Electron's parser", () => {
+    assert.equal(acceleratorRuleViolation('Ctrl+Shift', 'win32'), null);
   });
 });

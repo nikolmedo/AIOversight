@@ -94,8 +94,8 @@ A quota snapshot sets `appNotRunning: true` only when its sole source is a deskt
 | `connectors:setPollOverride` | `id, minutes \| null` | `AppSettings` |
 | `connectors:setBucketPref` | `id, bucketId, Partial<BucketPref>` | `AppSettings` |
 | `settings:update` | `patch` | `AppSettings` |
-| `settings:setPopupShortcut` | `accelerator` | `{ ok, reason? }`; also ends a recorder suspension |
-| `settings:suspendPopupShortcut` | `suspend: boolean` | `{ ok, reason? }`; `true` releases the global popup shortcut while the recorder listens, `false` restores it. Settings window only; main also restores on blur, reload, crash or close |
+| `settings:setPopupShortcut` | `accelerator` | `{ ok, reason?, shortcut }` (`shortcut` = saved value after the call); rejects a key without Ctrl/Cmd, Alt or Super unless F1–F24; also ends a recorder suspension |
+| `settings:suspendPopupShortcut` | `suspend: boolean` | `{ ok, reason? }`, plus `shortcut` (saved value) for `false`; `true` releases the global popup shortcut while the recorder listens, `false` restores it and also reports a failed restore main ran on blur. Settings window only; main also restores on blur, reload, crash or close |
 | `settings:clearEvents` | — | `AppSettings` |
 | `settings:togglePause` | — | `boolean` |
 | `settings:logs` | — | `LogEntry[]` |

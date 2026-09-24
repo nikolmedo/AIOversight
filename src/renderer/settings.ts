@@ -1385,7 +1385,15 @@ function setupShortcutRecorder(initialAccelerator: string): void {
     status.textContent = SHORTCUT_HINT;
     show();
     void refreshKeyboardLayout();
-    void enqueue(() => window.aw.suspendPopupShortcut(true));
+    void enqueue(async () => {
+      const res = await window.aw.suspendPopupShortcut(true);
+      // The global shortcut is still active, so its keys never reach this
+      // page: don't look like we're listening.
+      if (res.ok || !recording) return;
+      recording = false;
+      status.textContent = `Could not start recording: ${res.reason ?? 'unknown error.'} Click the field again to record.`;
+      show();
+    });
   };
 
   /** Ends recording; `resume` is false when a save follows, which restores on its own. */
@@ -1396,19 +1404,22 @@ function setupShortcutRecorder(initialAccelerator: string): void {
     if (!resume) return;
     void enqueue(async () => {
       const res = await window.aw.suspendPopupShortcut(false);
-      if (!res.ok && saved) {
-        saved = '';
+      const before = saved;
+      if (res.shortcut !== undefined) saved = res.shortcut;
+      else if (!res.ok) saved = '';
+      if (!res.ok && before && !saved) {
         status.textContent = `Shortcut turned off: ${res.reason ?? 'another application took it'}`;
-        show();
       }
+      show();
     });
   };
 
   const save = (accelerator: string): Promise<boolean> =>
     enqueue(async () => {
       const res = await window.aw.setPopupShortcut(accelerator);
+      // Main returns the saved value: a failed rollback may have cleared it.
+      saved = res.shortcut ?? (res.ok ? accelerator.trim() : saved);
       if (res.ok) {
-        saved = accelerator.trim();
         status.textContent = saved ? 'Shortcut set.' : 'Shortcut cleared.';
       } else {
         status.textContent = `Could not set shortcut: ${res.reason ?? 'unknown error'}`;
