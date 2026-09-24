@@ -2,10 +2,9 @@
 // header comment) — loaded via <script> right after quota-math.js and before
 // settings.js / tray-popup.js.
 //
-// Phase 2a scope: `renderMeterRow` is now the single shared meter-row
-// renderer for both settings.ts and tray-popup.ts — label / value / percent /
-// pace-colored bar / reset countdown chip / on-demand
-// grouping.
+// `renderMeterRow` is the single shared meter-row renderer for both
+// settings.ts and tray-popup.ts — label / value / percent / pace-colored bar /
+// reset countdown chip / forecast line / on-demand grouping.
 //
 // Spend: `renderTotalSpendCard` (tray popup) and `renderSpendSummary`
 // (settings Overview) aggregate `QuotaSnapshot.spend` across the connectors
@@ -110,7 +109,7 @@ function refreshResetChips(root: Document): void {
 
 /** Cap enforced authoritatively in `settings-store.ts`'s `setBucketPref` —
  * duplicated here (not imported; renderer scripts can't import from main) so
- * the row menu / Customize tab can optimistically disable the star control
+ * the row menu / drawer Meters section can optimistically disable the star control
  * without round-tripping through IPC first. Keep in sync with
  * `MAX_STARRED_PER_CONNECTOR` in `src/main/connectors/types.ts`. */
 const MAX_STARRED_PER_CONNECTOR = 2;
@@ -147,7 +146,8 @@ interface MeterRowOptions {
  * `pref` is the bucket's persisted display prefs (star/hide/order), passed
  * through mainly so callers upstream (`renderMeterGroup`) can group by
  * effective visibility; the star state is surfaced here only as a
- * `data-starred` attribute — no visual star UI yet (that's Phase 2c).
+ * `data-starred` attribute (starring itself lives in the row menu and the
+ * drawer's Meters section).
  */
 function renderMeterRow(b: QuotaBucket, pref: BucketPref | undefined, options?: MeterRowOptions): string {
   const now = options?.now ?? Date.now();
@@ -261,9 +261,8 @@ function renderMeterRow(b: QuotaBucket, pref: BucketPref | undefined, options?: 
  * 'onDemand')` — a bucket with no determinable limit collapses by default
  * unless a connector explicitly opts it into `'always'`. This restores the
  * pre-2a behavior (the old `.quota-bucket-collapsible` path collapsed any
- * bucket without a positive limit) for every currently-shipping connector:
- * no connector sets `defaultVisibility` yet (Phase 3+ work), so without this
- * fallback every `limit: null`/`limit: 0` bucket — Anthropic's spend/per-model
+ * bucket without a positive limit) for connectors that leave
+ * `defaultVisibility` unset. Without this fallback every `limit: null`/`limit: 0` bucket — Anthropic's spend/per-model
  * buckets, OpenAI's admin buckets, Copilot's unlimited/zero-entitlement
  * buckets — would render fully expanded in the main row set. The tray popup
  * window is non-resizable, height-clamped, and has no scroll container
@@ -290,14 +289,14 @@ function renderMeterGroup(
   for (const b of buckets) {
     const pref = bucketPrefs?.[b.id];
     if (pref?.hidden) continue;
-    // Customize tab override (Phase 2c) takes precedence; unset falls back to
+    // Meters-section override (Phase 2c) takes precedence; unset falls back to
     // the connector's own default, unchanged from Phase 2a.
     const effectiveVisibility = pref?.visibility ?? b.defaultVisibility ?? (hasLimit(b) ? 'always' : 'onDemand');
     if (effectiveVisibility === 'onDemand') onDemand.push(b);
     else main.push(b);
   }
 
-  // Shared with the Customize tab's pre-move baseline — see
+  // Shared with the Meters section's pre-move baseline — see
   // `sortBucketsByDisplayOrder`'s header comment in quota-math.ts for why
   // this must not be a locally-reimplemented sort here.
   const renderList = (list: QuotaBucket[], rowOptions?: MeterRowOptions): string =>
@@ -1063,9 +1062,9 @@ interface RowMenuHandlers {
   refreshConnector(t: RowMenuTarget): void;
   /**
    * Omit to hide the "Customize…" item entirely. settings.ts supplies this
-   * (switches to the Customize tab in-place); tray-popup.ts supplies it as a
-   * call to `window.awPopup.openSettings()` — the popup has no Customize tab
-   * of its own to switch to.
+   * (opens the connector's drawer at its Meters section); tray-popup.ts
+   * supplies it as a call to `window.awPopup.openSettings()` — the popup has
+   * no meter settings of its own.
    */
   openCustomize?(t: RowMenuTarget): void;
 }
@@ -1090,6 +1089,13 @@ function renderRowMenu(): string {
     </div>
   `;
 }
+
+/**
+ * How long after a keyboard open a `contextmenu` event on the same row is
+ * treated as the echo of that key press (Windows fires both for the
+ * ContextMenu key) instead of a new pointer open.
+ */
+const KEYBOARD_CONTEXTMENU_DEDUPE_MS = 1000;
 
 /**
  * Wires the shared row context menu built by `renderRowMenu()` — call once
@@ -1200,7 +1206,7 @@ function bindRowMenu(root: Document, handlers: RowMenuHandlers): void {
     e.preventDefault();
     // On Windows the ContextMenu key can also fire `contextmenu` after the
     // keydown below already opened the menu; keep it anchored to the row.
-    if (!menu.hidden && openedRow === row && Date.now() - keyboardOpenedAt < 1000) return;
+    if (!menu.hidden && openedRow === row && Date.now() - keyboardOpenedAt < KEYBOARD_CONTEXTMENU_DEDUPE_MS) return;
     const me = e as MouseEvent;
     open(row, { x: me.clientX, y: me.clientY });
   });
@@ -1226,35 +1232,44 @@ function bindRowMenu(root: Document, handlers: RowMenuHandlers): void {
     if (!menu.hidden && !(e.target as HTMLElement).closest('#rowMenu')) close(false);
   });
 
-  root.addEventListener('keydown', e => {
-    const ke = e as KeyboardEvent;
-    if (!menu.hidden) {
-      if (ke.key === 'Escape') {
-        ke.preventDefault();
-        close(true);
-        return;
-      }
-      if (!menu.contains(root.activeElement)) return;
-      const list = items();
-      const idx = list.indexOf(root.activeElement as HTMLButtonElement);
-      let next = -1;
-      if (ke.key === 'ArrowDown') next = (idx + 1) % list.length;
-      else if (ke.key === 'ArrowUp') next = (idx - 1 + list.length) % list.length;
-      else if (ke.key === 'Home') next = 0;
-      else if (ke.key === 'End') next = list.length - 1;
-      else if (ke.key === 'Tab') close(true);
-      if (next >= 0 && list[next]) {
-        ke.preventDefault();
-        list[next].focus();
-      }
+  /** Keys while the menu is open: Escape closes, arrows/Home/End rove, Tab leaves. */
+  const handleOpenMenuKey = (ke: KeyboardEvent): void => {
+    if (ke.key === 'Escape') {
+      ke.preventDefault();
+      close(true);
       return;
     }
-    if (ke.key === 'ContextMenu' || (ke.key === 'F10' && ke.shiftKey)) {
-      const row = (ke.target as HTMLElement).closest?.('[data-bucket-id]') as HTMLElement | null;
-      if (!row) return;
-      ke.preventDefault();
-      keyboardOpenedAt = Date.now();
-      open(row, null);
+    if (!menu.contains(root.activeElement)) return;
+    if (ke.key === 'Tab') {
+      close(true);
+      return;
     }
+    const list = items();
+    const idx = list.indexOf(root.activeElement as HTMLButtonElement);
+    let next = -1;
+    if (ke.key === 'ArrowDown') next = (idx + 1) % list.length;
+    else if (ke.key === 'ArrowUp') next = (idx - 1 + list.length) % list.length;
+    else if (ke.key === 'Home') next = 0;
+    else if (ke.key === 'End') next = list.length - 1;
+    if (next >= 0 && list[next]) {
+      ke.preventDefault();
+      list[next].focus();
+    }
+  };
+
+  /** Shift+F10 or the ContextMenu key on a row opens the menu under that row. */
+  const openFromKeyboard = (ke: KeyboardEvent): void => {
+    if (ke.key !== 'ContextMenu' && !(ke.key === 'F10' && ke.shiftKey)) return;
+    const row = (ke.target as HTMLElement).closest?.('[data-bucket-id]') as HTMLElement | null;
+    if (!row) return;
+    ke.preventDefault();
+    keyboardOpenedAt = Date.now();
+    open(row, null);
+  };
+
+  root.addEventListener('keydown', e => {
+    const ke = e as KeyboardEvent;
+    if (menu.hidden) openFromKeyboard(ke);
+    else handleOpenMenuKey(ke);
   });
 }

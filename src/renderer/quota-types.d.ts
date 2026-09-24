@@ -144,7 +144,8 @@ interface AppSettings {
   notifyOnWaiting: boolean;
   notifyOnFinished: boolean;
   perSessionCooldownMs: number;
-  quietHours: { startHour: number; endHour: number } | null;
+  /** Minutes after midnight, local time; wraps past midnight when start > end. */
+  quietHours: { startMinute: number; endMinute: number } | null;
   quotaPollMinutes: number;
   showQuotaInTray: boolean;
   launchAtLogin: boolean;

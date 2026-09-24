@@ -17,20 +17,24 @@
     const HOUR = 3_600_000;
     const DAY = 86_400_000;
     const now = Date.now();
+    // Deterministic 30-day daily-cost series (cents) for the sparklines; a
+    // null day draws no bar.
+    const series = (seed: number, scale: number) =>
+      Array.from({ length: 30 }, (_, i) => (i % 9 === seed % 9 ? null : Math.round(scale * (0.4 + 0.6 * Math.abs(Math.sin(i * 1.3 + seed))))));
     const spendClaude = [
       { period: 'today' as const, label: 'Today', costCents: 842, tokens: 2_310_000 },
       { period: 'yesterday' as const, label: 'Yesterday', costCents: 1105, tokens: 3_020_000 },
-      { period: 'last30d' as const, label: 'Last 30 days', costCents: 15480, tokens: 41_700_000 },
+      { period: 'last30d' as const, label: 'Last 30 days', costCents: 15480, tokens: 41_700_000, series: series(1, 800) },
     ];
     const spendCodex = [
       { period: 'today' as const, label: 'Today', costCents: 231, tokens: 640_000 },
       { period: 'yesterday' as const, label: 'Yesterday', costCents: 402, tokens: 1_150_000 },
-      { period: 'last30d' as const, label: 'Last 30 days', costCents: 5230, tokens: 14_900_000 },
+      { period: 'last30d' as const, label: 'Last 30 days', costCents: 5230, tokens: 14_900_000, series: series(4, 300) },
     ];
     const spendCursor = [
       { period: 'today' as const, label: 'Today', costCents: 187, tokens: 520_000 },
       { period: 'yesterday' as const, label: 'Yesterday', costCents: 260, tokens: 730_000 },
-      { period: 'last30d' as const, label: 'Last 30 days', costCents: 3310, tokens: 9_100_000 },
+      { period: 'last30d' as const, label: 'Last 30 days', costCents: 3310, tokens: 9_100_000, series: series(7, 200) },
     ];
     const demo: Record<string, QuotaSnapshot> = {
       'claude-code': {
@@ -94,6 +98,8 @@
       return {
         ...s,
         recentEvents: demoEvents,
+        quietHours: { startMinute: 22 * 60 + 30, endMinute: 7 * 60 },
+        popupShortcut: 'CommandOrControl+Shift+U',
         connectors: { ...s.connectors, enabled: { ...s.connectors.enabled, ...demoEnabled } },
       };
     };
@@ -101,17 +107,19 @@
     qs.state = () => demo;
     qs.refresh = async (id: string) => demo[id] ?? null;
     qs.refreshAll = async () => demo;
-    for (const ch of ['settings:get', 'quota:get', 'quota:refresh', 'trayPopup:getQuotas', 'trayPopup:refresh', 'settings:logs']) {
+    for (const ch of ['settings:get', 'quota:get', 'quota:refresh', 'trayPopup:getQuotas', 'trayPopup:refresh', 'trayPopup:getConnectors', 'settings:logs']) {
       ipcMain.removeHandler(ch);
     }
     ipcMain.handle('settings:get', () => ({
-      connectors: runtime!.metadata(),
+      connectors: runtime!.metadata(demoSettings().connectors.enabled),
       settings: demoSettings(),
       paused: false,
       settingsPath: 'C:\\Users\\dev\\AppData\\Roaming\\AI Oversight\\settings.json',
       quotas: demo,
       platform: process.platform,
+      updates: updates!.getState(),
     }));
+    ipcMain.handle('trayPopup:getConnectors', () => runtime!.metadata(demoSettings().connectors.enabled));
     ipcMain.handle('quota:get', () => demo);
     ipcMain.handle('quota:refresh', (_e, id?: string) => (id ? demo[id] : demo));
     ipcMain.handle('trayPopup:getQuotas', () => demo);
@@ -158,7 +166,7 @@
         await blur();
         await wait(100);
       };
-      for (const p of ['overview', 'activity', 'preferences', 'webhook']) {
+      for (const p of ['overview', 'activity', 'general', 'notifications', 'webhook']) {
         if (!want(p)) continue;
         await go(p);
         await save(win, p);
@@ -170,6 +178,25 @@
         await blur();
         await wait(150);
         await save(win, 'integrations-drawer');
+      }
+      // Review-only captures (not used by the README): the drawer's Meters
+      // section and the shortcut recorder while recording.
+      if (want('drawer-meters')) {
+        await go('integrations');
+        await js(`document.querySelector('.integration-row[data-connector-id="claude-code"] .integration-main').click()`);
+        await wait(700);
+        await js(`document.querySelector('[data-section="meters"]').scrollIntoView({ block: 'start' })`);
+        await wait(200);
+        await blur();
+        await save(win, 'drawer-meters');
+        await js(`document.getElementById('drawerClose').click()`);
+        await wait(300);
+      }
+      if (want('shortcut-recorder')) {
+        await go('general');
+        await js(`document.getElementById('popupShortcut').scrollIntoView({ block: 'center' }); document.getElementById('popupShortcut').focus()`);
+        await wait(300);
+        await save(win, 'shortcut-recorder');
       }
       app.quit();
     })().catch(err => {

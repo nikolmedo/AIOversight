@@ -143,7 +143,7 @@ describe('Notifier.handle()', () => {
 
   it('suppresses notifications during a same-day quiet-hours window', () => {
     // Arrange
-    store.update({ quietHours: { startHour: 13, endHour: 18 } });
+    store.update({ quietHours: { startMinute: 13 * 60, endMinute: 18 * 60 } });
     const event = baseEvent({ detectedAt: atHour(15, 0) });
 
     // Act
@@ -156,7 +156,7 @@ describe('Notifier.handle()', () => {
 
   it('suppresses notifications inside an overnight quiet-hours window crossing midnight (22 -> 7)', () => {
     // Arrange
-    store.update({ quietHours: { startHour: 22, endHour: 7 } });
+    store.update({ quietHours: { startMinute: 22 * 60, endMinute: 7 * 60 } });
 
     // Act
     const lateNight = notifier.handle(baseEvent({ sessionId: 'cursor:s1', detectedAt: atHour(23, 30) }));
@@ -168,6 +168,34 @@ describe('Notifier.handle()', () => {
     assert.deepEqual(earlyMorning, { shown: false, reason: 'quiet-hours' });
     assert.deepEqual(noon, { shown: true });
     assert.equal(notifications.length, 1);
+  });
+
+  it('honors minute boundaries of an overnight window (22:30 -> 07:15)', () => {
+    // Arrange
+    store.update({ quietHours: { startMinute: 22 * 60 + 30, endMinute: 7 * 60 + 15 } });
+
+    // Act
+    const beforeStart = notifier.handle(baseEvent({ sessionId: 'cursor:s1', detectedAt: atHour(22, 29) }));
+    const atStart = notifier.handle(baseEvent({ sessionId: 'cursor:s2', detectedAt: atHour(22, 30) }));
+    const beforeEnd = notifier.handle(baseEvent({ sessionId: 'cursor:s3', detectedAt: atHour(7, 14) }));
+    const atEnd = notifier.handle(baseEvent({ sessionId: 'cursor:s4', detectedAt: atHour(7, 15) }));
+
+    // Assert
+    assert.deepEqual(beforeStart, { shown: true });
+    assert.deepEqual(atStart, { shown: false, reason: 'quiet-hours' });
+    assert.deepEqual(beforeEnd, { shown: false, reason: 'quiet-hours' });
+    assert.deepEqual(atEnd, { shown: true });
+  });
+
+  it('treats an equal start and end as no quiet hours', () => {
+    // Arrange
+    store.update({ quietHours: { startMinute: 600, endMinute: 600 } });
+
+    // Act
+    const result = notifier.handle(baseEvent({ detectedAt: atHour(10, 0) }));
+
+    // Assert
+    assert.deepEqual(result, { shown: true });
   });
 
   it('does not fire when the event kind is disabled (notifyOnWaiting=false)', () => {
@@ -256,7 +284,7 @@ describe('Notifier.notifyUpdate()', () => {
   });
 
   it('shows a notification whose click runs the handler, even during quiet hours', () => {
-    store.update({ quietHours: { startHour: 0, endHour: 23 } });
+    store.update({ quietHours: { startMinute: 0, endMinute: 23 * 60 } });
     let clicks = 0;
 
     const result = notifier.notifyUpdate({ latestVersion: '1.1.0', canInstall: true }, () => clicks++);

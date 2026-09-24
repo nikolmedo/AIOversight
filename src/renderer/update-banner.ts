@@ -76,7 +76,7 @@ function updateErrorText(state: UpdateState): string {
   return `${what}: ${state.error}`;
 }
 
-/** One-line status for the Preferences "Updates" row. */
+/** One-line status for the General page's "Updates" row. */
 function updateStatusText(state: UpdateState | null | undefined): string {
   if (!state) return '';
   const version = state.latestVersion ?? '';

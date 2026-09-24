@@ -1,4 +1,5 @@
 @import url('tokens.css');
+@import url('meters.css');
 
 /* =========================================================
    AI Oversight — Tray popup
@@ -142,58 +143,10 @@ main::-webkit-scrollbar-thumb {
   user-select: text; cursor: text;
 }
 
-/* ── Meter rows (shared renderMeterRow markup) ──────────── */
+/* ── Meter rows (shared rules in meters.css) ────────────── */
 .meter-row + .meter-row { margin-top: 10px; }
-.meter-row.no-data .meter-row-title { color: var(--text-2); }
-.meter-row.no-data .meter-row-value { color: var(--text-3); }
-.meter-row-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
-.meter-row-title { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.meter-row-side { display: flex; align-items: baseline; gap: 8px; flex-shrink: 0; }
-.meter-pct { font-size: 12px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.meter-pct.warn { color: var(--warn); }
-.meter-pct.critical { color: var(--danger); }
-.meter-bar { position: relative; height: 4px; border-radius: 999px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border); }
-.meter-bar-fill {
-  height: 100%; width: var(--fill, 0%); border-radius: 999px; background: var(--ok);
-  transition: width var(--dur) var(--ease);
-}
-.meter-bar-fill.warn { background: var(--warn); }
-.meter-bar-fill.critical { background: var(--danger); }
-.meter-row-stats { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
-.meter-row-value { font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
-.meter-note { font-size: 11px; color: var(--text-2); margin-top: 3px; }
-.meter-forecast { font-size: 11px; color: var(--text-2); margin-top: 3px; }
-.meter-forecast.warn { color: var(--warn); }
-.meter-forecast.critical { color: var(--danger); }
-/* Keyboard target for the row menu (Shift+F10 / ContextMenu key). */
-.meter-row[tabindex]:focus-visible { outline-offset: 4px; }
-.reset-chip {
-  border: 0; background: transparent; padding: 0; min-height: 16px; position: relative;
-  font-size: 11px; color: var(--text-2); cursor: pointer; font-variant-numeric: tabular-nums;
-}
-.reset-chip:hover { color: var(--text); text-decoration: underline; }
-/* Invisible 24px-tall hit area without growing the row. */
-.reset-chip::after { content: ""; position: absolute; inset: -4px 0; }
-
-.meter-extras { margin-top: 10px; padding-top: 6px; border-top: 1px solid var(--border); }
-.meter-extras-heading {
-  font-size: 11px; font-weight: 600; color: var(--text-2);
-  text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px;
-}
-.meter-row-compact summary {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  min-height: 24px; list-style: none; cursor: pointer;
-}
-.meter-row-compact summary::-webkit-details-marker { display: none; }
-.meter-row-compact summary .meter-pct { font-weight: 500; color: var(--text-2); }
-.meter-row-compact summary:hover .meter-row-title { color: var(--accent); }
-.meter-row-compact-body { padding: 2px 0 6px; }
-/* The summary already shows label + value; keep only a header reset chip. */
-.meter-row-compact-body .meter-row-header { justify-content: flex-end; margin-bottom: 4px; }
-.meter-row-compact-body .meter-row-header > .meter-row-title,
-.meter-row-compact-body .meter-row-side > .meter-pct { display: none; }
-.meter-row-compact-body .meter-row-header:not(:has(.reset-chip)) { display: none; }
 .meter-row-compact + .meter-row-compact { margin-top: 0; }
+.meter-extras { margin-top: 10px; }
 
 .empty { padding: 20px 16px; text-align: center; font-size: 12px; color: var(--text-2); }
 

@@ -65,8 +65,7 @@ function staticPaceState(pct: number): 'ok' | 'warn' | 'critical' {
 /**
  * Pace/burn-rate coloring. With `resetsAt` + `windowMs` present, colors by
  * projected-exhaustion-before-reset; otherwise falls back to the static
- * thresholds above so behavior is unchanged for connectors that don't yet
- * report reset data.
+ * thresholds above for buckets that don't report reset data.
  */
 function paceStateFor(bucket: PaceBucket, now: number): 'none' | 'ok' | 'warn' | 'critical' {
   if (bucket.used == null || bucket.limit == null || bucket.limit <= 0) return 'none';
@@ -268,9 +267,9 @@ function formatDateTime(ts: number): string {
 /**
  * Shared "what order does a set of buckets display in" logic. Single source
  * of truth for both `renderMeterGroup` (quota-view.ts, the live meter's
- * main/on-demand row groups) and the Customize tab's pre-move baseline
+ * main/on-demand row groups) and the drawer Meters section's pre-move baseline
  * (`customizeDisplayOrder` in settings.ts) — factored out after a review
- * found the two had drifted (Customize used raw declaration order,
+ * found the two had drifted (the Meters list used raw declaration order,
  * `renderMeterGroup` used pct-desc), which made an up/down click silently
  * move buckets the user never touched relative to what they'd see in the
  * live meter.
@@ -300,7 +299,7 @@ function sortBucketsByDisplayOrder(
 }
 
 /**
- * Pure reorder math for the Customize tab's up/down move buttons (Phase 2c —
+ * Pure reorder math for the Meters section's up/down move buttons (Phase 2c —
  * chosen over drag-and-drop, see the plan). `orderedIds` must already be in
  * the connector's current display order (numeric `BucketPref.order` first,
  * ties/absences broken however the caller's existing sort already works —

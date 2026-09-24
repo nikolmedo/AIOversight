@@ -1,6 +1,6 @@
 import { Notification, shell } from 'electron';
 import { AgentEvent, EventKind } from './connectors/types';
-import { SettingsStore } from './settings-store';
+import { QuietHours, SettingsStore } from './settings-store';
 
 export type NotifyResult =
   | { shown: true }
@@ -147,14 +147,14 @@ export class Notifier {
     return { shown: true };
   }
 
-  private inQuietHours(window: { startHour: number; endHour: number } | null, now: Date): boolean {
+  private inQuietHours(window: QuietHours | null, now: Date): boolean {
     if (!window) return false;
-    const hour = now.getHours();
-    const { startHour, endHour } = window;
-    if (startHour === endHour) return false;
-    // Wrap-around (e.g. 22 -> 7).
-    if (startHour < endHour) return hour >= startHour && hour < endHour;
-    return hour >= startHour || hour < endHour;
+    const minute = now.getHours() * 60 + now.getMinutes();
+    const { startMinute, endMinute } = window;
+    if (startMinute === endMinute) return false;
+    // Wrap-around (e.g. 22:00 -> 07:00).
+    if (startMinute < endMinute) return minute >= startMinute && minute < endMinute;
+    return minute >= startMinute || minute < endMinute;
   }
 }
 

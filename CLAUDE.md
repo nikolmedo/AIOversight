@@ -49,6 +49,8 @@ Renderer (src/renderer/)        — vanilla TypeScript, no framework, CommonJS o
   ├── quota-view.ts / quota-math.ts — meter rendering + pace/format math shared by both windows
   ├── update-banner.ts      — "update available" banner markup shared by both windows
   ├── tokens.css            — design tokens shared by both windows
+  ├── meters.css            — meter-row styles shared by both windows (imported after tokens.css)
+  ├── accelerator.ts        — pure key-recorder logic for the popup shortcut (Electron accelerators)
   └── global.d.ts / tray-popup-global.d.ts / quota-types.d.ts — ambient types
 ```
 

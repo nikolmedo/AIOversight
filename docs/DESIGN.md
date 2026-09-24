@@ -1,6 +1,6 @@
 # UI design system
 
-Covers the settings window (`src/renderer/settings.html`, `settings.css`) and the tray popup (`tray-popup.html`, `tray-popup.css`). Both import the shared tokens in `src/renderer/tokens.css`. Tokens are the source of truth; if this document and `tokens.css` disagree, `tokens.css` wins and this file should be fixed.
+Covers the settings window (`src/renderer/settings.html`, `settings.css`) and the tray popup (`tray-popup.html`, `tray-popup.css`). Both import the shared tokens in `src/renderer/tokens.css`, then the shared meter-row styles in `src/renderer/meters.css` (window-specific meter spacing stays in each window's stylesheet). Tokens are the source of truth; if this document and `tokens.css` disagree, `tokens.css` wins and this file should be fixed.
 
 ## Direction
 
@@ -55,7 +55,7 @@ Dark is the `:root` default; light overrides it inside `@media (prefers-color-sc
 
 Theme-independent: `--radius: 8px`, `--radius-sm: 6px`, `--ease: cubic-bezier(.2, .8, .2, 1)`, `--dur: 140ms`.
 
-`tray-popup.css` hardcodes `--surface` at reduced alpha for the "increase transparency" mode (`body.popup-transparent`). Keep those rgba values in sync when the palette changes.
+`tray-popup.css` hardcodes `--surface` at reduced alpha for the "increase transparency" mode (`body.popup-transparent`). Keep those rgba values in sync when the palette changes. The same goes for the popup window colour in `src/main/tray-popup.ts` (`opaqueBg`: `--surface` per theme, chosen from `nativeTheme.shouldUseDarkColors` and re-applied on theme change), which shows while the page loads or resizes.
 
 ## Contrast rule (WCAG AA)
 
@@ -83,18 +83,24 @@ The theme setting (system / light / dark) is applied in the main process through
 
 ## Page structure (settings window)
 
-- Left sidebar with the brand, the main pages **Overview**, **Integrations**, **Activity**, **Preferences**, then an **Advanced** group (`nav-group-label`) with **Webhook** and **Logs**. The footer shows the monitoring status dot and the Pause button.
-- Each page is a `<section class="page" data-page="...">`; only one is visible at a time.
+- Left sidebar with the brand, the main pages **Overview**, **Integrations**, **Activity**, **General**, **Notifications**, then an **Advanced** group (`nav-group-label`) with **Webhook** and **Logs**. The footer shows the monitoring status dot and the Pause button.
+  - **General**: Startup, Updates, Quota (tray summary, default auto-refresh), Appearance, Tray popup (transparency, shortcut recorder), and the settings file path.
+  - **Notifications**: the master switch, per-kind toggles, cooldown and *Send test*, then Quiet hours. *Send test* lives only here, not in the Overview header.
+- Each page is a `<section class="page" data-page="...">`; only one is visible at a time. The last page is remembered in `localStorage` (`aio.settings.page`); `activatePage` maps ids from older versions (`LEGACY_PAGE_IDS`: `preferences` → `general`), so a stored id never lands on a missing page. Main never opens a specific page.
+- **Integrations list**: a toolbar with an *Enabled / All* segmented control (`.segmented`, toggle buttons with `aria-pressed` in a `role="group"`; the choice is remembered in `localStorage`, `aio.settings.integrationFilter`) and a search box that only appears with more than 10 connectors. Inside each vendor group, connectors in `error` or `needs-login` sort first. The order is computed when the list is built (filter or search change, page load), not on quota pushes, so rows do not move under the pointer. An empty result shows one `.empty-state` line.
+- **Drawer Meters section** (`data-section="meters"`, after Quota for quota connectors): per-bucket show switch, visibility select, star (cap `MAX_STARRED_PER_CONNECTOR`) and move up/down, through the `connectors:setBucketPref` IPC. Long labels truncate (full text in `title`) so controls stay aligned. Re-renders keep focus on the same control. The row menu's *Customize…* opens this section for the row's connector.
 - Connector details open in a side drawer (`#connectorDrawer`): `role="dialog"`, `aria-modal="true"`, labelled by its title. While open, Tab and Shift+Tab are trapped inside it, Escape closes it (unless the row context menu is open, which handles Escape first), clicking the backdrop closes it, and focus returns to the row that opened it.
 
 ## Component rules
 
 - **Buttons**: 28px high (`.btn`), 24px for `.btn-sm`. Variants: `btn-primary` (accent-solid, white text), `btn-secondary`, `btn-ghost`, `btn-danger-ghost`. Icon buttons are square (`.btn-icon`).
 - **Destructive actions** (Activity *Clear*, a connector secret's *Clear*): inline two-step confirm (`bindConfirmClick` in `settings.ts`). The first click relabels the button to *Confirm clear* for 3.5 s; a second click inside that window runs the action; timing out or moving focus away disarms it. No `confirm()` dialogs. A secret's *Clear* is `btn-danger-ghost` and disabled while the key is not set.
-- **Disabled rows**: a row whose control depends on a master switch (notification kinds under *Show desktop notifications*, the quiet-hours window under its switch) disables that control while the master is off. Disabled rows use `--text-3` for their label and description, never opacity, so the text still meets contrast.
+- **Disabled rows**: a row whose control depends on a master switch (notification kinds under *Show desktop notifications*, the quiet-hours start and end times under their switch) disables that control while the master is off. Disabled rows use `--text-3` for their label and description, never opacity, so the text still meets contrast.
 - **Spend switches** (`.spend-switch`): toggle buttons with `aria-pressed`, grouped in a `role="group"` with an `aria-label` (not a tablist). At least 24px high.
 - **Switch**: native checkbox with `appearance: none`, 28x16px; off is `--border-strong`, on is `--accent-solid` with a white 12px knob.
 - **Inputs** (`.control`): 28px high (24px for `.control-sm`), `--surface` background, `--border-strong` border; on focus the border becomes `--accent` with a 3px `--accent-soft` halo.
+- **Time inputs** (`.control-time`, quiet hours): native `<input type="time">` with minute steps; `color-scheme` follows the theme so the clock icon stays visible. Display follows the OS locale (12- or 24-hour); the stored value is minutes after midnight.
+- **Shortcut recorder** (`.shortcut-recorder`): a button styled as an input that shows the accelerator in human form (`formatAccelerator` in `accelerator.ts`: "Ctrl+Shift+U", "⌘⇧U" on macOS) or a `--text-3` "Not set". Focus or click starts recording ("Press keys…", `--accent` border and halo); the first complete combination saves through `settings:setPopupShortcut` and its `{ ok, reason }` shows in the row description. Escape cancels, Backspace/Delete clears, Tab leaves. A letter needs Ctrl/Cmd, Alt or Super; F1–F24 may stand alone.
 - **Meters**: 4px bar on a `--surface-2` track. Fill and percentage colour come from `paceStateFor` in `src/renderer/quota-math.ts`:
   - Without both `resetsAt` and `windowMs`, or when less than 5% of the window has elapsed, or the window has already passed: static bands, warn at 75% used, critical at 90% (rounded percent).
   - Otherwise pace-projected: `projected = used fraction / elapsed fraction`; warn when projected is at least 0.9, critical when projected is at least 1.0 or usage has reached 100%.
@@ -121,5 +127,5 @@ The theme setting (system / light / dark) is applied in the main process through
 ## Known gaps
 
 - The tray popup cannot show the paused state; it would need a new IPC push from main to the popup.
-- `OPAQUE_BG` in `src/main/tray-popup.ts` is `#161b22`, which no longer matches `--surface`, so the popup can flash a slightly different colour when it opens.
+- Re-recording the shortcut that is currently registered does not work: the OS hands that combination to the global shortcut (which toggles the popup) before the settings page sees it. Clear it first, or record a different one.
 - Unlimited buckets (`limit: null`) still render under "More metrics", because `scripts/smoke.js` asserts that a `limit: null` bucket lands inside `meter-extras`. Changing that placement means updating those smoke checks too.

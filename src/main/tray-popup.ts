@@ -1,6 +1,6 @@
 import * as os from 'os';
 import * as path from 'path';
-import { BrowserWindow, Tray, ipcMain, screen } from 'electron';
+import { BrowserWindow, Tray, ipcMain, nativeTheme, screen } from 'electron';
 import type { ConnectorMetadata, QuotaSnapshot } from './connectors/types';
 import type { UpdateState } from './updater';
 
@@ -90,15 +90,20 @@ export function createTrayPopup(actions: TrayPopupActions, initialTransparent = 
   let lastTray: Tray | null = null;
   let transparentEnabled = initialTransparent;
 
-  const OPAQUE_BG = '#161b22';
   const TRANSPARENT_BG = '#00000000';
+  /**
+   * Window colour behind the page while it loads or resizes: `--surface` in
+   * src/renderer/tokens.css (dark #16171C, light #FFFFFF), keep in sync.
+   * `shouldUseDarkColors` follows the theme setting through `themeSource`.
+   */
+  const opaqueBg = (): string => (nativeTheme.shouldUseDarkColors ? '#16171C' : '#FFFFFF');
 
   /** Applies `transparentEnabled` to a just-(re)created window. Split out
    * from `setTransparent` so `ensureWindow()` can call it on a fresh window
    * without going through the public toggle path. */
   const applyTransparencyToWindow = (win: BrowserWindow): void => {
     if (process.platform === 'win32') {
-      win.setBackgroundColor(transparentEnabled ? TRANSPARENT_BG : OPAQUE_BG);
+      win.setBackgroundColor(transparentEnabled ? TRANSPARENT_BG : opaqueBg());
       // This call is made on *every* window creation/toggle, not just when a
       // user opts into transparency (off by default for everyone) — and
       // there is no process-level uncaughtException handler anywhere in
@@ -119,7 +124,7 @@ export function createTrayPopup(actions: TrayPopupActions, initialTransparent = 
         }
       }
     } else if (process.platform === 'darwin') {
-      win.setBackgroundColor(transparentEnabled ? TRANSPARENT_BG : OPAQUE_BG);
+      win.setBackgroundColor(transparentEnabled ? TRANSPARENT_BG : opaqueBg());
       win.setVibrancy(transparentEnabled ? 'popover' : null);
     }
     // Linux: no native effect — the Settings UI disables the checkbox so
@@ -142,6 +147,15 @@ export function createTrayPopup(actions: TrayPopupActions, initialTransparent = 
     if (popup.isVisible()) popup.hide();
   };
   ipcMain.on('trayPopup:hide', hideListener);
+
+  // Theme changes (setting or OS) swap the opaque colour. The only path that
+  // does so on Linux, where applyTransparencyToWindow is a no-op.
+  const themeListener = (): void => {
+    if (!popup || popup.isDestroyed()) return;
+    if (transparentEnabled && process.platform !== 'linux') return;
+    popup.setBackgroundColor(opaqueBg());
+  };
+  nativeTheme.on('updated', themeListener);
 
   const ensureWindow = (): BrowserWindow => {
     if (popup && !popup.isDestroyed()) return popup;
@@ -167,7 +181,7 @@ export function createTrayPopup(actions: TrayPopupActions, initialTransparent = 
       // background with nothing behind it. The Settings UI disabling the
       // checkbox only prevents *setting* this from Linux, not *loading* it.
       backgroundColor:
-        transparentEnabled && process.platform !== 'linux' ? TRANSPARENT_BG : OPAQUE_BG,
+        transparentEnabled && process.platform !== 'linux' ? TRANSPARENT_BG : opaqueBg(),
       ...(process.platform === 'darwin' ? { type: 'panel' as const } : {}),
       webPreferences: {
         preload: path.join(__dirname, '..', 'preload', 'tray-popup.js'),
@@ -257,6 +271,7 @@ export function createTrayPopup(actions: TrayPopupActions, initialTransparent = 
       if (blurHideTimer) clearTimeout(blurHideTimer);
       ipcMain.removeListener('trayPopup:resize', resizeListener);
       ipcMain.removeListener('trayPopup:hide', hideListener);
+      nativeTheme.removeListener('updated', themeListener);
       if (popup && !popup.isDestroyed()) popup.destroy();
       popup = null;
     },

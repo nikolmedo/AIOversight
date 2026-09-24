@@ -99,7 +99,7 @@ Runs a polling loop per connector:
 Applies notification policy before dispatching to the OS:
 - Per-session cooldown keyed on `(sessionId, kind)` — prevents duplicate alerts within `perSessionCooldownMs` (default 30 s)
 - Kind filter — `notifyOnWaiting` and `notifyOnFinished` toggles
-- Quiet hours — compares wall-clock hour against `[startHour, endHour)` range
+- Quiet hours — compares local minutes after midnight against `[startMinute, endMinute)`; wraps past midnight when start > end, equal values mean no window. `sanitizeQuietHours` (settings-store.ts) runs on load and on every `update()` patch: it clamps to 0..1439, turns the pre-0.3.6 `{ startHour, endHour }` shape into whole-hour minutes, and maps anything malformed to `null`. Older builds read the new shape as "no quiet hours".
 - Electron `Notification` — includes the app icon, dispatches click handler to reveal the source file in Finder/Explorer
 - `notifyUpdate()` — the update notification; honors only `showNotifications` (not pause or quiet hours); click opens the settings window
 
@@ -228,7 +228,8 @@ tsc: src/**/*.ts → dist/**/*.js + *.js.map
      tsconfig.json: target ES2022, module CommonJS, strict
      All three process types (main, preload, renderer) compile together
 
-copy-renderer.js: copies every non-.ts file in src/renderer/ (HTML, CSS) → dist/renderer/
+copy-renderer.js: copies every non-.ts file in src/renderer/ (HTML, CSS, including the
+                  shared tokens.css and meters.css) → dist/renderer/
                   copies top-level assets/ → dist/renderer/assets/
 
 npm test

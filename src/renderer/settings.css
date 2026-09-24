@@ -1,4 +1,5 @@
 @import url('tokens.css');
+@import url('meters.css');
 
 /* =========================================================
    AI Oversight — Settings window
@@ -186,6 +187,28 @@ svg { flex-shrink: 0; }
 .control-text { width: 220px; }
 .control-select { padding-right: 4px; min-width: 120px; }
 .control-sm { height: 24px; font-size: 12px; min-width: 0; }
+/* color-scheme themes the native clock icon and spin fields to match. */
+.control-time { width: 104px; font-variant-numeric: tabular-nums; color-scheme: dark; }
+@media (prefers-color-scheme: light) { .control-time { color-scheme: light; } }
+.control-search { width: 220px; }
+
+/* Key recorder (popup shortcut): a button styled as an input. */
+.shortcut-recorder {
+  min-width: 150px; text-align: left; cursor: pointer;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.shortcut-recorder.empty { color: var(--text-3); }
+.shortcut-recorder.recording { color: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* Segmented control (toggle buttons in a role="group"). */
+.segmented { display: inline-flex; padding: 2px; gap: 2px; background: var(--surface-2); border-radius: var(--radius-sm); }
+.segmented-btn {
+  height: 24px; padding: 0 10px;
+  border: 0; border-radius: 4px; background: transparent;
+  color: var(--text-2); font-size: 12px; font-weight: 500; cursor: pointer;
+}
+.segmented-btn:hover { color: var(--text); }
+.segmented-btn[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: 0 0 0 1px var(--border); }
 .control-textarea {
   height: auto; min-height: 72px; width: 100%;
   padding: 6px 8px; resize: vertical;
@@ -249,7 +272,7 @@ select.control option { background: var(--surface); color: var(--text); }
   color: var(--text-2);
 }
 
-/* ── Settings rows (Preferences) ────────────────────────── */
+/* ── Settings rows (General / Notifications) ──────────── */
 .row {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
   min-height: 44px; padding: 8px 14px;
@@ -274,7 +297,7 @@ label.row:has(.switch:disabled) { cursor: default; }
   word-break: break-all;
 }
 
-/* Display group (bucket visibility) */
+/* Drawer Meters section (bucket visibility / star / order) */
 .customize-group { margin-bottom: 10px; }
 .customize-head {
   padding: 8px 14px; font-size: 13px; font-weight: 600;
@@ -380,65 +403,16 @@ label.row:has(.switch:disabled) { cursor: default; }
 .spend-breakdown-item .num { color: var(--text); }
 .spend-legend-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dot-color, var(--accent)); }
 
-/* ── Meter rows (shared renderMeterRow markup) ──────────── */
-.meter-row { min-width: 0; }
-.meter-row.no-data .meter-row-title { color: var(--text-2); }
-.meter-row.no-data .meter-row-value { color: var(--text-3); }
-.meter-row-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
-.meter-row-title {
-  font-size: 12px; color: var(--text);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-.meter-row-side { display: flex; align-items: baseline; gap: 8px; flex-shrink: 0; }
-.meter-pct { font-size: 12px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
-.meter-pct.warn { color: var(--warn); }
-.meter-pct.critical { color: var(--danger); }
-.meter-bar { position: relative; height: 4px; border-radius: 999px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border); }
-.meter-bar-fill {
-  height: 100%; width: var(--fill, 0%); border-radius: 999px;
-  background: var(--ok);
-  transition: width var(--dur) var(--ease);
-}
-.meter-bar-fill.warn { background: var(--warn); }
-.meter-bar-fill.critical { background: var(--danger); }
-.meter-row-stats { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 5px; flex-wrap: wrap; }
-.meter-row-value { font-size: 11px; color: var(--text-2); font-variant-numeric: tabular-nums; }
-.meter-note { font-size: 11px; color: var(--text-2); margin-top: 3px; }
-.meter-forecast { font-size: 11px; color: var(--text-2); margin-top: 3px; }
-.meter-forecast.warn { color: var(--warn); }
-.meter-forecast.critical { color: var(--danger); }
-/* Keyboard target for the row menu (Shift+F10 / ContextMenu key). */
-.meter-row[tabindex]:focus-visible { outline-offset: 4px; }
-.reset-chip {
-  border: 0; background: transparent; padding: 0; min-height: 16px; position: relative;
-  font-size: 11px; color: var(--text-2); cursor: pointer;
-  font-variant-numeric: tabular-nums;
-}
-.reset-chip:hover { color: var(--text); text-decoration: underline; }
-/* Invisible 24px-tall hit area without growing the row. */
-.reset-chip::after { content: ""; position: absolute; inset: -4px 0; }
-
-.meter-extras { padding-top: 8px; border-top: 1px solid var(--border); }
-.meter-extras-heading {
-  font-size: 11px; font-weight: 600; color: var(--text-2);
-  text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px;
-}
+/* ── Meter rows (shared rules in meters.css) ────────────── */
+.meter-row-header { margin-bottom: 5px; }
+.meter-row-stats { margin-top: 5px; }
+.meter-extras { padding-top: 8px; }
 .meter-extras-body { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 0 24px; }
-.meter-row-compact summary {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  min-height: 26px; list-style: none; cursor: pointer;
-}
-.meter-row-compact summary::-webkit-details-marker { display: none; }
-.meter-row-compact summary .meter-pct { font-weight: 500; color: var(--text-2); }
-.meter-row-compact summary:hover .meter-row-title { color: var(--accent); }
+.meter-row-compact summary { min-height: 26px; }
 .meter-row-compact-body { padding: 2px 0 8px; }
-/* The summary already shows label + value; keep only a header reset chip. */
-.meter-row-compact-body .meter-row-header { justify-content: flex-end; margin-bottom: 4px; }
-.meter-row-compact-body .meter-row-header > .meter-row-title,
-.meter-row-compact-body .meter-row-side > .meter-pct { display: none; }
-.meter-row-compact-body .meter-row-header:not(:has(.reset-chip)) { display: none; }
 
 /* ── Integrations ───────────────────────────────────────── */
+.list-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; flex-wrap: wrap; }
 .integration-list { overflow: hidden; }
 .integration-row {
   display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
@@ -494,6 +468,12 @@ label.row:has(.switch:disabled) { cursor: default; }
 .detail-fields { display: flex; flex-direction: column; gap: 14px; margin-bottom: 14px; }
 .detail-actions { display: flex; gap: 8px; margin-top: 12px; }
 .quota-snapshot { margin-bottom: 16px; }
+.detail-help { font-size: 12px; color: var(--text-2); margin: -4px 0 10px; }
+.detail-section .customize-group { margin-bottom: 0; }
+.detail-section .customize-row-label { font-size: 13px; }
+/* Zero basis: a long label truncates instead of pushing the controls onto a
+   second line, so every row keeps its controls aligned in the narrow drawer. */
+.detail-section .customize-row-main { flex: 1 1 0; }
 .quota-snapshot .btn { margin-top: 8px; }
 
 .field { display: flex; flex-direction: column; gap: 5px; }

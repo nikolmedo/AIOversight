@@ -52,17 +52,17 @@ You start Claude Code, Cursor, or Codex on a long task, and then what? You alt-t
   <tr>
     <td width="50%" align="center">
       <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/preferences-dark.png">
-        <img alt="Preferences page with startup, notification and quiet-hours settings" src="docs/screenshots/preferences-light.png">
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/general-dark.png">
+        <img alt="General page with startup, update, quota and appearance settings" src="docs/screenshots/general-light.png">
       </picture>
-      <br><sub>Preferences</sub>
+      <br><sub>General</sub>
     </td>
     <td width="50%" align="center">
       <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/webhook-dark.png">
-        <img alt="Webhook page with a ready-to-copy curl example and hook payload" src="docs/screenshots/webhook-light.png">
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/notifications-dark.png">
+        <img alt="Notifications page with per-kind toggles, cooldown and quiet hours" src="docs/screenshots/notifications-light.png">
       </picture>
-      <br><sub>Advanced → Webhook</sub>
+      <br><sub>Notifications</sub>
     </td>
   </tr>
   <tr>
@@ -79,6 +79,15 @@ You start Claude Code, Cursor, or Codex on a long task, and then what? You alt-t
         <img alt="Tray popup with estimated spend and per-integration quota meters" src="docs/screenshots/popup-light.png" width="40%">
       </picture>
       <br><sub>Tray popup</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/webhook-dark.png">
+        <img alt="Webhook page with a ready-to-copy curl example and hook payload" src="docs/screenshots/webhook-light.png">
+      </picture>
+      <br><sub>Advanced → Webhook</sub>
     </td>
   </tr>
 </table>
@@ -220,20 +229,21 @@ curl -sX POST http://127.0.0.1:53127/notify \
 
 ## Settings at a glance
 
-The settings window has a sidebar with four main pages and an **Advanced** group:
+The settings window has a sidebar with five main pages and an **Advanced** group:
 
 | Page | What you'll find |
 | --- | --- |
 | **Overview** | Quota meters for every integration with quota tracking on (pace coloring and reset countdowns), estimated spend for today / yesterday / 30 days, and the latest agent activity. |
-| **Integrations** | Every connector grouped by vendor, with its status and independent **Notifications** / **Quota** switches. Click one to open its detail drawer: config fields, live quota meters, auto-refresh override, and sign-in where supported. Secret fields are masked and encrypted at rest. |
+| **Integrations** | Every connector grouped by vendor, with its status and independent **Notifications** / **Quota** switches; filter to the enabled ones or search by name. Connectors that need attention (an error or a sign-in) come first in their group. Click one to open its detail drawer: config fields, live quota meters, auto-refresh override, sign-in where supported, and **Meters** (show, star, and reorder that connector's usage meters). Secret fields are masked and encrypted at rest. |
 | **Activity** | The last 50 notifications, each with a `waiting` / `finished` pill, the agent, and its source path. |
-| **Preferences** | Updates (current version, check now, automatic checks), startup, notifications (master switch, per-kind toggles, cooldown, test), quiet hours, quota polling and tray summary, appearance (theme, density, time format, estimated spend), tray popup (transparency, global shortcut), and display (show, star, and reorder usage meters). |
+| **General** | Startup, updates (current version, check now, automatic checks), quota polling and tray summary, appearance (theme, density, time format, estimated spend), and tray popup (transparency, and a recorder for the global shortcut). |
+| **Notifications** | Master switch, per-kind toggles, per-session cooldown, test notification, and quiet hours (start and end time, to the minute). |
 | **Advanced → Webhook** | Copy-paste `curl` example with your live host, port, and token, plus a sample hook payload. |
 | **Advanced → Logs** | Diagnostic output from each connector, the runtime, and the notifier. |
 
 ## Privacy & security
 
-- **Everything stays local.** No cloud service, no telemetry, no account. The only request the app makes for itself is the update check against this repository's GitHub Releases, which you can turn off in **Preferences → Updates**.
+- **Everything stays local.** No cloud service, no telemetry, no account. The only request the app makes for itself is the update check against this repository's GitHub Releases, which you can turn off in **General → Updates**.
 - **Credentials are encrypted.** API keys, cookies, and PATs are encrypted with Electron's `safeStorage` (Keychain on macOS, DPAPI on Windows) and stored in `secrets.json`, separate from `settings.json`, which never contains credentials.
 - **Secrets never reach the UI process.** The renderer can write a secret but can never read one back.
 

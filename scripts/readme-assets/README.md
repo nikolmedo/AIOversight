@@ -4,7 +4,7 @@ Tools that produce the images used by the top-level `README.md` and the GitHub s
 
 | Output | Produced by |
 |---|---|
-| `docs/screenshots/{overview,activity,preferences,webhook,integrations-drawer,popup}-{dark,light}.png` | `screenshot-block.ts.txt` (temporary patch to `src/main/index.ts`) |
+| `docs/screenshots/{overview,activity,general,notifications,webhook,integrations-drawer,popup}-{dark,light}.png` | `screenshot-block.ts.txt` (temporary patch to `src/main/index.ts`) |
 | `docs/cover-dark.png`, `docs/cover-light.png` (2560x1280) | `render-cover.js` + `cover.html` |
 | `docs/social-preview.png` (1280x640, dark) | `render-cover.js` + `cover.html` |
 
@@ -33,7 +33,7 @@ The app has no demo mode, so the screenshots come from a temporary block that re
    done
    ls "$OUT"
    ```
-   - `AIO_SCREENSHOT_ONLY=overview,popup` (comma-separated) limits which images are taken. Names: `popup`, `overview`, `activity`, `preferences`, `webhook`, `integrations-drawer`.
+   - `AIO_SCREENSHOT_ONLY=overview,popup` (comma-separated) limits which images are taken. Names: `popup`, `overview`, `activity`, `general`, `notifications`, `webhook`, `integrations-drawer`, plus two review-only captures that the README does not use: `drawer-meters` (the drawer scrolled to its Meters section) and `shortcut-recorder` (the shortcut recorder while recording). Do not copy those two into `docs/screenshots/`.
    - The app quits by itself when done. The popup is opened programmatically, so no tray click is needed.
 5. Review the images, then copy them to `docs/screenshots/`.
 6. Restore and rebuild, and confirm `src/main/index.ts` has no diff:
