@@ -155,23 +155,54 @@ function paceStateLabel(state: 'none' | 'ok' | 'warn' | 'critical'): string {
 }
 
 /**
- * Buckets with the snapshot's `billingCycleEnd` filled in as `resetsAt`
- * where a bucket has none of its own, so monthly plans show when they reset.
- * Only metered buckets get it (measured `used` and a positive `limit`):
- * a remaining-only balance (prepaid credits) and a limit-less running total
- * (Cursor's rolling "last 30 days" usage) don't reset with the cycle.
- * `windowMs` is left alone, so pace colouring for these buckets stays on
- * the static bands. Accepts ISO strings (Copilot's date-only form parses as
- * UTC midnight) and epoch-ms digit strings; returns the input array
- * unchanged when the date is missing or unparsable.
+ * Parses a snapshot billing-cycle date: ISO strings (Copilot's date-only
+ * form parses as UTC midnight) and epoch-ms digit strings. `null` when
+ * missing or unparsable.
  */
-function withBillingCycleReset(buckets: QuotaBucket[], billingCycleEnd: string | undefined): QuotaBucket[] {
-  if (!billingCycleEnd) return buckets;
-  const end = /^\d+$/.test(billingCycleEnd) ? Number(billingCycleEnd) : Date.parse(billingCycleEnd);
-  if (!Number.isFinite(end)) return buckets;
-  return buckets.map(b =>
-    b.resetsAt == null && b.used != null && b.limit != null && b.limit > 0 ? { ...b, resetsAt: end } : b,
-  );
+function parseBillingCycleDate(value: string | undefined): number | null {
+  if (!value) return null;
+  const ms = /^\d+$/.test(value) ? Number(value) : Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Length of the billing cycle in ms (`end - start`), or `null` unless both
+ * dates parse and `end > start`.
+ */
+function billingCycleWindowMs(billingCycleStart: string | undefined, billingCycleEnd: string | undefined): number | null {
+  const start = parseBillingCycleDate(billingCycleStart);
+  const end = parseBillingCycleDate(billingCycleEnd);
+  if (start == null || end == null || end <= start) return null;
+  return end - start;
+}
+
+/**
+ * Buckets with the snapshot's billing cycle filled in where a bucket has no
+ * reset of its own, so monthly plans show when they reset and get pace
+ * colouring. Only metered buckets get it (measured `used` and a positive
+ * `limit`): a remaining-only balance (prepaid credits) and a limit-less
+ * running total (Cursor's rolling "last 30 days" usage) don't reset with the
+ * cycle. `billingCycleEnd` becomes `resetsAt`; when `billingCycleStart` also
+ * parses and precedes it, `end - start` becomes `windowMs`, which turns on
+ * the pace projection and forecast. A bucket's own `resetsAt` is never paired
+ * with a cycle-derived `windowMs`, and an existing `windowMs` is kept.
+ * Returns the input array unchanged when the end date is missing or
+ * unparsable.
+ */
+function withBillingCycleReset(
+  buckets: QuotaBucket[],
+  billingCycleEnd: string | undefined,
+  billingCycleStart?: string,
+): QuotaBucket[] {
+  const end = parseBillingCycleDate(billingCycleEnd);
+  if (end == null) return buckets;
+  const windowMs = billingCycleWindowMs(billingCycleStart, billingCycleEnd);
+  return buckets.map(b => {
+    if (b.resetsAt != null || b.used == null || b.limit == null || b.limit <= 0) return b;
+    const next: QuotaBucket = { ...b, resetsAt: end };
+    if (windowMs != null && next.windowMs == null) next.windowMs = windowMs;
+    return next;
+  });
 }
 
 /**

@@ -235,12 +235,24 @@
               <span class="row-text">
                 <span class="row-label" id="popupShortcutLabel">Toggle popup shortcut</span>
                 <span class="row-desc" id="popupShortcutStatus" aria-live="polite"></span>
+                <span><button type="button" id="popupShortcutEditText" class="link-btn shortcut-edit-text" aria-expanded="false" aria-controls="popupShortcutTextRow">Edit as text</button></span>
               </span>
               <span class="control-cluster">
                 <button type="button" id="popupShortcut" class="control shortcut-recorder" aria-describedby="popupShortcutStatus"></button>
                 <button type="button" id="popupShortcutClear" class="btn btn-ghost">Clear</button>
               </span>
             </div>
+            <form class="row" id="popupShortcutTextRow" hidden>
+              <label class="row-text" for="popupShortcutText">
+                <span class="row-label">Accelerator</span>
+                <span class="row-desc">Electron format, e.g. CommandOrControl+Shift+U</span>
+              </label>
+              <span class="control-cluster">
+                <input type="text" id="popupShortcutText" class="control control-text" spellcheck="false" autocomplete="off" aria-describedby="popupShortcutStatus" />
+                <button type="submit" class="btn btn-secondary">Save</button>
+                <button type="button" id="popupShortcutTextCancel" class="btn btn-ghost">Cancel</button>
+              </span>
+            </form>
           </div>
         </section>
 

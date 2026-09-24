@@ -150,6 +150,52 @@ describe('withBillingCycleReset', () => {
     assert.equal(withBillingCycleReset([bucket({})], '1790000000000')[0].resetsAt, 1_790_000_000_000);
   });
 
+  it('derives windowMs from the cycle start and end for metered buckets', () => {
+    const [metered, own, balance, total] = withBillingCycleReset(
+      [bucket({}), bucket({ resetsAt: 42 }), bucket({ used: null }), bucket({ limit: 0 })],
+      '2026-10-01T00:00:00Z',
+      '2026-09-01T00:00:00Z',
+    );
+    assert.equal(metered.resetsAt, Date.parse('2026-10-01T00:00:00Z'));
+    assert.equal(metered.windowMs, 30 * 24 * H);
+    assert.equal(own.windowMs, undefined);
+    assert.equal(balance.windowMs, undefined);
+    assert.equal(total.windowMs, undefined);
+  });
+
+  it('keeps an existing windowMs and accepts epoch-ms cycle dates', () => {
+    const [kept, epoch] = withBillingCycleReset(
+      [bucket({ windowMs: 5 * H }), bucket({})],
+      String(1_790_000_000_000),
+      String(1_790_000_000_000 - 31 * 24 * H),
+    );
+    assert.equal(kept.windowMs, 5 * H);
+    assert.equal(epoch.windowMs, 31 * 24 * H);
+  });
+
+  it('sets no windowMs when the start is missing, unparsable or not before the end', () => {
+    const end = '2026-10-01T00:00:00Z';
+    assert.equal(withBillingCycleReset([bucket({})], end)[0].windowMs, undefined);
+    assert.equal(withBillingCycleReset([bucket({})], end, 'soon')[0].windowMs, undefined);
+    assert.equal(withBillingCycleReset([bucket({})], end, end)[0].windowMs, undefined);
+    assert.equal(withBillingCycleReset([bucket({})], end, '2026-10-02T00:00:00Z')[0].windowMs, undefined);
+  });
+
+  it('turns on the pace projection for a monthly bucket', () => {
+    const { paceStateFor, paceForecast } = loadRenderer('quota-math.js');
+    const start = Date.parse('2026-09-01T00:00:00Z');
+    const now = start + 10 * 24 * H; // a third of a 30-day cycle
+    const [b] = withBillingCycleReset(
+      [bucket({ used: 6, limit: 10 })],
+      '2026-10-01T00:00:00Z',
+      '2026-09-01T00:00:00Z',
+    );
+    // 60% used a third of the way in projects to 180%: critical, though the
+    // static bands alone would call 60% ok.
+    assert.equal(paceStateFor(b, now), 'critical');
+    assert.match(paceForecast(b, now), /runs out in ~7d, before reset/);
+  });
+
   it('returns the input unchanged for a missing or unparsable date', () => {
     const list = [bucket({})];
     assert.equal(withBillingCycleReset(list, undefined), list);

@@ -17,6 +17,8 @@ const api = {
     ipcRenderer.invoke('connectors:setBucketPref', id, bucketId, patch),
   setPopupShortcut: (accelerator: string) =>
     ipcRenderer.invoke('settings:setPopupShortcut', accelerator),
+  suspendPopupShortcut: (suspend: boolean) =>
+    ipcRenderer.invoke('settings:suspendPopupShortcut', suspend),
   update: (patch: Record<string, unknown>) => ipcRenderer.invoke('settings:update', patch),
   clearEvents: () => ipcRenderer.invoke('settings:clearEvents'),
   togglePause: () => ipcRenderer.invoke('settings:togglePause'),

@@ -90,6 +90,73 @@ describe('acceleratorFromKeyEvent', () => {
   });
 });
 
+describe('acceleratorFromKeyEvent with a keyboard layout', () => {
+  // Unshifted characters per KeyboardEvent.code, as navigator.keyboard.getLayoutMap() reports them.
+  const AZERTY = new Map([
+    ['KeyQ', 'a'], ['KeyA', 'q'], ['KeyW', 'z'], ['KeyZ', 'w'], ['Semicolon', 'm'], ['KeyM', ','],
+    ['Comma', ';'], ['Period', ':'], ['Slash', '!'], ['Digit1', '&'], ['Digit2', 'é'], ['Minus', ')'], ['Equal', '='],
+  ]);
+  const SPANISH = new Map([['Semicolon', 'ñ'], ['Slash', '-'], ['Quote', '´'], ['KeyU', 'u']]);
+  const RUSSIAN = new Map([['KeyQ', 'й'], ['KeyU', 'г']]);
+  const accel = (code: string, platform: string, layout: unknown, mods = { ctrl: true, alt: true }, keyValue = '') =>
+    acceleratorFromKeyEvent(key(code, mods, keyValue), platform, layout);
+
+  it('records the letter the layout types on Windows and Linux', () => {
+    assert.equal(accel('KeyQ', 'win32', AZERTY).accelerator, 'CommandOrControl+Alt+A');
+    assert.equal(accel('Semicolon', 'linux', AZERTY).accelerator, 'CommandOrControl+Alt+M');
+    assert.equal(accel('KeyU', 'win32', SPANISH).accelerator, 'CommandOrControl+Alt+U');
+  });
+
+  it('keeps the physical key on macOS, whose global shortcuts ignore the layout', () => {
+    assert.equal(accel('KeyQ', 'darwin', AZERTY, { meta: true, alt: true } as never).accelerator, 'CommandOrControl+Alt+Q');
+  });
+
+  it('keeps digits positional, so AZERTY "&" does not become Shift+7', () => {
+    assert.equal(accel('Digit1', 'win32', AZERTY).accelerator, 'CommandOrControl+Alt+1');
+    assert.equal(accel('Digit2', 'linux', AZERTY).accelerator, 'CommandOrControl+Alt+2');
+  });
+
+  it('records punctuation Windows names by character on every layout', () => {
+    assert.equal(accel('KeyM', 'win32', AZERTY).accelerator, 'CommandOrControl+Alt+,');
+    assert.equal(accel('Slash', 'win32', SPANISH).accelerator, 'CommandOrControl+Alt+-');
+    assert.equal(accel('Equal', 'win32', AZERTY).accelerator, 'CommandOrControl+Alt+=');
+  });
+
+  it('takes other unshifted punctuation on Linux only', () => {
+    assert.equal(accel('Comma', 'linux', AZERTY).accelerator, 'CommandOrControl+Alt+;');
+    assert.equal(accel('Comma', 'win32', AZERTY).kind, 'invalid');
+  });
+
+  it('rejects characters Electron cannot parse or would read as Shift+key', () => {
+    const spanish = accel('Semicolon', 'win32', SPANISH);
+    assert.equal(spanish.kind, 'invalid');
+    assert.match(spanish.reason, /“ñ”/);
+    assert.equal(accel('Slash', 'linux', AZERTY).kind, 'invalid');
+    assert.equal(accel('Period', 'linux', AZERTY).kind, 'invalid');
+    assert.equal(accel('Minus', 'win32', AZERTY).kind, 'invalid');
+  });
+
+  it('falls back to the US letter on a non-Latin layout', () => {
+    assert.equal(accel('KeyQ', 'win32', RUSSIAN).accelerator, 'CommandOrControl+Alt+Q');
+    assert.equal(accel('KeyU', 'linux', RUSSIAN).accelerator, 'CommandOrControl+Alt+U');
+  });
+
+  it('uses the unshifted event key without a layout map, and the code after that', () => {
+    assert.equal(accel('KeyQ', 'win32', null, { ctrl: true } as never, 'a').accelerator, 'CommandOrControl+A');
+    assert.equal(accel('KeyQ', 'win32', null, { ctrl: true, shift: true } as never, 'A').accelerator, 'CommandOrControl+Shift+A');
+    assert.equal(accel('KeyM', 'win32', null, { ctrl: true } as never, ',').accelerator, 'CommandOrControl+,');
+    // Shifted "?" says nothing about the unshifted key: fall back to the code.
+    assert.equal(accel('KeyM', 'win32', null, { ctrl: true, shift: true } as never, '?').accelerator, 'CommandOrControl+Shift+M');
+    assert.equal(accel('Slash', 'win32', undefined, { ctrl: true, alt: true }, '/').accelerator, 'CommandOrControl+Alt+/');
+  });
+
+  it('keeps named keys code-based whatever the layout says', () => {
+    assert.equal(accel('Space', 'win32', AZERTY, { ctrl: true } as never, ' ').accelerator, 'CommandOrControl+Space');
+    assert.equal(accel('Numpad1', 'win32', AZERTY).accelerator, 'CommandOrControl+Alt+num1');
+    assert.equal(accel('F5', 'linux', AZERTY, {} as never).accelerator, 'F5');
+  });
+});
+
 describe('formatAccelerator', () => {
   it('uses Ctrl and plus signs on Windows/Linux', () => {
     assert.equal(formatAccelerator('CommandOrControl+Shift+U', 'win32'), 'Ctrl+Shift+U');

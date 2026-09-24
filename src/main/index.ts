@@ -21,6 +21,7 @@ import { QuotaService } from './connectors/quota-service';
 import { SecretStore } from './connectors/secret-store';
 import { QuotaSnapshot, Connector, ConnectorEnabled, BucketPref } from './connectors/types';
 import { UpdateService, UpdateState, UpdaterLike } from './updater';
+import { PopupShortcut, ShortcutResult } from './popup-shortcut';
 
 let tray: Tray | null = null;
 let trayHandle: TrayHandle | null = null;
@@ -33,11 +34,12 @@ let notifier: Notifier | null = null;
 let settings: SettingsStore | null = null;
 let updates: UpdateService | null = null;
 let paused = false;
-/** Accelerator currently registered via `globalShortcut`, or `null` when none
- * is. Tracked so `applyPopupShortcut` can unregister the old one before
- * registering a new one — `globalShortcut.unregisterAll()` would also nuke
- * any accelerator another part of the app might register in the future. */
-let registeredPopupShortcut: string | null = null;
+/** Global accelerator that toggles the tray popup. Unregisters only its own
+ * accelerator — `globalShortcut.unregisterAll()` would also nuke any
+ * accelerator another part of the app might register in the future. */
+const popupShortcut = new PopupShortcut(globalShortcut, () => {
+  if (tray && trayPopup) trayPopup.toggle(tray);
+});
 /** Budget for the updater's GitHub API fallback request. */
 const UPDATE_FETCH_BUDGET_MS = 30_000;
 
@@ -76,33 +78,32 @@ function buildConnectorDefaults(connectors: Connector[]): ConnectorDefaults {
 }
 
 /**
- * Registers (or clears) the global accelerator that toggles the tray popup.
- * Never throws — `globalShortcut.register` can both return `false` (already
- * taken by another application) and, per its docs, throw on a malformed
- * accelerator string; both are surfaced as `{ ok: false, reason }` so the
- * Settings UI can show a concrete failure instead of silently no-op'ing.
+ * Registers (or clears) the popup shortcut; see `PopupShortcut.apply`.
+ * Never throws.
  */
-function applyPopupShortcut(accelerator: string | undefined): { ok: boolean; reason?: string } {
-  if (registeredPopupShortcut) {
-    try {
-      globalShortcut.unregister(registeredPopupShortcut);
-    } catch {
-      /* best-effort */
-    }
-    registeredPopupShortcut = null;
-  }
-  const trimmed = (accelerator ?? '').trim();
-  if (!trimmed) return { ok: true };
-  try {
-    const ok = globalShortcut.register(trimmed, () => {
-      if (tray && trayPopup) trayPopup.toggle(tray);
+function applyPopupShortcut(accelerator: string | undefined): ShortcutResult {
+  return popupShortcut.apply(accelerator);
+}
+
+/**
+ * Ends a recorder suspension (`settings:suspendPopupShortcut`). Called by the
+ * renderer when recording ends and by main when the settings window blurs,
+ * reloads, crashes or closes, so a lost renderer never leaves the shortcut
+ * off. Same policy as startup when the accelerator can't be taken back
+ * (another app grabbed it meanwhile): log and clear the saved value.
+ */
+function resumePopupShortcut(): ShortcutResult {
+  if (!popupShortcut.isSuspended()) return { ok: true };
+  const saved = settings?.get().popupShortcut ?? '';
+  const result = popupShortcut.resume();
+  if (!result.ok && saved) {
+    runtime?.log('warn', '[main] tray-popup shortcut could not be restored after recording — clearing it', {
+      shortcut: saved,
+      reason: result.reason,
     });
-    if (!ok) return { ok: false, reason: 'That shortcut is already in use by another application.' };
-    registeredPopupShortcut = trimmed;
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, reason: String(err) };
+    settings?.update({ popupShortcut: '' });
   }
+  return result;
 }
 
 app.whenReady().then(async () => {
@@ -253,9 +254,17 @@ function openSettings(): void {
     },
   });
   settingsWindow.once('ready-to-show', () => settingsWindow!.show());
+  // The shortcut recorder suspends the popup shortcut while it listens;
+  // restore it whenever the page can no longer end that itself.
+  const restoreShortcut = (): void => void resumePopupShortcut();
+  settingsWindow.on('blur', restoreShortcut);
+  settingsWindow.webContents.on('did-start-loading', restoreShortcut);
+  settingsWindow.webContents.on('render-process-gone', restoreShortcut);
+  settingsWindow.webContents.on('destroyed', restoreShortcut);
   settingsWindow.loadFile(path.join(__dirname, '..', 'renderer', 'settings.html'));
   settingsWindow.on('closed', () => {
     settingsWindow = null;
+    resumePopupShortcut();
   });
 }
 
@@ -393,6 +402,19 @@ function registerIpc(): void {
       }
     }
     return result;
+  });
+
+  // The recorder can't capture the current accelerator while the OS delivers
+  // it to the global handler, so it releases it while recording. Only the
+  // settings window may do this; main restores it if that window goes away.
+  ipcMain.handle('settings:suspendPopupShortcut', (e, suspend: boolean): ShortcutResult => {
+    if (!settingsWindow || settingsWindow.isDestroyed() || e.sender !== settingsWindow.webContents) {
+      return { ok: false, reason: 'Only the settings window can suspend the shortcut.' };
+    }
+    if (suspend !== true) return resumePopupShortcut();
+    if (!settingsWindow.isFocused()) return { ok: false, reason: 'The settings window is not focused.' };
+    popupShortcut.suspend();
+    return { ok: true };
   });
 
   ipcMain.handle('settings:clearEvents', () => {

@@ -20,7 +20,8 @@ async function main() {
 
   setupNav();
   setupDrawer();
-  renderConnectors();
+  // bindIntegrationFilter (below) restores the stored filter and renders the
+  // integrations list once.
   renderOverview();
   renderTotalSpendCardPanel();
   renderEvents(initial.settings.recentEvents);
@@ -244,7 +245,7 @@ function renderOverviewItem(def: ConnectorMetadata): string {
     const bucketPrefs = initial.settings.connectors.bucketPrefs?.[def.id];
     body =
       (snap.buckets.length > 0 &&
-        renderMeterGroup(withBillingCycleReset(snap.buckets, snap.billingCycleEnd), bucketPrefs, {
+        renderMeterGroup(withBillingCycleReset(snap.buckets, snap.billingCycleEnd, snap.billingCycleStart), bucketPrefs, {
           connectorId: def.id,
         })) ||
       '<p class="row-note">No usage buckets returned.</p>';
@@ -1138,7 +1139,7 @@ function renderQuotaSnapshot(q: QuotaSnapshot | undefined, def?: ConnectorMetada
   const bucketPrefs = def ? initial.settings.connectors.bucketPrefs?.[def.id] : undefined;
   const buckets =
     q.buckets.length > 0
-      ? renderMeterGroup(withBillingCycleReset(q.buckets, q.billingCycleEnd), bucketPrefs, { connectorId: def?.id }) ||
+      ? renderMeterGroup(withBillingCycleReset(q.buckets, q.billingCycleEnd, q.billingCycleStart), bucketPrefs, { connectorId: def?.id }) ||
         '<p class="row-note">No usage buckets returned.</p>'
       : '<p class="row-note">No usage buckets returned.</p>';
   const messages =
@@ -1318,20 +1319,53 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
 const SHORTCUT_HINT = 'Click, then press the keys. Esc cancels, Backspace clears.';
 
 /**
+ * Active keyboard layout (`navigator.keyboard.getLayoutMap()`), so the
+ * recorder names character keys by what they type (AZERTY's `KeyQ` is "A").
+ * `null` until loaded, or where the Keyboard Map API is missing or refused;
+ * `acceleratorFromKeyEvent` then falls back to `e.key` and `code`.
+ */
+let keyboardLayout: AcceleratorLayoutMap | null = null;
+
+/** Loads (or reloads, after a layout switch) `keyboardLayout`. Never rejects. */
+async function refreshKeyboardLayout(): Promise<void> {
+  try {
+    const getLayoutMap = navigator.keyboard?.getLayoutMap;
+    if (typeof getLayoutMap !== 'function') return;
+    keyboardLayout = await getLayoutMap.call(navigator.keyboard);
+  } catch {
+    /* API refused (e.g. not a secure context): keep the fallback */
+  }
+}
+
+/**
  * Key recorder for the popup shortcut. Focus starts recording; the next
  * complete combination is built by `acceleratorFromKeyEvent`
  * (accelerator.ts) and saved through its own IPC channel
  * (settings:setPopupShortcut) rather than the debounced `update()`, so a
- * taken accelerator is reported on this field. The OS delivers the
- * currently registered shortcut to its global handler, not to this page,
- * so pressing the active combination toggles the popup instead.
+ * taken accelerator is reported on this field. While recording, the global
+ * shortcut is suspended (settings:suspendPopupShortcut) so the current
+ * combination reaches this page and can be recorded again; saving,
+ * cancelling and blur restore it, and main restores it if this window
+ * blurs, reloads, crashes or closes. "Edit as text" takes a raw accelerator
+ * string for keys the recorder can't capture.
  */
 function setupShortcutRecorder(initialAccelerator: string): void {
   const recorder = $('#popupShortcut') as HTMLButtonElement;
   const clearBtn = $('#popupShortcutClear') as HTMLButtonElement;
   const status = $('#popupShortcutStatus');
+  const editToggle = $('#popupShortcutEditText') as HTMLButtonElement;
+  const textRow = $('#popupShortcutTextRow') as HTMLFormElement;
+  const textInput = $('#popupShortcutText') as HTMLInputElement;
+  const textCancel = $('#popupShortcutTextCancel') as HTMLButtonElement;
   let saved = initialAccelerator;
   let recording = false;
+  /** Serializes suspend/resume/save so a resume can't overtake a save. */
+  let queue: Promise<unknown> = Promise.resolve();
+  const enqueue = <T>(task: () => Promise<T>): Promise<T> => {
+    const next = queue.then(task, task);
+    queue = next.catch(() => undefined);
+    return next;
+  };
 
   const show = (): void => {
     const human = formatAccelerator(saved, initial.platform);
@@ -1345,41 +1379,54 @@ function setupShortcutRecorder(initialAccelerator: string): void {
     clearBtn.disabled = !saved;
   };
 
-  const stop = (): void => {
-    recording = false;
-    show();
-  };
-
-  const save = async (accelerator: string): Promise<void> => {
-    const res = await window.aw.setPopupShortcut(accelerator);
-    if (res.ok) {
-      saved = accelerator;
-      status.textContent = accelerator ? 'Shortcut set.' : 'Shortcut cleared.';
-    } else {
-      status.textContent = `Could not set shortcut: ${res.reason ?? 'unknown error'}`;
-    }
-    show();
-  };
-
-  recorder.addEventListener('focus', () => {
-    recording = true;
-    status.textContent = SHORTCUT_HINT;
-    show();
-  });
-  recorder.addEventListener('blur', () => {
-    if (status.textContent === SHORTCUT_HINT) status.textContent = '';
-    stop();
-  });
-  // Clicking an already focused recorder restarts recording.
-  recorder.addEventListener('click', () => {
+  const start = (): void => {
     if (recording) return;
     recording = true;
     status.textContent = SHORTCUT_HINT;
     show();
+    void refreshKeyboardLayout();
+    void enqueue(() => window.aw.suspendPopupShortcut(true));
+  };
+
+  /** Ends recording; `resume` is false when a save follows, which restores on its own. */
+  const stop = (resume: boolean): void => {
+    if (!recording) return;
+    recording = false;
+    show();
+    if (!resume) return;
+    void enqueue(async () => {
+      const res = await window.aw.suspendPopupShortcut(false);
+      if (!res.ok && saved) {
+        saved = '';
+        status.textContent = `Shortcut turned off: ${res.reason ?? 'another application took it'}`;
+        show();
+      }
+    });
+  };
+
+  const save = (accelerator: string): Promise<boolean> =>
+    enqueue(async () => {
+      const res = await window.aw.setPopupShortcut(accelerator);
+      if (res.ok) {
+        saved = accelerator.trim();
+        status.textContent = saved ? 'Shortcut set.' : 'Shortcut cleared.';
+      } else {
+        status.textContent = `Could not set shortcut: ${res.reason ?? 'unknown error'}`;
+      }
+      show();
+      return res.ok;
+    });
+
+  recorder.addEventListener('focus', start);
+  // Clicking an already focused recorder restarts recording.
+  recorder.addEventListener('click', start);
+  recorder.addEventListener('blur', () => {
+    if (status.textContent === SHORTCUT_HINT) status.textContent = '';
+    stop(true);
   });
   recorder.addEventListener('keydown', e => {
     if (!recording) return;
-    const step = acceleratorFromKeyEvent(e, initial.platform);
+    const step = acceleratorFromKeyEvent(e, initial.platform, keyboardLayout);
     if (step.kind === 'pass') return;
     e.preventDefault();
     e.stopPropagation();
@@ -1388,12 +1435,47 @@ function setupShortcutRecorder(initialAccelerator: string): void {
       status.textContent = step.reason;
       return;
     }
-    stop();
-    if (step.kind === 'cancel') status.textContent = '';
-    else if (step.kind === 'clear') void save('');
-    else void save(step.accelerator);
+    if (step.kind === 'cancel') {
+      status.textContent = '';
+      stop(true);
+      return;
+    }
+    stop(false);
+    void save(step.kind === 'clear' ? '' : step.accelerator);
   });
   clearBtn.addEventListener('click', () => void save(''));
+
+  const setTextEditor = (open: boolean): void => {
+    textRow.hidden = !open;
+    editToggle.setAttribute('aria-expanded', String(open));
+    editToggle.textContent = open ? 'Hide text editor' : 'Edit as text';
+    if (open) {
+      textInput.value = saved;
+      textInput.focus();
+      textInput.select();
+    }
+  };
+  editToggle.addEventListener('click', () => setTextEditor(textRow.hidden));
+  textCancel.addEventListener('click', () => {
+    setTextEditor(false);
+    editToggle.focus();
+  });
+  textRow.addEventListener('submit', e => {
+    e.preventDefault();
+    void save(textInput.value).then(ok => {
+      if (ok) setTextEditor(false);
+      else textInput.focus();
+    });
+  });
+  textInput.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    setTextEditor(false);
+    editToggle.focus();
+  });
+
+  window.addEventListener('focus', () => void refreshKeyboardLayout());
+  void refreshKeyboardLayout();
   show();
 }
 

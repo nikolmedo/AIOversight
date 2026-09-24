@@ -47,6 +47,7 @@ Reads and writes `<userData>/settings.json`. Handles:
 - Legacy migration — old `detectors.*` shape from pre-0.2 builds is transparently upgraded
 - Recent events — capped at 50 entries, prepended on new events
 - Synchronous writes — the whole state is `JSON.stringify`-ed and written with `fs.writeFileSync` on every mutation (no temp-file + rename, so not atomic)
+- Downgrade-safe quiet hours — `quietHours` is written as `{ startMinute, endMinute, startHour, endHour }` (`persistedQuietHours`); the hour keys are `Math.floor(minute / 60)` for builds before 0.3.6
 
 AppSettings shape:
 ```ts
@@ -59,6 +60,13 @@ AppSettings shape:
   recentEvents
 }
 ```
+
+### PopupShortcut (`popup-shortcut.ts`)
+
+Owns the global accelerator that toggles the tray popup; every register and unregister (startup, `settings:setPopupShortcut` and its rollback, suspend/resume) goes through it, except the `globalShortcut.unregisterAll()` at quit and before installing an update, with `globalShortcut` injected so it is unit-tested without Electron.
+- `apply(accelerator)` — registers or clears; never throws. A taken accelerator (`register` returns `false`) and a malformed one (`register` throws) both return `{ ok: false, reason }`. Always ends a suspension.
+- `suspend()` / `resume()` — the settings window's shortcut recorder releases the accelerator while it listens (`settings:suspendPopupShortcut`), because the OS delivers a registered accelerator to its global handler, not to the page. `resume()` is a no-op unless suspended, so a save that lands before the recorder's resume doesn't bring the old accelerator back.
+- Failure safety — `index.ts` also resumes when the settings window blurs, starts loading (reload), its renderer is gone, its `webContents` is destroyed, or the window closes. Only the settings window's `webContents` may suspend, and only while that window is focused. If the accelerator can't be taken back (another app grabbed it meanwhile), main logs it and clears `popupShortcut`, like a failed registration at startup.
 
 ### SecretStore (`connectors/secret-store.ts`)
 
@@ -99,7 +107,7 @@ Runs a polling loop per connector:
 Applies notification policy before dispatching to the OS:
 - Per-session cooldown keyed on `(sessionId, kind)` — prevents duplicate alerts within `perSessionCooldownMs` (default 30 s)
 - Kind filter — `notifyOnWaiting` and `notifyOnFinished` toggles
-- Quiet hours — compares local minutes after midnight against `[startMinute, endMinute)`; wraps past midnight when start > end, equal values mean no window. `sanitizeQuietHours` (settings-store.ts) runs on load and on every `update()` patch: it clamps to 0..1439, turns the pre-0.3.6 `{ startHour, endHour }` shape into whole-hour minutes, and maps anything malformed to `null`. Older builds read the new shape as "no quiet hours".
+- Quiet hours — compares local minutes after midnight against `[startMinute, endMinute)`; wraps past midnight when start > end, equal values mean no window. `sanitizeQuietHours` (settings-store.ts) runs on load and on every `update()` patch: it clamps to 0..1439, turns the pre-0.3.6 `{ startHour, endHour }` shape into whole-hour minutes, and maps anything malformed to `null`. The file keeps both shapes, so a pre-0.3.6 build (which passes `quietHours` through and reads only the hours) keeps an hour-rounded window. On load the minutes win when they agree with the hours (`Math.floor(minute / 60)`); when they don't, an older build rewrote the hours after the minutes were saved, so the hours win. Malformed minutes fall back to valid hours.
 - Electron `Notification` — includes the app icon, dispatches click handler to reveal the source file in Finder/Explorer
 - `notifyUpdate()` — the update notification; honors only `showNotifications` (not pause or quiet hours); click opens the settings window
 

@@ -57,6 +57,13 @@ interface AgentWatcherAPI {
   ): Promise<AppSettings>;
   update(patch: Partial<AppSettings>): Promise<AppSettings>;
   setPopupShortcut(accelerator: string): Promise<{ ok: boolean; reason?: string }>;
+  /**
+   * `true` releases the global popup shortcut while the recorder listens;
+   * `false` restores it (`ok: false` when another app took it meanwhile, in
+   * which case main clears the saved value). Setting a shortcut also ends a
+   * suspension, and main restores it on blur, reload, crash or close.
+   */
+  suspendPopupShortcut(suspend: boolean): Promise<{ ok: boolean; reason?: string }>;
   clearEvents(): Promise<AppSettings>;
   togglePause(): Promise<boolean>;
   testNotification(): Promise<void>;
@@ -80,4 +87,11 @@ interface AgentWatcherAPI {
 
 interface Window {
   aw: AgentWatcherAPI;
+}
+
+/** Keyboard Map API (Chromium); not in TypeScript's lib.dom yet. */
+interface Navigator {
+  keyboard?: {
+    getLayoutMap?(): Promise<AcceleratorLayoutMap>;
+  };
 }

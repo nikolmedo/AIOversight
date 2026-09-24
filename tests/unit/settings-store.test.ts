@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { setUserDataPath, resetElectronStub } from '../helpers/electron-stub';
 import { makeTempDir, removeTempDir } from '../helpers/temp-dir';
-import { SettingsStore, ConnectorDefaults, sanitizeQuietHours } from '../../src/main/settings-store';
+import { SettingsStore, ConnectorDefaults, sanitizeQuietHours, persistedQuietHours } from '../../src/main/settings-store';
 import { currentSettingsJson, legacySettingsJson, corruptedJson } from '../helpers/fixtures';
 
 /** Defaults shaped like ConnectorRuntime.applyConfig would compute via mergeDefaults,
@@ -215,6 +215,30 @@ describe('SettingsStore', () => {
     assert.equal(cleared.quietHours, null);
   });
 
+  it('persists quiet hours with both the minute keys and the legacy hour keys', () => {
+    // Arrange
+    const store = new SettingsStore(connectorDefaults());
+
+    // Act
+    store.update({ quietHours: { startMinute: 22 * 60 + 30, endMinute: 7 * 60 + 15 } });
+    const onDisk = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8'));
+
+    // Assert: a pre-0.3.6 build reads startHour/endHour (22 -> 7).
+    assert.deepEqual(onDisk.quietHours, { startMinute: 1350, endMinute: 435, startHour: 22, endHour: 7 });
+    assert.deepEqual(store.get().quietHours, { startMinute: 1350, endMinute: 435 });
+  });
+
+  it('reloads its own dual-shape quiet hours at minute precision', () => {
+    // Arrange
+    new SettingsStore(connectorDefaults()).update({ quietHours: { startMinute: 1350, endMinute: 435 } });
+
+    // Act
+    const settings = new SettingsStore(connectorDefaults()).get();
+
+    // Assert
+    assert.deepEqual(settings.quietHours, { startMinute: 1350, endMinute: 435 });
+  });
+
   it('pushEvent prepends to recentEvents and caps at 50 entries', () => {
     // Arrange
     const store = new SettingsStore(connectorDefaults());
@@ -279,10 +303,46 @@ describe('sanitizeQuietHours', () => {
     assert.deepEqual(sanitizeQuietHours({ startHour: 30, endHour: -1 }), { startMinute: 1380, endMinute: 0 });
   });
 
+  it('prefers the minutes when both shapes are present and agree', () => {
+    assert.deepEqual(
+      sanitizeQuietHours({ startMinute: 1350, endMinute: 435, startHour: 22, endHour: 7 }),
+      { startMinute: 1350, endMinute: 435 },
+    );
+  });
+
+  it('prefers the hours when an older build changed them after the minutes were saved', () => {
+    assert.deepEqual(
+      sanitizeQuietHours({ startMinute: 1350, endMinute: 435, startHour: 23, endHour: 6 }),
+      { startMinute: 1380, endMinute: 360 },
+    );
+  });
+
+  it('falls back to the hours when the minute keys are malformed', () => {
+    assert.deepEqual(
+      sanitizeQuietHours({ startMinute: 'late', endMinute: 435, startHour: 22, endHour: 7 }),
+      { startMinute: 1320, endMinute: 420 },
+    );
+  });
+
   it('returns null for null, non-objects and missing or non-numeric fields', () => {
     assert.equal(sanitizeQuietHours(null), null);
     assert.equal(sanitizeQuietHours('22:00'), null);
     assert.equal(sanitizeQuietHours({ startMinute: 60 }), null);
     assert.equal(sanitizeQuietHours({ startHour: NaN, endHour: 7 }), null);
+  });
+});
+
+describe('persistedQuietHours', () => {
+  it('adds hour keys rounded down from the minutes', () => {
+    assert.deepEqual(persistedQuietHours({ startMinute: 59, endMinute: 1439 }), {
+      startMinute: 59,
+      endMinute: 1439,
+      startHour: 0,
+      endHour: 23,
+    });
+  });
+
+  it('keeps no quiet hours as null', () => {
+    assert.equal(persistedQuietHours(null), null);
   });
 });

@@ -935,7 +935,9 @@ function providerAttentionRank(
 ): number {
   if (!snap || !snap.ok) return 0;
   let rank = 0;
-  for (const b of snap.buckets) {
+  // Same buckets the rows render, so a monthly bucket paced from its billing
+  // cycle ranks the way its row is coloured.
+  for (const b of withBillingCycleReset(snap.buckets, snap.billingCycleEnd, snap.billingCycleStart)) {
     if (prefs?.[b.id]?.hidden) continue;
     const state = paceStateFor(b, now);
     const r = state === 'critical' ? 3 : state === 'warn' ? 2 : state === 'ok' ? 1 : 0;
@@ -1032,7 +1034,7 @@ function renderProviderBlock(
 
   const bucketsHtml =
     (snap.buckets.length > 0 &&
-      renderMeterGroup(withBillingCycleReset(snap.buckets, snap.billingCycleEnd), bucketPrefs, {
+      renderMeterGroup(withBillingCycleReset(snap.buckets, snap.billingCycleEnd, snap.billingCycleStart), bucketPrefs, {
         remainingWord: 'left',
         connectorId: def.id,
         now,

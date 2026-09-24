@@ -200,6 +200,26 @@ describe('planTrayPopup', () => {
   });
 });
 
+describe('planTrayPopup billing-cycle pace', () => {
+  const { planTrayPopup } = loadView();
+  const def = (id: string) => ({ id, name: id, quotaEnabled: true });
+
+  it('ranks a monthly bucket by its cycle pace, as its row is coloured', () => {
+    // 60% used a third of the way through a 30-day cycle projects past 100%.
+    const start = NOW - 10 * 24 * H;
+    const end = start + 30 * 24 * H;
+    const quotas = {
+      steady: okSnap([bucket({ used: 70 })]),
+      monthly: okSnap([bucket({ used: 60 })], {
+        billingCycleStart: new Date(start).toISOString(),
+        billingCycleEnd: new Date(end).toISOString(),
+      }),
+    };
+    const plan = planTrayPopup([def('steady'), def('monthly')], quotas, undefined, NOW);
+    assert.deepEqual(plan.visible.map((d: { id: string }) => d.id), ['monthly', 'steady']);
+  });
+});
+
 describe('renderProviderBlock freshness', () => {
   const { renderProviderBlock } = loadView();
   const def = { id: 'c', name: 'C', quotaEnabled: true };

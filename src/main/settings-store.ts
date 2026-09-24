@@ -30,11 +30,18 @@ export interface RecentEventRecord {
  * (0..1439). The window is `[startMinute, endMinute)` and wraps past
  * midnight when `startMinute > endMinute`; equal values mean no window.
  * Settings written before minute precision stored `{ startHour, endHour }`;
- * `sanitizeQuietHours` migrates that shape on load.
+ * `sanitizeQuietHours` migrates that shape on load, and `persistedQuietHours`
+ * writes both shapes so a pre-0.3.6 build keeps an hour-rounded window.
  */
 export interface QuietHours {
   startMinute: number;
   endMinute: number;
+}
+
+/** On-disk quiet hours: the minute window plus the legacy whole-hour keys. */
+export interface PersistedQuietHours extends QuietHours {
+  startHour: number;
+  endHour: number;
 }
 
 const MINUTES_PER_DAY = 24 * 60;
@@ -46,22 +53,52 @@ function clampInt(v: unknown, max: number): number | null {
 
 /**
  * Validates a persisted or IPC-supplied quiet-hours value. Accepts the
- * current `{ startMinute, endMinute }` shape and the legacy
- * `{ startHour, endHour }` one (hours become whole-hour minutes). Anything
+ * current `{ startMinute, endMinute }` shape, the legacy
+ * `{ startHour, endHour }` one (hours become whole-hour minutes) and the
+ * on-disk shape carrying both. With both, the minutes win when they agree
+ * with the hours (`Math.floor(minute / 60)`); otherwise a pre-0.3.6 build
+ * rewrote the hours after the minutes were saved, so the hours win. Anything
  * else, including `null`, returns `null` (no quiet hours).
  */
 export function sanitizeQuietHours(raw: unknown): QuietHours | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
-  if ('startMinute' in r || 'endMinute' in r) {
-    const startMinute = clampInt(r.startMinute, MINUTES_PER_DAY - 1);
-    const endMinute = clampInt(r.endMinute, MINUTES_PER_DAY - 1);
-    return startMinute == null || endMinute == null ? null : { startMinute, endMinute };
+  const minutes = quietWindowFromMinutes(r);
+  const hours = quietWindowFromHours(r);
+  if (minutes && hours) {
+    const consistent =
+      Math.floor(minutes.startMinute / 60) === hours.startMinute / 60 &&
+      Math.floor(minutes.endMinute / 60) === hours.endMinute / 60;
+    return consistent ? minutes : hours;
   }
+  return minutes ?? hours;
+}
+
+function quietWindowFromMinutes(r: Record<string, unknown>): QuietHours | null {
+  const startMinute = clampInt(r.startMinute, MINUTES_PER_DAY - 1);
+  const endMinute = clampInt(r.endMinute, MINUTES_PER_DAY - 1);
+  return startMinute == null || endMinute == null ? null : { startMinute, endMinute };
+}
+
+function quietWindowFromHours(r: Record<string, unknown>): QuietHours | null {
   const startHour = clampInt(r.startHour, 23);
   const endHour = clampInt(r.endHour, 23);
-  if (startHour == null || endHour == null) return null;
-  return { startMinute: startHour * 60, endMinute: endHour * 60 };
+  return startHour == null || endHour == null ? null : { startMinute: startHour * 60, endMinute: endHour * 60 };
+}
+
+/**
+ * Disk form of a quiet-hours window. Builds before 0.3.6 read only
+ * `{ startHour, endHour }` (passing the object through unvalidated), so the
+ * hour keys keep a downgraded install working with an hour-rounded window.
+ */
+export function persistedQuietHours(q: QuietHours | null): PersistedQuietHours | null {
+  if (!q) return null;
+  return {
+    startMinute: q.startMinute,
+    endMinute: q.endMinute,
+    startHour: Math.floor(q.startMinute / 60),
+    endHour: Math.floor(q.endMinute / 60),
+  };
 }
 
 export interface AppSettings {
@@ -333,7 +370,8 @@ export class SettingsStore {
 
   private persist(): void {
     try {
-      fs.writeFileSync(this.file, JSON.stringify(this.state, null, 2));
+      const onDisk = { ...this.state, quietHours: persistedQuietHours(this.state.quietHours) };
+      fs.writeFileSync(this.file, JSON.stringify(onDisk, null, 2));
     } catch (err) {
       console.error('Failed to write settings:', err);
     }

@@ -199,6 +199,7 @@ svg { flex-shrink: 0; }
 }
 .shortcut-recorder.empty { color: var(--text-3); }
 .shortcut-recorder.recording { color: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.shortcut-edit-text { margin-left: -2px; }
 
 /* Segmented control (toggle buttons in a role="group"). */
 .segmented { display: inline-flex; padding: 2px; gap: 2px; background: var(--surface-2); border-radius: var(--radius-sm); }

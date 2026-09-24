@@ -171,7 +171,8 @@ main::-webkit-scrollbar-thumb {
 .spend-legend-row { display: flex; align-items: center; gap: 6px; font-size: 12px; }
 .spend-legend-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dot-color, var(--accent)); flex-shrink: 0; }
 .spend-legend-name { flex: 1; min-width: 0; }
-.spend-legend-value { color: var(--text-2); font-variant-numeric: tabular-nums; }
+/* Fixed-width, right-aligned amounts keep the 30-day sparklines in one column. */
+.spend-legend-value { color: var(--text-2); font-variant-numeric: tabular-nums; min-width: 7ch; text-align: right; }
 .spend-legend-trend { position: relative; display: inline-flex; align-items: center; }
 .sparkline { display: block; color: var(--text-3); }
 .sparkline rect { fill: currentColor; }

@@ -28,6 +28,7 @@ Electron main process (src/main/)
   ├── index.ts              — app entry, IPC handlers, tray, settings window
   ├── settings-store.ts     — disk persistence (OS userData/settings.json)
   ├── notifier.ts           — notification dispatch policy
+  ├── popup-shortcut.ts     — global popup shortcut: register/clear, suspend while the recorder listens
   ├── updater.ts            — update checks / install via electron-updater (platform capability matrix)
   ├── autostart.ts          — launch-at-login
   ├── tray.ts / tray-popup.ts
@@ -93,7 +94,8 @@ A quota snapshot sets `appNotRunning: true` only when its sole source is a deskt
 | `connectors:setPollOverride` | `id, minutes \| null` | `AppSettings` |
 | `connectors:setBucketPref` | `id, bucketId, Partial<BucketPref>` | `AppSettings` |
 | `settings:update` | `patch` | `AppSettings` |
-| `settings:setPopupShortcut` | `accelerator` | `{ ok, reason? }` |
+| `settings:setPopupShortcut` | `accelerator` | `{ ok, reason? }`; also ends a recorder suspension |
+| `settings:suspendPopupShortcut` | `suspend: boolean` | `{ ok, reason? }`; `true` releases the global popup shortcut while the recorder listens, `false` restores it. Settings window only; main also restores on blur, reload, crash or close |
 | `settings:clearEvents` | — | `AppSettings` |
 | `settings:togglePause` | — | `boolean` |
 | `settings:logs` | — | `LogEntry[]` |

@@ -3,8 +3,8 @@
 // settings.js and unit-tested by running the compiled file in a vm context.
 //
 // Builds Electron accelerator strings
-// (https://www.electronjs.org/docs/latest/api/accelerator) from keydown
-// events and formats stored accelerators for display.
+// (https://www.electronjs.org/docs/latest/tutorial/keyboard-shortcuts) from
+// keydown events and formats stored accelerators for display.
 
 /** The subset of `KeyboardEvent` the recorder reads, so tests can pass plain objects. */
 interface AcceleratorKeyInput {
@@ -45,9 +45,34 @@ const ACCELERATOR_NAMED_CODES: Record<string, string> = {
 };
 
 /**
- * Electron key name for a physical key (`KeyboardEvent.code`), or `null` when
- * the key can't be part of an accelerator. `code` rather than `key`, because
- * Shift and macOS Option change `key` ("Shift+1" reports "!").
+ * `KeyboardEvent.code` -> the character that key types on the active layout,
+ * unshifted (`navigator.keyboard.getLayoutMap()` in the renderer; a plain
+ * `Map` in tests).
+ */
+interface AcceleratorLayoutMap {
+  get(code: string): string | undefined;
+}
+
+/**
+ * Punctuation Windows defines by the character it types on every layout
+ * (`VK_OEM_COMMA`, `VK_OEM_MINUS`, `VK_OEM_PERIOD`). The other `VK_OEM_*`
+ * keys "can vary by keyboard", so Electron's `;` / `[` / `` ` `` ... only name
+ * the key that types them where the layout agrees with US QWERTY.
+ */
+const ACCELERATOR_LAYOUT_SAFE_PUNCTUATION = new Set([',', '-', '.']);
+
+/**
+ * Characters Electron's accelerator parser maps to a key without adding
+ * Shift (`KeyboardCodeFromCharCode` in shell/common/keyboard_util.cc). `+`,
+ * `!`, `:` and the other shifted US characters imply Shift there, so a
+ * layout that types them unshifted can't be recorded as a character.
+ */
+const ACCELERATOR_UNSHIFTED_PUNCTUATION = new Set([',', '-', '.', '/', ';', '=', '[', ']', '\\', "'", '`']);
+
+/**
+ * Electron key name for a physical key (`KeyboardEvent.code`) as if the
+ * layout were US QWERTY, or `null` when the key can't be part of an
+ * accelerator.
  */
 function acceleratorKeyForCode(code: string): string | null {
   let m = /^Key([A-Z])$/.exec(code);
@@ -61,14 +86,73 @@ function acceleratorKeyForCode(code: string): string | null {
   return ACCELERATOR_NAMED_CODES[code] ?? null;
 }
 
+/** Whether `code` is a key that types a character (letters and punctuation, not digits or the numpad). */
+function isLayoutCharacterCode(code: string): boolean {
+  return /^Key[A-Z]$/.test(code) || code === 'IntlBackslash' || /^[^0-9]$/.test(ACCELERATOR_NAMED_CODES[code] ?? '');
+}
+
+/**
+ * The unshifted character the key types on the user's layout: the layout
+ * map when there is one, else `e.key` when it can't have been changed by
+ * Shift or Alt/AltGr/Option (a letter's case doesn't matter). `null` when
+ * neither is usable, in which case the US-QWERTY name of the code applies.
+ */
+function layoutCharacter(e: AcceleratorKeyInput, layout: AcceleratorLayoutMap | null | undefined): string | null {
+  const mapped = layout?.get(e.code);
+  if (typeof mapped === 'string' && mapped.length === 1) return mapped;
+  if (e.key.length !== 1) return null;
+  if (/^[a-z]$/i.test(e.key)) return e.key;
+  return e.shiftKey || e.altKey ? null : e.key;
+}
+
+type AcceleratorKeyResult = { key: string } | { invalid: string };
+
+/**
+ * Electron key name for the key in `e`. Windows and Linux resolve an
+ * accelerator's character through the active layout, so a character key is
+ * named by what it types there (AZERTY's `KeyQ` records "A"). macOS
+ * `globalShortcut` ignores the layout and matches US-QWERTY key positions
+ * (electron/electron#19747), so there the physical key (`code`) is recorded,
+ * which keeps working on the key the user pressed. The digit row, numpad,
+ * F-keys, arrows and other named keys always use `code`: Windows digit
+ * virtual keys are positional, and AZERTY's unshifted "&" would parse as
+ * Shift+7.
+ */
+function acceleratorKeyFor(
+  e: AcceleratorKeyInput,
+  platform: string,
+  layout: AcceleratorLayoutMap | null | undefined,
+): AcceleratorKeyResult | null {
+  const usKey = acceleratorKeyForCode(e.code);
+  if (platform === 'darwin' || !isLayoutCharacterCode(e.code)) return usKey ? { key: usKey } : null;
+
+  const ch = layoutCharacter(e, layout);
+  if (ch == null) return usKey ? { key: usKey } : null;
+  if (/^[a-z]$/i.test(ch)) return { key: ch.toUpperCase() };
+  if (ACCELERATOR_LAYOUT_SAFE_PUNCTUATION.has(ch) || ch === usKey) return { key: ch };
+  // X11 looks a keysym up in the active layout, so Linux takes any
+  // unshifted punctuation Electron can parse.
+  if (platform === 'linux' && ACCELERATOR_UNSHIFTED_PUNCTUATION.has(ch)) return { key: ch };
+  // A letter key typing a non-Latin character (Cyrillic, Greek): Windows and
+  // X11 keep US-QWERTY letters on those keys.
+  if (/^Key[A-Z]$/.test(e.code) && !/^[\x20-\x7e]$/.test(ch)) return { key: usKey! };
+  return { invalid: `The “${ch}” key can't be used in a shortcut on this keyboard layout. Try a letter, a digit or F1–F24.` };
+}
+
 /**
  * Turns one keydown into a recorder step. Modifier mapping follows each
  * platform's primary key: Cmd on macOS and Ctrl elsewhere become
  * `CommandOrControl`, so a shortcut stored on one OS keeps working on the
  * other. A shortcut needs Ctrl/Cmd, Alt or Super unless it is F1-F24 alone:
  * a global Shift+letter would swallow that capital letter in every app.
+ * `layout` names character keys by what they type on the user's layout
+ * (see `acceleratorKeyFor`).
  */
-function acceleratorFromKeyEvent(e: AcceleratorKeyInput, platform: string): AcceleratorRecordResult {
+function acceleratorFromKeyEvent(
+  e: AcceleratorKeyInput,
+  platform: string,
+  layout?: AcceleratorLayoutMap | null,
+): AcceleratorRecordResult {
   const mac = platform === 'darwin';
   const noModifiers = !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey;
   if (e.code === 'Escape' || e.key === 'Escape') return { kind: 'cancel' };
@@ -78,8 +162,10 @@ function acceleratorFromKeyEvent(e: AcceleratorKeyInput, platform: string): Acce
     return { kind: 'pending' };
   }
 
-  const key = acceleratorKeyForCode(e.code);
-  if (!key) return { kind: 'invalid', reason: 'That key cannot be used in a shortcut.' };
+  const resolved = acceleratorKeyFor(e, platform, layout);
+  if (!resolved) return { kind: 'invalid', reason: 'That key cannot be used in a shortcut.' };
+  if ('invalid' in resolved) return { kind: 'invalid', reason: resolved.invalid };
+  const key = resolved.key;
 
   const parts: string[] = [];
   if (mac ? e.metaKey : e.ctrlKey) parts.push('CommandOrControl');
