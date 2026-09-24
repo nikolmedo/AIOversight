@@ -11,50 +11,46 @@
   let connectors: ConnectorMetadata[] = [];
   let bucketPrefs: Record<string, Record<string, BucketPref>> = {};
   let lastQuotas: Record<string, QuotaSnapshot> = {};
-  let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
-  let countdownTimer: ReturnType<typeof setInterval> | null = null;
+  /** Effective poll interval (ms) per connector, re-fetched on every show;
+   * drives each provider's stale freshness label. */
+  let pollIntervals: Record<string, number> = {};
+  let updatedLabelTimer: ReturnType<typeof setInterval> | null = null;
   let resetChipTimer: ReturnType<typeof setInterval> | null = null;
-  let nextRefreshAt = 0;
+  /** Newest `fetchedAt` among the rendered ok snapshots, 0 when none. */
+  let lastUpdatedAt = 0;
 
-  const AUTO_REFRESH_MS = 30_000;
+  const UPDATED_LABEL_TICK_MS = 1_000;
   const RESET_CHIP_REFRESH_MS = 30_000;
 
-  function updateCountdown(): void {
-    const el = document.getElementById('refreshTimer');
+  /** "Updated 42s ago" in the footer, plus each provider's "5m ago"
+   * label. Not live regions: they change every second while the popup is
+   * open and are not worth announcing. */
+  function updateUpdatedLabel(): void {
+    const now = Date.now();
+    refreshProviderFreshness(document, now);
+    const el = document.getElementById('updatedAgo');
     if (!el) return;
-    const secs = Math.max(0, Math.round((nextRefreshAt - Date.now()) / 1000));
-    el.textContent = `auto · ${secs}s`;
+    const text = lastUpdatedAt > 0 ? formatUpdatedAgo(lastUpdatedAt, now) : '';
+    if (el.textContent !== text) el.textContent = text;
   }
 
-  function startAutoRefresh(): void {
-    stopAutoRefresh();
-    nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
-    updateCountdown();
-
-    countdownTimer = setInterval(updateCountdown, 1_000);
-    // The popup window is hidden, not destroyed, between shows — this timer
-    // (like the two above) must stop while hidden or it leaks indefinitely.
+  // There is no periodic fetch here: main pushes `trayPopup:quotas` on every
+  // poll result (and on every show), so the popup only renders what the
+  // poller already has. A timed `refresh()` would bypass the poller's
+  // backoff and Retry-After gate and hit vendor APIs every 30s while the
+  // popup stays open. Only the Refresh button and the row menu force a fetch.
+  function startTimers(): void {
+    stopTimers();
+    updateUpdatedLabel();
+    updatedLabelTimer = setInterval(updateUpdatedLabel, UPDATED_LABEL_TICK_MS);
+    // The popup window is hidden, not destroyed, between shows, so both
+    // timers must stop while hidden or they leak indefinitely.
     resetChipTimer = setInterval(() => refreshResetChips(document), RESET_CHIP_REFRESH_MS);
-    autoRefreshTimer = setInterval(async () => {
-      nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
-      const btn = document.getElementById('refreshAll') as HTMLButtonElement | null;
-      if (btn) btn.disabled = true;
-      try {
-        const next = (await window.awPopup.refresh()) as Record<string, QuotaSnapshot>;
-        render(next);
-        requestAnimationFrame(() => requestAnimationFrame(reportSize));
-      } finally {
-        if (btn) btn.disabled = false;
-      }
-    }, AUTO_REFRESH_MS);
   }
 
-  function stopAutoRefresh(): void {
-    if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
-    if (countdownTimer)   { clearInterval(countdownTimer);   countdownTimer   = null; }
-    if (resetChipTimer)   { clearInterval(resetChipTimer);   resetChipTimer   = null; }
-    const el = document.getElementById('refreshTimer');
-    if (el) el.textContent = '';
+  function stopTimers(): void {
+    if (updatedLabelTimer) { clearInterval(updatedLabelTimer); updatedLabelTimer = null; }
+    if (resetChipTimer)    { clearInterval(resetChipTimer);    resetChipTimer    = null; }
   }
 
   // renderBucket / renderBuckets / renderConnectorBlock moved to the shared
@@ -91,20 +87,42 @@
   function renderTotalSpendCardPanel(): void {
     const el = document.getElementById('totalSpendCard');
     if (!el) return;
+    // A keyboard press on a spend switch re-renders this panel; keep focus on
+    // the switch instead of dropping it to <body>.
+    const view = captureViewState(el);
     // `#totalSpendCard:empty { display: none }` collapses the hidden card.
     el.innerHTML = showSpendCard ? renderTotalSpendCard(lastQuotas, connectors) : '';
+    restoreViewState(el, view);
   }
 
   function render(quotas: Record<string, QuotaSnapshot>): void {
     lastQuotas = quotas;
     renderTotalSpendCardPanel();
     const panel = $('#content');
-    const plan = planTrayPopup(connectors, quotas);
+    const now = Date.now();
+    const plan = planTrayPopup(connectors, quotas, bucketPrefs, now);
+    // Only successful fetches count: a failed attempt a second ago doesn't
+    // make the numbers on screen any fresher.
+    lastUpdatedAt = plan.visible.reduce((max, def) => {
+      const snap = quotas[def.id];
+      return snap?.ok ? Math.max(max, snap.fetchedAt) : max;
+    }, 0);
     if (plan.emptyMessage != null) {
       panel.innerHTML = `<p class="empty">${escapeHtml(plan.emptyMessage)}</p>`;
+      updateUpdatedLabel();
       return;
     }
-    panel.innerHTML = plan.visible.map(def => renderProviderBlock(def, quotas[def.id], bucketPrefs[def.id])).join('');
+    // Pushes arrive on every poll; keep open "More metrics" rows open, the
+    // focused control focused and meter fills transitioning across the
+    // innerHTML swap (providers may also have changed places).
+    const view = captureViewState(panel);
+    panel.innerHTML = plan.visible
+      .map(def =>
+        renderProviderBlock(def, quotas[def.id], bucketPrefs[def.id], { pollIntervalMs: pollIntervals[def.id], now }),
+      )
+      .join('');
+    restoreViewState(panel, view);
+    updateUpdatedLabel();
   }
 
   function reportSize(): void {
@@ -153,7 +171,7 @@
         requestAnimationFrame(() => requestAnimationFrame(reportSize));
       })();
     },
-    // The popup has no Customize tab of its own — open the settings window
+    // The popup has no meter settings of its own — open the settings window
     // instead, per the plan's Phase 2c decision.
     openCustomize: () => {
       void window.awPopup.openSettings();
@@ -195,11 +213,11 @@
 
   /**
    * Re-fetches `bucketPrefs` and re-renders with it. Same staleness as
-   * `refreshConnectors` above: settings.ts's Customize tab (star / hide /
+   * `refreshConnectors` above: settings.ts's drawer Meters section (star / hide /
    * visibility / reorder) writes straight to `initial.settings` in the
    * settings window and re-renders its own Overview immediately, but there's
    * no push channel for bucketPrefs into the popup, and this was previously
-   * fetched exactly once in `bootstrap()`. A reorder made in Customize while
+   * fetched exactly once in `bootstrap()`. A reorder made in settings while
    * the popup sat hidden (or was never reopened) left it rendering the old
    * order — including `sortBucketsByDisplayOrder`'s `order`-first sort in
    * `renderMeterGroup`, which the popup shares with the Overview via
@@ -210,6 +228,12 @@
     bucketPrefs = (await window.awPopup.getBucketPrefs()) as Record<string, Record<string, BucketPref>>;
     render(lastQuotas);
     requestAnimationFrame(() => requestAnimationFrame(reportSize));
+  }
+
+  /** Poll intervals change only through settings; re-read them on show. */
+  async function refreshPollIntervals(): Promise<void> {
+    pollIntervals = await window.awPopup.getPollIntervals();
+    render(lastQuotas);
   }
 
   let lastUpdateBannerHtml = '';
@@ -236,6 +260,7 @@
   async function bootstrap(): Promise<void> {
     connectors = (await window.awPopup.getConnectors()) as ConnectorMetadata[];
     bucketPrefs = (await window.awPopup.getBucketPrefs()) as Record<string, Record<string, BucketPref>>;
+    pollIntervals = await window.awPopup.getPollIntervals();
     await applyUiPrefs();
     renderUpdate(await window.awPopup.getUpdateState());
     const quotas = (await window.awPopup.getQuotas()) as Record<string, QuotaSnapshot>;
@@ -245,22 +270,32 @@
 
   window.awPopup.onVisibilityChange(visible => {
     if (visible) {
-      startAutoRefresh();
+      startTimers();
       void applyUiPrefs();
       void refreshConnectors();
       void refreshBucketPrefs();
+      void refreshPollIntervals();
     } else {
-      stopAutoRefresh();
+      stopTimers();
     }
   });
 
   // bindResetChips/bindRowMenu are one-time delegated listeners (not timers)
-  // — safe to leave running while hidden. The countdown-refresh timer itself
-  // lives inside startAutoRefresh/stopAutoRefresh above, in lockstep with
-  // onVisibilityChange, same as the other two popup timers.
+  // — safe to leave running while hidden. The popup's timers live inside
+  // startTimers/stopTimers above, in lockstep with onVisibilityChange.
   document.body.insertAdjacentHTML('beforeend', renderRowMenu());
   bindResetChips(document);
   bindRowMenu(document, trayRowMenuHandlers);
+  // Escape with no row menu open hides the popup, like a native flyout.
+  // Registered after bindRowMenu, whose Escape closes the menu and calls
+  // preventDefault(); the hidden check also covers the opposite order.
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape' || e.defaultPrevented) return;
+    const menu = document.getElementById('rowMenu');
+    if (menu && !menu.hidden) return;
+    e.preventDefault();
+    window.awPopup.hide();
+  });
   bindTotalSpendCard(document, () => {
     renderTotalSpendCardPanel();
     requestAnimationFrame(() => requestAnimationFrame(reportSize));
@@ -306,7 +341,6 @@
       const next = (await window.awPopup.refresh()) as Record<string, QuotaSnapshot>;
       render(next);
       requestAnimationFrame(() => requestAnimationFrame(reportSize));
-      if (autoRefreshTimer) startAutoRefresh();
     } finally {
       btn.disabled = false;
     }

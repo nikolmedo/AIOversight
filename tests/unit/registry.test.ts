@@ -106,6 +106,20 @@ describe('ALL_CONNECTORS', () => {
       assert.equal(def!.detector, undefined, `${id} should not have a detector`);
     }
   });
+
+  it('flags the local spend scanners and keeps them within the six-slot palette', () => {
+    // Arrange
+    const expected = ['cursor', 'claude-code', 'codex-cli', 'opencode', 'grok'];
+
+    // Act
+    const flagged = ALL_CONNECTORS.filter(c => c.quota?.reportsSpend).map(c => c.id);
+
+    // Assert
+    assert.deepEqual([...flagged].sort(), [...expected].sort());
+    // One `--cat-N` slot each (quota-view.ts `spendColorFor`); a seventh
+    // would share a color with the first.
+    assert.ok(flagged.length <= 6, `${flagged.length} spend connectors exceed the palette`);
+  });
 });
 
 describe('findConnector', () => {

@@ -270,6 +270,13 @@ export interface Connector {
   quota?: {
     /** Default poll interval in minutes if the user hasn't set an override. */
     defaultIntervalMinutes: number;
+    /**
+     * Set when snapshots can carry `spend[]` (Total Spend card). Static on
+     * purpose: the renderer gives each such connector its own categorical
+     * palette slot in registry order, so a provider keeps its color whatever
+     * the live status of the others.
+     */
+    reportsSpend?: boolean;
     create(config: Record<string, unknown>, ctx: ConnectorContext): QuotaProvider;
   };
   /** When true, the quota toggle is enabled by default for new installs. */
@@ -278,7 +285,7 @@ export interface Connector {
   login?: ConnectorLogin;
   /** Hint for the Integrate tab. Declare when this connector acts as an HTTP server. */
   integrateInfo?: ConnectorIntegrateInfo;
-  /** Optional brand accent color (hex). Falls back to an id-hash color in the renderer. */
+  /** Optional brand accent color (hex). Falls back to a categorical palette color (`--cat-N`) in the renderer. */
   brandColor?: string;
 }
 
@@ -333,6 +340,8 @@ export interface ConnectorMetadata {
   hasDetector: boolean;
   hasQuota: boolean;
   defaultIntervalMinutes?: number;
+  /** `Connector.quota.reportsSpend` — drives the spend views' palette slots. */
+  reportsSpend?: boolean;
   configSchema: ConnectorConfigField[];
   /** Which secret keys exist (so the UI can show "(set)" without value). */
   setSecretKeys?: string[];
@@ -344,7 +353,7 @@ export interface ConnectorMetadata {
   loginLabel?: string;
   /** Integrate tab hint; present only when the connector acts as an HTTP server. */
   integrateInfo?: ConnectorIntegrateInfo;
-  /** Optional brand accent color (hex). Falls back to an id-hash color in the renderer. */
+  /** Optional brand accent color (hex). Falls back to a categorical palette color (`--cat-N`) in the renderer. */
   brandColor?: string;
   /**
    * Whether this connector's quota polling is currently enabled per user

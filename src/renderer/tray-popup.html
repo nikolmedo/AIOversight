@@ -18,17 +18,17 @@
   </header>
   <div id="updateBanner" class="update-banner-slot"></div>
   <main id="scroller">
-    <div id="totalSpendCard"></div>
     <div id="content">
       <p class="empty">Loading…</p>
     </div>
+    <div id="totalSpendCard"></div>
   </main>
   <footer class="popup-footer">
     <button type="button" id="refreshAll" class="btn btn-ghost" aria-label="Refresh quotas">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.55M13 2.5v2.5h-2.5"/></svg>
       Refresh
     </button>
-    <span id="refreshTimer" class="refresh-timer" aria-live="polite"></span>
+    <span id="updatedAgo" class="updated-ago"></span>
     <button type="button" id="openSettings" class="btn btn-secondary">Settings</button>
   </footer>
   <script src="quota-math.js"></script>

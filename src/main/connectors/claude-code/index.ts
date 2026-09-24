@@ -35,6 +35,7 @@ const ClaudeCodeConnector: Connector = {
   detector: { create: createClaudeCodeDetector },
   quota: {
     defaultIntervalMinutes: 30,
+    reportsSpend: true,
     create: createClaudeCodeQuotaProvider,
   },
   login: {

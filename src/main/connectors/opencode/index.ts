@@ -38,6 +38,7 @@ const OpencodeConnector: Connector = {
   ],
   quota: {
     defaultIntervalMinutes: 15,
+    reportsSpend: true,
     create: createOpencodeQuotaProvider,
   },
 };

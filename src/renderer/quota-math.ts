@@ -65,8 +65,7 @@ function staticPaceState(pct: number): 'ok' | 'warn' | 'critical' {
 /**
  * Pace/burn-rate coloring. With `resetsAt` + `windowMs` present, colors by
  * projected-exhaustion-before-reset; otherwise falls back to the static
- * thresholds above so behavior is unchanged for connectors that don't yet
- * report reset data.
+ * thresholds above for buckets that don't report reset data.
  */
 function paceStateFor(bucket: PaceBucket, now: number): 'none' | 'ok' | 'warn' | 'critical' {
   if (bucket.used == null || bucket.limit == null || bucket.limit <= 0) return 'none';
@@ -102,16 +101,132 @@ function projectedRemainingFraction(bucket: PaceBucket, now: number): number | n
   const pct = bucket.used / bucket.limit;
   const elapsed = Math.min(bucket.windowMs, Math.max(0, bucket.windowMs - (bucket.resetsAt - now)));
   const f = elapsed / bucket.windowMs;
-  if (f < 0.05) return null;
+  // Same guards as `paceStateFor`: no projection this early in the window,
+  // nor once the window has passed without fresh post-reset data.
+  if (f < 0.05 || f >= 1) return null;
   const projected = pct / f;
   return Math.max(0, 1 - projected);
 }
 
-/** e.g. "3h 25m", "12m", "now" for <=0. */
+/** Coarse duration for forecasts: "<1m", "~40m", "~3h", "~5d". */
+function formatApproxDuration(ms: number): string {
+  if (ms < 60_000) return '<1m';
+  const m = Math.round(ms / 60_000);
+  if (m < 60) return `~${m}m`;
+  const h = Math.round(ms / 3_600_000);
+  if (h < 48) return `~${h}h`;
+  return `~${Math.round(ms / 86_400_000)}d`;
+}
+
+/**
+ * One-line forecast for a bucket whose pace is warn or critical, e.g.
+ * "At this pace: runs out in ~3h, before reset" or "At this pace: ~6% left
+ * at reset". Built on `projectedRemainingFraction`, so it only speaks when
+ * the colour came from the pace projection: `null` for ok/no-data buckets,
+ * for the static-band fallback (no `resetsAt`/`windowMs`, first 5% of the
+ * window, or past the reset) and for a bucket already at its limit, whose
+ * 100% says it all.
+ */
+function paceForecast(bucket: PaceBucket, now: number): string | null {
+  const state = paceStateFor(bucket, now);
+  if (state !== 'warn' && state !== 'critical') return null;
+  const remaining = projectedRemainingFraction(bucket, now);
+  if (remaining == null) return null;
+  const used = bucket.used!;
+  const limit = bucket.limit!;
+  if (used >= limit || used <= 0) return null;
+  if (remaining > 0) {
+    const pct = Math.round(remaining * 100);
+    return `At this pace: ${pct < 1 ? '<1%' : `~${pct}%`} left at reset`;
+  }
+  // Linear burn since the window opened: time to cover what's left at the
+  // average rate so far. `remaining === 0` means this lands before resetsAt.
+  const elapsed = bucket.windowMs! - (bucket.resetsAt! - now);
+  const msToLimit = ((limit - used) / used) * elapsed;
+  return `At this pace: runs out in ${formatApproxDuration(msToLimit)}, before reset`;
+}
+
+/** Words for a pace state in accessible labels; `''` for 'none'. */
+function paceStateLabel(state: 'none' | 'ok' | 'warn' | 'critical'): string {
+  if (state === 'critical') return 'critical';
+  if (state === 'warn') return 'running high';
+  if (state === 'ok') return 'on track';
+  return '';
+}
+
+/**
+ * Parses a snapshot billing-cycle date: ISO strings (Copilot's date-only
+ * form parses as UTC midnight) and epoch-ms digit strings. `null` when
+ * missing or unparsable.
+ */
+function parseBillingCycleDate(value: string | undefined): number | null {
+  if (!value) return null;
+  const ms = /^\d+$/.test(value) ? Number(value) : Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Length of the billing cycle in ms (`end - start`), or `null` unless both
+ * dates parse and `end > start`.
+ */
+function billingCycleWindowMs(billingCycleStart: string | undefined, billingCycleEnd: string | undefined): number | null {
+  const start = parseBillingCycleDate(billingCycleStart);
+  const end = parseBillingCycleDate(billingCycleEnd);
+  if (start == null || end == null || end <= start) return null;
+  return end - start;
+}
+
+/**
+ * Buckets with the snapshot's billing cycle filled in where a bucket has no
+ * reset of its own, so monthly plans show when they reset and get pace
+ * colouring. Only metered buckets get it (measured `used` and a positive
+ * `limit`): a remaining-only balance (prepaid credits) and a limit-less
+ * running total (Cursor's rolling "last 30 days" usage) don't reset with the
+ * cycle. `billingCycleEnd` becomes `resetsAt`; when `billingCycleStart` also
+ * parses and precedes it, `end - start` becomes `windowMs`, which turns on
+ * the pace projection and forecast. A bucket's own `resetsAt` is never paired
+ * with a cycle-derived `windowMs`, and an existing `windowMs` is kept.
+ * Returns the input array unchanged when the end date is missing or
+ * unparsable.
+ */
+function withBillingCycleReset(
+  buckets: QuotaBucket[],
+  billingCycleEnd: string | undefined,
+  billingCycleStart?: string,
+): QuotaBucket[] {
+  const end = parseBillingCycleDate(billingCycleEnd);
+  if (end == null) return buckets;
+  const windowMs = billingCycleWindowMs(billingCycleStart, billingCycleEnd);
+  return buckets.map(b => {
+    if (b.resetsAt != null || b.used == null || b.limit == null || b.limit <= 0) return b;
+    const next: QuotaBucket = { ...b, resetsAt: end };
+    if (windowMs != null && next.windowMs == null) next.windowMs = windowMs;
+    return next;
+  });
+}
+
+/**
+ * Per-provider freshness for the tray popup: `formatRelativeTime`'s label
+ * ("just now", "5m ago") and whether the data is older than twice the
+ * connector's poll interval. `intervalMs` is `undefined` when the connector
+ * only refreshes by hand (poll override 0) or the interval is unknown; such
+ * data is never flagged stale.
+ */
+function freshnessFor(
+  fetchedAt: number,
+  intervalMs: number | undefined,
+  now: number,
+): { text: string; stale: boolean } {
+  const stale = intervalMs != null && intervalMs > 0 && now - fetchedAt > 2 * intervalMs;
+  return { text: formatRelativeTime(fetchedAt, now), stale };
+}
+
+/** e.g. "2d 6h" (from 48h up), "3h 25m", "12m", "now" for <=0. */
 function formatCountdown(msRemaining: number): string {
   if (msRemaining <= 0) return 'now';
   const h = Math.floor(msRemaining / 3_600_000);
   const m = Math.floor((msRemaining % 3_600_000) / 60_000);
+  if (h >= 48) return `${Math.floor(h / 24)}d ${h % 24}h`;
   if (h > 0) return `${h}h ${m}m`;
   if (m > 0) return `${m}m`;
   return '<1m';
@@ -131,6 +246,16 @@ function formatRelativeTime(ts: number, now: number): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+
+/** Footer label for the tray popup: "Updated just now", "Updated 42s ago",
+ * then `formatRelativeTime`'s coarse steps ("Updated 3m ago"). A timestamp in
+ * the future (clock skew) reads as "just now". */
+function formatUpdatedAgo(ts: number, now: number): string {
+  const diff = now - ts;
+  if (diff < 10_000) return 'Updated just now';
+  if (diff < 60_000) return `Updated ${Math.floor(diff / 1000)}s ago`;
+  return `Updated ${formatRelativeTime(ts, now)}`;
 }
 
 type ConnectorStatus = 'off' | 'active' | 'error' | 'needs-login' | 'app-not-running';
@@ -173,9 +298,9 @@ function formatDateTime(ts: number): string {
 /**
  * Shared "what order does a set of buckets display in" logic. Single source
  * of truth for both `renderMeterGroup` (quota-view.ts, the live meter's
- * main/on-demand row groups) and the Customize tab's pre-move baseline
+ * main/on-demand row groups) and the drawer Meters section's pre-move baseline
  * (`customizeDisplayOrder` in settings.ts) — factored out after a review
- * found the two had drifted (Customize used raw declaration order,
+ * found the two had drifted (the Meters list used raw declaration order,
  * `renderMeterGroup` used pct-desc), which made an up/down click silently
  * move buckets the user never touched relative to what they'd see in the
  * live meter.
@@ -205,7 +330,7 @@ function sortBucketsByDisplayOrder(
 }
 
 /**
- * Pure reorder math for the Customize tab's up/down move buttons (Phase 2c —
+ * Pure reorder math for the Meters section's up/down move buttons (Phase 2c —
  * chosen over drag-and-drop, see the plan). `orderedIds` must already be in
  * the connector's current display order (numeric `BucketPref.order` first,
  * ties/absences broken however the caller's existing sort already works —

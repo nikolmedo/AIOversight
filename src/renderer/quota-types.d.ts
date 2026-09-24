@@ -106,6 +106,8 @@ interface ConnectorMetadata {
   hasDetector: boolean;
   hasQuota: boolean;
   defaultIntervalMinutes?: number;
+  /** Snapshots can carry `spend[]` — see `Connector.quota.reportsSpend` in types.ts. */
+  reportsSpend?: boolean;
   configSchema: ConnectorConfigField[];
   setSecretKeys?: string[];
   /** Present only when the connector declares a `login` handler — see types.ts. */
@@ -142,7 +144,8 @@ interface AppSettings {
   notifyOnWaiting: boolean;
   notifyOnFinished: boolean;
   perSessionCooldownMs: number;
-  quietHours: { startHour: number; endHour: number } | null;
+  /** Minutes after midnight, local time; wraps past midnight when start > end. */
+  quietHours: { startMinute: number; endMinute: number } | null;
   quotaPollMinutes: number;
   showQuotaInTray: boolean;
   launchAtLogin: boolean;

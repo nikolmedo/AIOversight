@@ -16,6 +16,9 @@ interface TrayPopupAPI {
   getConnectors(): Promise<ConnectorMetadata[]>;
   getBucketPrefs(): Promise<Record<string, Record<string, BucketPref>>>;
   getUiPrefs(): Promise<TrayPopupUiPrefs>;
+  /** Effective poll interval in ms per polled connector; connectors that only
+   * refresh by hand are absent. */
+  getPollIntervals(): Promise<Record<string, number>>;
   openSettings(): Promise<void>;
   refresh(id?: string): Promise<Record<string, QuotaSnapshot>>;
   /** Returns just the `bucketPrefs` slice (matching `getBucketPrefs`'s shape),
@@ -34,6 +37,8 @@ interface TrayPopupAPI {
   onQuotas(cb: (q: Record<string, QuotaSnapshot>) => void): () => void;
   onVisibilityChange(cb: (visible: boolean) => void): () => void;
   resize(height: number): void;
+  /** Hides the popup window (Escape with no row menu open). */
+  hide(): void;
 }
 
 interface Window {

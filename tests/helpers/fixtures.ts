@@ -330,7 +330,7 @@ export function currentSettingsJson(): Record<string, unknown> {
     notifyOnWaiting: true,
     notifyOnFinished: false,
     perSessionCooldownMs: 45_000,
-    quietHours: { startHour: 22, endHour: 7 },
+    quietHours: { startMinute: 22 * 60 + 30, endMinute: 7 * 60 + 15 },
     quotaPollMinutes: 10,
     showQuotaInTray: true,
     connectors: {

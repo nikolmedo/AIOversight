@@ -98,7 +98,7 @@ Rules for providers:
 - **`appNotRunning: true`** — set it only when the data source is a desktop app that is not running (Antigravity's language server, for example), and put a short, actionable notice in `error` ("Antigravity isn't running. Open it to see its quota."). It is an expected state, not an error: the tray popup and tooltip leave the connector out, the settings window shows the notice in neutral styling with status "App not running", and the poller does not count it as a failure (no backoff, and an earlier failure streak is cleared), so data appears within one poll interval after the app opens. An app that is running but does not answer is a real error; do not set the flag then. Do not use it for sources that are files on disk or remote APIs.
 - **Bound your requests.** The service abandons a `fetch()` that takes longer than 45 s and records it as a timeout failure, but it cannot cancel it. Put a timeout on each HTTP call (existing connectors use 15 s) so a hung request does not hold resources.
 - **Never refresh or rewrite another tool's credentials.** Read a CLI's or IDE's token files, but do not redeem refresh tokens or write back to files like `~/.codex/auth.json` or `~/.grok/auth.json` — the owning tool manages them. On a 401/403, return `needsLogin: true` with an error telling the user to sign in with that tool.
-- **Estimated spend** — price tokens through `shared/model-pricing.ts` (`costCentsFor`) rather than keeping a private rate table. An unknown model prices to `null`, not `0`.
+- **Estimated spend** — price tokens through `shared/model-pricing.ts` (`costCentsFor`) rather than keeping a private rate table. An unknown model prices to `null`, not `0`. A connector that returns `spend[]` also sets `quota.reportsSpend: true`: the spend views give each flagged connector its own colour in registry order (six slots, checked in `tests/unit/registry.test.ts`), independent of which snapshots are currently ok. Without the flag its colour falls back to the id hash and can collide with another provider.
 
 ---
 
@@ -148,7 +148,7 @@ Declare when the connector exposes a local HTTP server that external tools can P
 brandColor?: string; // hex: #rgb, #rgba, #rrggbb or #rrggbbaa
 ```
 
-Optional brand accent used in the UI. When omitted or not a well-formed hex color, the renderer derives a color from a hash of the id.
+Optional brand accent used in the UI. When omitted or not a well-formed hex color, the renderer picks a categorical palette slot (`--cat-N`): in registry order among `quota.reportsSpend` connectors, otherwise from a hash of the id.
 
 ---
 

@@ -28,9 +28,13 @@
           <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8h3l2-5 3 10 2-5h3"/></svg>
           <span>Activity</span>
         </button>
-        <button type="button" class="nav-item" data-page="preferences">
+        <button type="button" class="nav-item" data-page="general">
           <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h7M12 4h2M2 12h2M7 12h7"/><circle cx="10.5" cy="4" r="1.5"/><circle cx="5.5" cy="12" r="1.5"/></svg>
-          <span>Preferences</span>
+          <span>General</span>
+        </button>
+        <button type="button" class="nav-item" data-page="notifications">
+          <svg class="nav-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 11V7a4 4 0 0 1 8 0v4l1.5 1.5h-11L4 11zM6.5 14h3"/></svg>
+          <span>Notifications</span>
         </button>
       </nav>
 
@@ -64,16 +68,15 @@
         <header class="page-header">
           <div>
             <h1 class="page-title" id="overviewTitle">Overview</h1>
-            <p class="page-sub">Quota left across your integrations</p>
+            <p class="page-sub">Quota used across your integrations</p>
           </div>
           <div class="page-actions">
             <button type="button" id="refreshAllBtn" class="btn btn-secondary">Refresh</button>
-            <button type="button" id="testBtn" class="btn btn-secondary">Send test notification</button>
           </div>
         </header>
 
         <div id="overviewEmpty" class="empty-state" hidden>
-          <p>Overview shows how much quota you have left for each integration with quota tracking turned on.</p>
+          <p>Overview shows how much of each quota you have used, for every integration with quota tracking turned on.</p>
           <button type="button" class="btn btn-primary" data-goto="integrations">Set up integrations</button>
         </div>
         <div id="overviewQuotas" class="surface-block overview-list"></div>
@@ -98,7 +101,15 @@
             <p class="page-sub">Turn on notifications and quota per tool. Credentials stay encrypted on this machine.</p>
           </div>
         </header>
+        <div class="list-toolbar">
+          <div class="segmented" role="group" aria-label="Show integrations">
+            <button type="button" class="segmented-btn" data-integration-filter="enabled" aria-pressed="false">Enabled</button>
+            <button type="button" class="segmented-btn" data-integration-filter="all" aria-pressed="true">All</button>
+          </div>
+          <input type="search" id="integrationSearch" class="control control-search" placeholder="Search integrations" aria-label="Search integrations" hidden />
+        </div>
         <div id="connectors"></div>
+        <div id="connectorsEmpty" class="empty-state" hidden></div>
       </section>
 
       <!-- Activity -->
@@ -116,11 +127,11 @@
         <p class="muted-line hidden" id="eventsEmpty">No events yet. You will see one here when an agent waits on you or finishes a turn.</p>
       </section>
 
-      <!-- Preferences -->
-      <section class="page" data-page="preferences" aria-labelledby="preferencesTitle" hidden>
+      <!-- General -->
+      <section class="page" data-page="general" aria-labelledby="generalTitle" hidden>
         <header class="page-header">
           <div>
-            <h1 class="page-title" id="preferencesTitle">Preferences</h1>
+            <h1 class="page-title" id="generalTitle">General</h1>
           </div>
         </header>
 
@@ -154,68 +165,6 @@
               </span>
               <input type="checkbox" class="switch" id="checkForUpdates" />
             </label>
-          </div>
-        </section>
-
-        <section class="group">
-          <h2 class="overline">Notifications</h2>
-          <div class="surface-block">
-            <label class="row">
-              <span class="row-text">
-                <span class="row-label">Show desktop notifications</span>
-                <span class="row-desc">Master switch for every notification below</span>
-              </span>
-              <input type="checkbox" class="switch" id="showNotifications" />
-            </label>
-            <label class="row dependent-notif">
-              <span class="row-text">
-                <span class="row-label">An agent is waiting on me</span>
-                <span class="row-desc">Paused on a tool call or an approval prompt</span>
-              </span>
-              <input type="checkbox" class="switch" id="notifyOnWaiting" />
-            </label>
-            <label class="row dependent-notif">
-              <span class="row-text">
-                <span class="row-label">An agent finished its turn</span>
-                <span class="row-desc">Final answer delivered, no pending tools</span>
-              </span>
-              <input type="checkbox" class="switch" id="notifyOnFinished" />
-            </label>
-            <label class="row">
-              <span class="row-text">
-                <span class="row-label">Per-session cooldown</span>
-                <span class="row-desc">Seconds between repeat notifications for the same session</span>
-              </span>
-              <input type="number" class="control control-num" id="cooldown" min="1" max="3600" />
-            </label>
-            <div class="row">
-              <span class="row-text">
-                <span class="row-label">Test notification</span>
-                <span class="row-desc">Check that your OS shows notifications from AI Oversight</span>
-              </span>
-              <button type="button" id="testBtnPrefs" class="btn btn-secondary">Send test</button>
-            </div>
-          </div>
-        </section>
-
-        <section class="group">
-          <h2 class="overline">Quiet hours</h2>
-          <div class="surface-block">
-            <label class="row">
-              <span class="row-text"><span class="row-label">Suppress notifications during a window</span></span>
-              <input type="checkbox" class="switch" id="quietEnabled" />
-            </label>
-            <div class="row dependent">
-              <span class="row-text">
-                <span class="row-label">Window</span>
-                <span class="row-desc">24-hour, local time</span>
-              </span>
-              <span class="control-cluster">
-                <input type="number" class="control control-num" id="quietStart" min="0" max="23" aria-label="Quiet hours start" />
-                <span class="cluster-sep">to</span>
-                <input type="number" class="control control-num" id="quietEnd" min="0" max="23" aria-label="Quiet hours end" />
-              </span>
-            </div>
           </div>
         </section>
 
@@ -284,28 +233,102 @@
             </label>
             <div class="row">
               <span class="row-text">
-                <span class="row-label">Toggle popup shortcut</span>
+                <span class="row-label" id="popupShortcutLabel">Toggle popup shortcut</span>
                 <span class="row-desc" id="popupShortcutStatus" aria-live="polite"></span>
+                <span><button type="button" id="popupShortcutEditText" class="link-btn shortcut-edit-text" aria-expanded="false" aria-controls="popupShortcutTextRow">Edit as text</button></span>
               </span>
               <span class="control-cluster">
-                <input type="text" id="popupShortcut" class="control control-text" placeholder="CommandOrControl+Shift+U" aria-label="Popup shortcut" />
-                <button type="button" id="popupShortcutSave" class="btn btn-secondary">Set</button>
+                <button type="button" id="popupShortcut" class="control shortcut-recorder" aria-describedby="popupShortcutStatus"></button>
                 <button type="button" id="popupShortcutClear" class="btn btn-ghost">Clear</button>
               </span>
+            </div>
+            <form class="row" id="popupShortcutTextRow" hidden>
+              <label class="row-text" for="popupShortcutText">
+                <span class="row-label">Accelerator</span>
+                <span class="row-desc">Electron format, e.g. CommandOrControl+Shift+U</span>
+              </label>
+              <span class="control-cluster">
+                <input type="text" id="popupShortcutText" class="control control-text" spellcheck="false" autocomplete="off" aria-describedby="popupShortcutStatus" />
+                <button type="submit" class="btn btn-secondary">Save</button>
+                <button type="button" id="popupShortcutTextCancel" class="btn btn-ghost">Cancel</button>
+              </span>
+            </form>
+          </div>
+        </section>
+
+        <p class="settings-path" id="settingsPath"></p>
+      </section>
+
+      <!-- Notifications -->
+      <section class="page" data-page="notifications" aria-labelledby="notificationsTitle" hidden>
+        <header class="page-header">
+          <div>
+            <h1 class="page-title" id="notificationsTitle">Notifications</h1>
+            <p class="page-sub">Desktop notifications when an agent waits on you or finishes a turn</p>
+          </div>
+        </header>
+
+        <section class="group">
+          <h2 class="overline">Desktop notifications</h2>
+          <div class="surface-block">
+            <label class="row">
+              <span class="row-text">
+                <span class="row-label">Show desktop notifications</span>
+                <span class="row-desc">Master switch for every notification below</span>
+              </span>
+              <input type="checkbox" class="switch" id="showNotifications" />
+            </label>
+            <label class="row dependent-notif">
+              <span class="row-text">
+                <span class="row-label">An agent is waiting on me</span>
+                <span class="row-desc">Paused on a tool call or an approval prompt</span>
+              </span>
+              <input type="checkbox" class="switch" id="notifyOnWaiting" />
+            </label>
+            <label class="row dependent-notif">
+              <span class="row-text">
+                <span class="row-label">An agent finished its turn</span>
+                <span class="row-desc">Final answer delivered, no pending tools</span>
+              </span>
+              <input type="checkbox" class="switch" id="notifyOnFinished" />
+            </label>
+            <label class="row">
+              <span class="row-text">
+                <span class="row-label">Per-session cooldown</span>
+                <span class="row-desc">Seconds between repeat notifications for the same session</span>
+              </span>
+              <input type="number" class="control control-num" id="cooldown" min="1" max="3600" />
+            </label>
+            <div class="row">
+              <span class="row-text">
+                <span class="row-label">Test notification</span>
+                <span class="row-desc">Check that your OS shows notifications from AI Oversight</span>
+              </span>
+              <button type="button" id="testBtn" class="btn btn-secondary">Send test</button>
             </div>
           </div>
         </section>
 
-        <section class="group" id="displayGroup">
-          <h2 class="overline">Display</h2>
-          <p class="group-desc">
-            Choose which usage meters show, star up to 2 per integration for the
-            menu bar / tray tooltip, and reorder them.
-          </p>
-          <div id="customizeList"></div>
+        <section class="group">
+          <h2 class="overline">Quiet hours</h2>
+          <div class="surface-block">
+            <label class="row">
+              <span class="row-text"><span class="row-label">Suppress notifications during a window</span></span>
+              <input type="checkbox" class="switch" id="quietEnabled" />
+            </label>
+            <div class="row dependent">
+              <span class="row-text">
+                <span class="row-label">Window</span>
+                <span class="row-desc">Local time. A window that ends before it starts runs past midnight.</span>
+              </span>
+              <span class="control-cluster">
+                <input type="time" class="control control-time" id="quietStart" step="60" required aria-label="Quiet hours start" />
+                <span class="cluster-sep">to</span>
+                <input type="time" class="control control-time" id="quietEnd" step="60" required aria-label="Quiet hours end" />
+              </span>
+            </div>
+          </div>
         </section>
-
-        <p class="settings-path" id="settingsPath"></p>
       </section>
 
       <!-- Webhook -->
@@ -378,6 +401,7 @@
   <script src="quota-math.js" defer></script>
   <script src="quota-view.js" defer></script>
   <script src="update-banner.js" defer></script>
+  <script src="accelerator.js" defer></script>
   <script src="settings.js" defer></script>
 </body>
 </html>

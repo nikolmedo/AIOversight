@@ -56,7 +56,22 @@ interface AgentWatcherAPI {
     patch: Partial<BucketPref>,
   ): Promise<AppSettings>;
   update(patch: Partial<AppSettings>): Promise<AppSettings>;
-  setPopupShortcut(accelerator: string): Promise<{ ok: boolean; reason?: string }>;
+  /**
+   * `ok: false` with a readable `reason` for a taken, malformed or
+   * rule-breaking accelerator (a key without Ctrl/Cmd, Alt or Super, other
+   * than F1–F24). `shortcut` is the saved value after the call, which a
+   * failed rollback may have cleared.
+   */
+  setPopupShortcut(accelerator: string): Promise<{ ok: boolean; reason?: string; shortcut?: string }>;
+  /**
+   * `true` releases the global popup shortcut while the recorder listens;
+   * `false` restores it (`ok: false` when another app took it meanwhile, in
+   * which case main clears the saved value — also when main's own restore on
+   * blur failed first). `false` also returns `shortcut`, the saved value
+   * after the call. Setting a shortcut also ends a suspension, and main
+   * restores it on blur, reload, crash or close.
+   */
+  suspendPopupShortcut(suspend: boolean): Promise<{ ok: boolean; reason?: string; shortcut?: string }>;
   clearEvents(): Promise<AppSettings>;
   togglePause(): Promise<boolean>;
   testNotification(): Promise<void>;
@@ -80,4 +95,11 @@ interface AgentWatcherAPI {
 
 interface Window {
   aw: AgentWatcherAPI;
+}
+
+/** Keyboard Map API (Chromium); not in TypeScript's lib.dom yet. */
+interface Navigator {
+  keyboard?: {
+    getLayoutMap?(): Promise<AcceleratorLayoutMap>;
+  };
 }

@@ -84,6 +84,19 @@ export class QuotaService extends EventEmitter {
     return [...this.providers.keys()];
   }
 
+  /**
+   * Effective poll interval in ms per polled connector (override, global
+   * default or connector default, floored at 60s). A connector set to refresh
+   * by hand only (override 0) has no timer and is left out.
+   */
+  pollIntervals(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [id, entry] of this.providers) {
+      if (entry.timer) out[id] = entry.intervalMs;
+    }
+    return out;
+  }
+
   onUpdate(listener: (id: string, snapshot: QuotaSnapshot) => void): this {
     return super.on('update', listener);
   }

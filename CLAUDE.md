@@ -28,6 +28,7 @@ Electron main process (src/main/)
   ├── index.ts              — app entry, IPC handlers, tray, settings window
   ├── settings-store.ts     — disk persistence (OS userData/settings.json)
   ├── notifier.ts           — notification dispatch policy
+  ├── popup-shortcut.ts     — global popup shortcut: register/clear, suspend while the recorder listens
   ├── updater.ts            — update checks / install via electron-updater (platform capability matrix)
   ├── autostart.ts          — launch-at-login
   ├── tray.ts / tray-popup.ts
@@ -49,6 +50,8 @@ Renderer (src/renderer/)        — vanilla TypeScript, no framework, CommonJS o
   ├── quota-view.ts / quota-math.ts — meter rendering + pace/format math shared by both windows
   ├── update-banner.ts      — "update available" banner markup shared by both windows
   ├── tokens.css            — design tokens shared by both windows
+  ├── meters.css            — meter-row styles shared by both windows (imported after tokens.css)
+  ├── accelerator.ts        — pure key-recorder logic for the popup shortcut (Electron accelerators)
   └── global.d.ts / tray-popup-global.d.ts / quota-types.d.ts — ambient types
 ```
 
@@ -66,8 +69,9 @@ Every integration lives in `src/main/connectors/<id>/`. The `Connector` object i
 | `quota` | The tool has an API that returns usage/billing data |
 | `login` | The app itself can run the sign-in (OAuth / browser). Only then does `needsLogin: true` show a sign-in button; without `login`, the `error` text must carry the instruction |
 | `quotaEnabledByDefault` | Quota works without any extra config (e.g. reads a local file) |
+| `quota.reportsSpend` | Snapshots can carry `spend[]`; gives the connector its own palette slot in the spend views (at most six) |
 | `integrateInfo` | The connector is an HTTP server — drives the curl example on the Advanced → Webhook page |
-| `brandColor` | Optional hex accent; falls back to an id-hash color in the renderer |
+| `brandColor` | Optional hex accent; falls back to a slot of the categorical palette (`--cat-N` in `tokens.css`) in the renderer |
 
 Connectors never refresh or rewrite another tool's credential files (e.g. Codex CLI's or Grok CLI's `auth.json`): an expired session returns `needsLogin: true` with an instruction to sign in with that tool.
 
@@ -90,7 +94,8 @@ A quota snapshot sets `appNotRunning: true` only when its sole source is a deskt
 | `connectors:setPollOverride` | `id, minutes \| null` | `AppSettings` |
 | `connectors:setBucketPref` | `id, bucketId, Partial<BucketPref>` | `AppSettings` |
 | `settings:update` | `patch` | `AppSettings` |
-| `settings:setPopupShortcut` | `accelerator` | `{ ok, reason? }` |
+| `settings:setPopupShortcut` | `accelerator` | `{ ok, reason?, shortcut }` (`shortcut` = saved value after the call); rejects a key without Ctrl/Cmd, Alt or Super unless F1–F24; also ends a recorder suspension |
+| `settings:suspendPopupShortcut` | `suspend: boolean` | `{ ok, reason? }`, plus `shortcut` (saved value) for `false`; `true` releases the global popup shortcut while the recorder listens, `false` restores it and also reports a failed restore main ran on blur. Settings window only; main also restores on blur, reload, crash or close |
 | `settings:clearEvents` | — | `AppSettings` |
 | `settings:togglePause` | — | `boolean` |
 | `settings:logs` | — | `LogEntry[]` |
@@ -126,6 +131,7 @@ Channels prefixed with `trayPopup:` — bridge in `src/preload/tray-popup.ts` (`
 | `trayPopup:getConnectors` | invoke | — | `ConnectorMetadata[]` |
 | `trayPopup:getBucketPrefs` | invoke | — | `bucketPrefs` map |
 | `trayPopup:getUiPrefs` | invoke | — | `{ theme, density, timeFormat, transparentPopup, showSpendCard }` |
+| `trayPopup:getPollIntervals` | invoke | — | `Record<string, number>` — effective poll interval in ms per polled connector (manual-only ones absent) |
 | `trayPopup:refresh` | invoke | `id?` | `{ [id]: QuotaSnapshot }` (with `id`) or the full map |
 | `trayPopup:setBucketPref` | invoke | `id, bucketId, Partial<BucketPref>` | `bucketPrefs` map |
 | `trayPopup:getUpdateState` | invoke | — | `UpdateState` |
@@ -134,6 +140,7 @@ Channels prefixed with `trayPopup:` — bridge in `src/preload/tray-popup.ts` (`
 | `trayPopup:openRelease` | invoke | — | — |
 | `trayPopup:dismissUpdate` | invoke | — | `UpdateState` |
 | `trayPopup:resize` | send (popup → main) | `height` | — |
+| `trayPopup:hide` | send (popup → main) | — | — (Escape with no row menu open) |
 | `trayPopup:quotas` | push (main → popup) | `Record<string, QuotaSnapshot>` | — |
 | `trayPopup:visibility` | push (main → popup) | `boolean` | — |
 | `trayPopup:updateState` | push (main → popup) | `UpdateState` | — |

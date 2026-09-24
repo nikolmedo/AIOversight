@@ -25,13 +25,89 @@ export interface RecentEventRecord {
   source?: string;
 }
 
+/**
+ * Daily window in local wall-clock time, as minutes after midnight
+ * (0..1439). The window is `[startMinute, endMinute)` and wraps past
+ * midnight when `startMinute > endMinute`; equal values mean no window.
+ * Settings written before minute precision stored `{ startHour, endHour }`;
+ * `sanitizeQuietHours` migrates that shape on load, and `persistedQuietHours`
+ * writes both shapes so a pre-0.3.6 build keeps an hour-rounded window.
+ */
+export interface QuietHours {
+  startMinute: number;
+  endMinute: number;
+}
+
+/** On-disk quiet hours: the minute window plus the legacy whole-hour keys. */
+export interface PersistedQuietHours extends QuietHours {
+  startHour: number;
+  endHour: number;
+}
+
+const MINUTES_PER_DAY = 24 * 60;
+
+function clampInt(v: unknown, max: number): number | null {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  return Math.min(max, Math.max(0, Math.round(v)));
+}
+
+/**
+ * Validates a persisted or IPC-supplied quiet-hours value. Accepts the
+ * current `{ startMinute, endMinute }` shape, the legacy
+ * `{ startHour, endHour }` one (hours become whole-hour minutes) and the
+ * on-disk shape carrying both. With both, the minutes win when they agree
+ * with the hours (`Math.floor(minute / 60)`); otherwise a pre-0.3.6 build
+ * rewrote the hours after the minutes were saved, so the hours win. Anything
+ * else, including `null`, returns `null` (no quiet hours).
+ */
+export function sanitizeQuietHours(raw: unknown): QuietHours | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  const minutes = quietWindowFromMinutes(r);
+  const hours = quietWindowFromHours(r);
+  if (minutes && hours) {
+    const consistent =
+      Math.floor(minutes.startMinute / 60) === hours.startMinute / 60 &&
+      Math.floor(minutes.endMinute / 60) === hours.endMinute / 60;
+    return consistent ? minutes : hours;
+  }
+  return minutes ?? hours;
+}
+
+function quietWindowFromMinutes(r: Record<string, unknown>): QuietHours | null {
+  const startMinute = clampInt(r.startMinute, MINUTES_PER_DAY - 1);
+  const endMinute = clampInt(r.endMinute, MINUTES_PER_DAY - 1);
+  return startMinute == null || endMinute == null ? null : { startMinute, endMinute };
+}
+
+function quietWindowFromHours(r: Record<string, unknown>): QuietHours | null {
+  const startHour = clampInt(r.startHour, 23);
+  const endHour = clampInt(r.endHour, 23);
+  return startHour == null || endHour == null ? null : { startMinute: startHour * 60, endMinute: endHour * 60 };
+}
+
+/**
+ * Disk form of a quiet-hours window. Builds before 0.3.6 read only
+ * `{ startHour, endHour }` (passing the object through unvalidated), so the
+ * hour keys keep a downgraded install working with an hour-rounded window.
+ */
+export function persistedQuietHours(q: QuietHours | null): PersistedQuietHours | null {
+  if (!q) return null;
+  return {
+    startMinute: q.startMinute,
+    endMinute: q.endMinute,
+    startHour: Math.floor(q.startMinute / 60),
+    endHour: Math.floor(q.endMinute / 60),
+  };
+}
+
 export interface AppSettings {
   /** Master kill switch for all desktop notifications. */
   showNotifications: boolean;
   notifyOnWaiting: boolean;
   notifyOnFinished: boolean;
   perSessionCooldownMs: number;
-  quietHours: { startHour: number; endHour: number } | null;
+  quietHours: QuietHours | null;
   /** Default quota poll interval (minutes). 0 = manual only. */
   quotaPollMinutes: number;
   /** Show a quota summary in the menu-bar / tray tooltip. */
@@ -170,7 +246,7 @@ export class SettingsStore {
         notifyOnWaiting: raw.notifyOnWaiting ?? base.notifyOnWaiting,
         notifyOnFinished: raw.notifyOnFinished ?? base.notifyOnFinished,
         perSessionCooldownMs: raw.perSessionCooldownMs ?? base.perSessionCooldownMs,
-        quietHours: raw.quietHours ?? base.quietHours,
+        quietHours: sanitizeQuietHours(raw.quietHours),
         quotaPollMinutes:
           raw.quotaPollMinutes ?? raw.cursorQuotaPollMinutes ?? base.quotaPollMinutes,
         showQuotaInTray:
@@ -204,6 +280,9 @@ export class SettingsStore {
 
   update(patch: Partial<AppSettings>): AppSettings {
     this.state = { ...this.state, ...patch };
+    // `settings:update` forwards the renderer's patch as-is; validate the one
+    // nested field the notifier does arithmetic on.
+    if ('quietHours' in patch) this.state.quietHours = sanitizeQuietHours(patch.quietHours);
     this.persist();
     return this.state;
   }
@@ -291,7 +370,8 @@ export class SettingsStore {
 
   private persist(): void {
     try {
-      fs.writeFileSync(this.file, JSON.stringify(this.state, null, 2));
+      const onDisk = { ...this.state, quietHours: persistedQuietHours(this.state.quietHours) };
+      fs.writeFileSync(this.file, JSON.stringify(onDisk, null, 2));
     } catch (err) {
       console.error('Failed to write settings:', err);
     }

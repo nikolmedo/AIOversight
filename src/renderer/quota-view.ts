@@ -2,19 +2,18 @@
 // header comment) — loaded via <script> right after quota-math.js and before
 // settings.js / tray-popup.js.
 //
-// Phase 2a scope: `renderMeterRow` is now the single shared meter-row
-// renderer for both settings.ts and tray-popup.ts — label / value / percent /
-// pace-colored bar / reset countdown chip / on-demand
-// grouping.
+// `renderMeterRow` is the single shared meter-row renderer for both
+// settings.ts and tray-popup.ts — label / value / percent / pace-colored bar /
+// reset countdown chip / forecast line / on-demand grouping.
 //
-// Phase 2b scope: `renderTotalSpendCard` is the shared Total Spend card —
-// cross-connector cost/token aggregation + a hand-rolled inline-SVG donut
-// breakdown. No connector emits `QuotaSnapshot.spend` yet (that's Phase 4
-// wiring), so today this always renders as an empty string; the card only
-// becomes visible once a connector starts populating `spend[]`. Kept fully
-// functional against the shape now so no renderer changes are needed later.
-// `renderRowMenu` remains a minimal placeholder — nothing wires a row
-// context menu until Phase 2c.
+// Spend: `renderTotalSpendCard` (tray popup) and `renderSpendSummary`
+// (settings Overview) aggregate `QuotaSnapshot.spend` across the connectors
+// flagged `quota.reportsSpend`, with a hand-rolled inline-SVG donut and
+// daily-cost sparklines. Both render nothing (or one muted line) until a
+// connector reports spend.
+//
+// Row context menu: `renderRowMenu` / `bindRowMenu` (star / hide / refresh /
+// customize), shared by both windows, reachable by right-click and keyboard.
 
 function escapeHtml(s: string): string {
   return s
@@ -58,22 +57,19 @@ function resetChipLabel(resetsAt: number, mode: 'countdown' | 'exact', now: numb
 
 /**
  * Persists whichever mode (countdown/exact) the user last toggled a reset
- * chip to, keyed by `resetsAt`. Rows fully re-render on every quota poll
- * (`onQuotaUpdate`/`onQuotas`) and on both the popup's network-refetch timer
- * and the countdown-only refresh timer — without this, any of those would
- * silently revert an explicit toggle back to `countdown`.
- *
- * Known/deferred limitation: keyed by raw `resetsAt`, not a connector+bucket
- * composite, so two buckets sharing the exact same reset timestamp would
- * cross-contaminate toggle state, and entries are never evicted. No
- * connector sets `resetsAt` yet, so this is currently dormant with zero
- * production impact — not worth a bucket-id-carrying key until it matters.
+ * chip to, keyed by connector + bucket id (`data-chip-key`). Rows fully
+ * re-render on every quota push and on the countdown-only refresh timer —
+ * without this, either would silently revert an explicit toggle back to
+ * `countdown`. Not keyed by `resetsAt`: buckets that inherit the snapshot's
+ * `billingCycleEnd` (`withBillingCycleReset`) share one timestamp, and
+ * toggling one chip must not flip the others. Entries are never evicted; the
+ * key space is bounded by the connectors' bucket ids.
  */
-const resetChipModes = new Map<number, 'countdown' | 'exact'>();
+const resetChipModes = new Map<string, 'countdown' | 'exact'>();
 
-function renderResetChip(resetsAt: number, now: number): string {
-  const mode = resetChipModes.get(resetsAt) ?? 'countdown';
-  return `<button type="button" class="reset-chip" data-resets-at="${resetsAt}" data-mode="${mode}">${escapeHtml(resetChipLabel(resetsAt, mode, now))}</button>`;
+function renderResetChip(resetsAt: number, now: number, chipKey: string): string {
+  const mode = resetChipModes.get(chipKey) ?? 'countdown';
+  return `<button type="button" class="reset-chip" data-resets-at="${resetsAt}" data-chip-key="${escapeHtml(chipKey)}" data-mode="${mode}">${escapeHtml(resetChipLabel(resetsAt, mode, now))}</button>`;
 }
 
 /**
@@ -89,7 +85,7 @@ function bindResetChips(root: Document): void {
     btn.dataset.mode = nextMode;
     const resetsAt = Number(btn.dataset.resetsAt);
     if (Number.isNaN(resetsAt)) return;
-    resetChipModes.set(resetsAt, nextMode);
+    if (btn.dataset.chipKey != null) resetChipModes.set(btn.dataset.chipKey, nextMode);
     btn.textContent = resetChipLabel(resetsAt, nextMode, Date.now());
   });
 }
@@ -113,7 +109,7 @@ function refreshResetChips(root: Document): void {
 
 /** Cap enforced authoritatively in `settings-store.ts`'s `setBucketPref` —
  * duplicated here (not imported; renderer scripts can't import from main) so
- * the row menu / Customize tab can optimistically disable the star control
+ * the row menu / drawer Meters section can optimistically disable the star control
  * without round-tripping through IPC first. Keep in sync with
  * `MAX_STARRED_PER_CONNECTOR` in `src/main/connectors/types.ts`. */
 const MAX_STARRED_PER_CONNECTOR = 2;
@@ -150,7 +146,8 @@ interface MeterRowOptions {
  * `pref` is the bucket's persisted display prefs (star/hide/order), passed
  * through mainly so callers upstream (`renderMeterGroup`) can group by
  * effective visibility; the star state is surfaced here only as a
- * `data-starred` attribute — no visual star UI yet (that's Phase 2c).
+ * `data-starred` attribute (starring itself lives in the row menu and the
+ * drawer's Meters section).
  */
 function renderMeterRow(b: QuotaBucket, pref: BucketPref | undefined, options?: MeterRowOptions): string {
   const now = options?.now ?? Date.now();
@@ -178,14 +175,21 @@ function renderMeterRow(b: QuotaBucket, pref: BucketPref | undefined, options?: 
   const hasNoData = b.used == null && b.remaining == null;
   const statsLine = hasNoData ? 'No data' : b.used == null ? remainingOnly : stats + remaining;
 
+  // The percent is always the used share, matching the bar's fill; say so
+  // in the text rather than leaving "84%" open to a "left" reading.
+  const stateWords = paceStateLabel(paceState);
+  const barLabel = pct != null ? `${b.label}: ${pct}% used${stateWords ? `, ${stateWords}` : ''}` : '';
   const bar =
     pct != null
-      ? `<div class="meter-bar"><div class="meter-bar-fill ${paceClass}" style="--fill:${pct}%"></div></div>`
+      ? `<div class="meter-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}" aria-label="${escapeHtml(barLabel)}"><div class="meter-bar-fill ${paceClass}" style="--fill:${pct}%"></div></div>`
       : '';
 
-  const pctEl = pct != null ? `<span class="meter-pct ${paceClass}">${pct}%</span>` : '';
-  const resetChip = b.resetsAt != null ? renderResetChip(b.resetsAt, now) : '';
+  const pctEl = pct != null ? `<span class="meter-pct ${paceClass}">${pct}% used</span>` : '';
+  const chipKey = `${options?.connectorId ?? ''}:${b.id}`;
+  const resetChip = b.resetsAt != null ? renderResetChip(b.resetsAt, now, chipKey) : '';
   const noteEl = b.note ? `<div class="meter-note">${escapeHtml(b.note)}</div>` : '';
+  const forecast = paceForecast(b, now);
+  const forecastEl = forecast ? `<div class="meter-forecast ${paceClass}">${escapeHtml(forecast)}</div>` : '';
 
   // For plain percent buckets (used% / limit 100) the stats line is fully
   // derivable from the header's percent ("30%" up top vs "30% · 70% left"
@@ -213,11 +217,12 @@ function renderMeterRow(b: QuotaBucket, pref: BucketPref | undefined, options?: 
       </div>
       ${bar}
       ${statsEl}
+      ${forecastEl}
       ${noteEl}
   `;
 
   if (options?.compact) {
-    const hint = pct != null ? `${pct}%` : hasNoData ? 'No data' : b.used == null ? remainingOnly : stats;
+    const hint = pct != null ? `${pct}% used` : hasNoData ? 'No data' : b.used == null ? remainingOnly : stats;
     return `
       <details class="${rowClasses} meter-row-compact" data-bucket-id="${escapeHtml(b.id)}"${starredAttr}${connectorAttr}>
         <summary>
@@ -229,8 +234,12 @@ function renderMeterRow(b: QuotaBucket, pref: BucketPref | undefined, options?: 
     `;
   }
 
+  // A row the row menu can target is a tab stop, so the menu can be opened
+  // from the keyboard (Shift+F10 / ContextMenu, see `bindRowMenu`). Compact
+  // rows need no tabindex: their <summary> is focusable already.
+  const tabAttr = options?.connectorId ? ' tabindex="0"' : '';
   return `
-    <div class="${rowClasses}" data-bucket-id="${escapeHtml(b.id)}"${starredAttr}${connectorAttr}>${bodyHtml}</div>
+    <div class="${rowClasses}" data-bucket-id="${escapeHtml(b.id)}"${starredAttr}${connectorAttr}${tabAttr}>${bodyHtml}</div>
   `;
 }
 
@@ -252,9 +261,8 @@ function renderMeterRow(b: QuotaBucket, pref: BucketPref | undefined, options?: 
  * 'onDemand')` — a bucket with no determinable limit collapses by default
  * unless a connector explicitly opts it into `'always'`. This restores the
  * pre-2a behavior (the old `.quota-bucket-collapsible` path collapsed any
- * bucket without a positive limit) for every currently-shipping connector:
- * no connector sets `defaultVisibility` yet (Phase 3+ work), so without this
- * fallback every `limit: null`/`limit: 0` bucket — Anthropic's spend/per-model
+ * bucket without a positive limit) for connectors that leave
+ * `defaultVisibility` unset. Without this fallback every `limit: null`/`limit: 0` bucket — Anthropic's spend/per-model
  * buckets, OpenAI's admin buckets, Copilot's unlimited/zero-entitlement
  * buckets — would render fully expanded in the main row set. The tray popup
  * window is non-resizable, height-clamped, and has no scroll container
@@ -281,14 +289,14 @@ function renderMeterGroup(
   for (const b of buckets) {
     const pref = bucketPrefs?.[b.id];
     if (pref?.hidden) continue;
-    // Customize tab override (Phase 2c) takes precedence; unset falls back to
+    // Meters-section override (Phase 2c) takes precedence; unset falls back to
     // the connector's own default, unchanged from Phase 2a.
     const effectiveVisibility = pref?.visibility ?? b.defaultVisibility ?? (hasLimit(b) ? 'always' : 'onDemand');
     if (effectiveVisibility === 'onDemand') onDemand.push(b);
     else main.push(b);
   }
 
-  // Shared with the Customize tab's pre-move baseline — see
+  // Shared with the Meters section's pre-move baseline — see
   // `sortBucketsByDisplayOrder`'s header comment in quota-math.ts for why
   // this must not be a locally-reimplemented sort here.
   const renderList = (list: QuotaBucket[], rowOptions?: MeterRowOptions): string =>
@@ -305,6 +313,109 @@ function renderMeterGroup(
     : '';
 
   return mainHtml + extrasHtml;
+}
+
+// ---------------------------------------------------------------------------
+// View state across innerHTML re-renders
+// ---------------------------------------------------------------------------
+
+/** Open `<details>` rows and the focused element inside a container, keyed so
+ * they can be found again in freshly rendered markup. */
+interface ViewState {
+  openKeys: string[];
+  /** Key of the nearest keyed ancestor (or the element itself), `null` when
+   * the path starts at the container. */
+  focusAnchor: string | null;
+  /** Child indices from the anchor down to the focused element. */
+  focusPath: number[] | null;
+  /** Meter fill widths (`--fill`) by row key, so a changed value can
+   * transition from the old width instead of jumping. */
+  fills: Record<string, string>;
+}
+
+/** Row key and current `--fill` of every meter fill under `root`. */
+function meterFillsOf(root: HTMLElement): Array<{ key: string; el: HTMLElement; fill: string }> {
+  const out: Array<{ key: string; el: HTMLElement; fill: string }> = [];
+  root.querySelectorAll<HTMLElement>('.meter-bar-fill').forEach(el => {
+    const row = el.closest('[data-bucket-id]');
+    const key = row ? viewKeyOf(row) : null;
+    if (key) out.push({ key, el, fill: el.style.getPropertyValue('--fill') });
+  });
+  return out;
+}
+
+const VIEW_KEY_SELECTOR = '[data-bucket-id], [data-spend-mode], [data-spend-period]';
+
+/** Stable identity for rendered elements that survive a re-render: meter
+ * rows (bucket ids repeat across connectors, so the connector id is part of
+ * the key) and spend switches. `null` for anything else. */
+function viewKeyOf(el: Element): string | null {
+  const d = (el as HTMLElement).dataset;
+  if (!d) return null;
+  if (d.bucketId != null) return `bucket:${d.connectorId ?? ''}:${d.bucketId}`;
+  if (d.spendMode != null) return `spend-mode:${d.spendMode}`;
+  if (d.spendPeriod != null) return `spend-period:${d.spendPeriod}`;
+  return null;
+}
+
+function findByViewKey(root: HTMLElement, key: string): HTMLElement | null {
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>(VIEW_KEY_SELECTOR))) {
+    if (viewKeyOf(el) === key) return el;
+  }
+  return null;
+}
+
+/** Call before replacing `root.innerHTML`; pass the result to `restoreViewState`. */
+function captureViewState(root: HTMLElement): ViewState {
+  const openKeys = Array.from(root.querySelectorAll('details[open]'))
+    .map(viewKeyOf)
+    .filter((k): k is string => k != null);
+
+  let focusAnchor: string | null = null;
+  let focusPath: number[] | null = null;
+  const active = document.activeElement;
+  if (active && active !== root && root.contains(active)) {
+    const path: number[] = [];
+    let el: Element = active;
+    while (el !== root) {
+      const key = viewKeyOf(el);
+      if (key) { focusAnchor = key; break; }
+      const parent = el.parentElement;
+      if (!parent) break;
+      path.unshift(Array.prototype.indexOf.call(parent.children, el));
+      el = parent;
+    }
+    focusPath = path;
+  }
+  const fills: Record<string, string> = {};
+  for (const f of meterFillsOf(root)) fills[f.key] = f.fill;
+  return { openKeys, focusAnchor, focusPath, fills };
+}
+
+/** Re-opens the captured `<details>` rows, moves focus back to the
+ * equivalent element if it still exists, and starts each changed meter fill
+ * at its previous width so the CSS width transition (`.meter-bar-fill`,
+ * off under `prefers-reduced-motion`) animates it to the new one. */
+function restoreViewState(root: HTMLElement, state: ViewState): void {
+  for (const key of state.openKeys) {
+    const el = findByViewKey(root, key);
+    if (el instanceof HTMLDetailsElement) el.open = true;
+  }
+  const changed = meterFillsOf(root).filter(f => state.fills[f.key] != null && state.fills[f.key] !== f.fill);
+  if (changed.length > 0) {
+    for (const f of changed) f.el.style.setProperty('--fill', state.fills[f.key]);
+    // One forced style/layout pass commits the old widths, so setting the
+    // new ones below is a change the transition can run on.
+    void root.offsetWidth;
+    for (const f of changed) f.el.style.setProperty('--fill', f.fill);
+  }
+  if (!state.focusPath) return;
+  let target: Element | null = state.focusAnchor ? findByViewKey(root, state.focusAnchor) : root;
+  for (const i of state.focusPath) {
+    if (!target) break;
+    target = target.children[i] ?? null;
+  }
+  if (target instanceof HTMLElement && target !== root) target.focus({ preventScroll: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -396,29 +507,53 @@ function aggregateSpendForPeriod(
   return { totalCostCents, totalTokens, byConnector };
 }
 
-/** Stable 0-360 hue derived from an id string, so the same connector always
- * gets the same color across renders/sessions without a lookup table. */
-function hashHue(id: string): number {
+/** Number of `--cat-N` categorical tokens in tokens.css (`--cat-1`..`--cat-6`).
+ * Keep in sync with tokens.css; scripts/check-contrast.js finds the `--cat-N`
+ * tokens on its own, and tests/unit/quota-view.test.ts fails if the count
+ * drifts from this value. */
+const CATEGORICAL_PALETTE_SIZE = 6;
+
+/** Stable non-negative hash of an id string, so the same connector always
+ * gets the same palette slot across renders/sessions without a lookup table. */
+function hashId(id: string): number {
   let hash = 0;
   for (let i = 0; i < id.length; i++) {
     hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
   }
-  return hash % 360;
+  return hash;
 }
 
 /** Matches a well-formed CSS hex color (#rgb / #rgba / #rrggbb / #rrggbbaa).
  * `brandColor` reaches HTML attribute sinks unescaped (SVG `stroke`, a CSS
  * custom-property `style` value) — validate at the source instead of
  * escaping at each call site, so a malformed value falls back cleanly to
- * the hash-derived color rather than rendering broken markup. No shipping
+ * the palette color rather than rendering broken markup. No shipping
  * connector sets `brandColor` today, but Phase 5 connectors will. */
 const HEX_COLOR_RE = /^#[0-9a-f]{3,8}$/i;
 
-/** `Connector.brandColor` when it's a well-formed hex color, else a
- * deterministic id-hash color. */
-function connectorColor(id: string, brandColor?: string): string {
+/** `Connector.brandColor` when it's a well-formed hex color, else a slot of
+ * the categorical palette (`var(--cat-N)`, both themes in tokens.css). The
+ * palette has no red, green or amber hue, so a provider color never reads
+ * as a status. `index` picks the slot when known (see `spendColorFor`, which
+ * keeps up to six spend providers distinct); the id hash is the fallback. */
+function connectorColor(id: string, brandColor?: string, index?: number): string {
   if (brandColor && HEX_COLOR_RE.test(brandColor)) return brandColor;
-  return `hsl(${hashHue(id)}, 62%, 55%)`;
+  const slot = index != null && index >= 0 ? index : hashId(id);
+  return `var(--cat-${(slot % CATEGORICAL_PALETTE_SIZE) + 1})`;
+}
+
+/** Color lookup for the spend views. Slots come from static metadata only:
+ * registry order among connectors declaring `reportsSpend`, so up to six
+ * spend providers never share a color and none shifts when another errors,
+ * loads late or has no tile for the selected period. (With registry-wide
+ * indices Claude Code (2) and OpenCode (8) would both land on slot 3.) A
+ * connector that emits spend without the flag gets the id-hash color. */
+function spendColorFor(connectors: ConnectorMetadata[]): (id: string) => string {
+  const slots = connectors.filter(c => c.reportsSpend);
+  return id => {
+    const def = connectors.find(c => c.id === id);
+    return connectorColor(id, def?.brandColor, slots.findIndex(c => c.id === id));
+  };
 }
 
 interface DonutSlice {
@@ -477,13 +612,78 @@ function renderDonutSvg(slices: DonutSlice[], colorFor: (id: string) => string):
     .map(a => {
       const len = a.fraction * circumference;
       const dasharray = `${len} ${Math.max(0, circumference - len)}`;
-      const circle = `<circle data-spend-slice="${escapeHtml(a.id)}" cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${colorFor(a.id)}" stroke-width="${strokeWidth}" stroke-dasharray="${dasharray}" stroke-dashoffset="${-offset}" transform="rotate(-90 ${cx} ${cy})" />`;
+      const circle = `<circle data-spend-slice="${escapeHtml(a.id)}" cx="${cx}" cy="${cy}" r="${r}" fill="none" style="stroke:${colorFor(a.id)}" stroke-width="${strokeWidth}" stroke-dasharray="${dasharray}" stroke-dashoffset="${-offset}" transform="rotate(-90 ${cx} ${cy})" />`;
       offset += len;
       return circle;
     })
     .join('');
 
   return `<svg class="spend-donut" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" role="img" aria-label="Spend breakdown by provider">${circles}</svg>`;
+}
+
+/** The `last30d` tile's daily cost series (integer cents, oldest -> newest)
+ * of one snapshot, `[]` when absent. */
+function spendSeriesOf(snap: QuotaSnapshot | undefined): Array<number | null> {
+  if (!snap || !snap.ok || !snap.spend) return [];
+  return snap.spend.find(t => t.period === 'last30d')?.series ?? [];
+}
+
+/**
+ * Day-by-day sum of several daily series, aligned on the newest day (each
+ * series ends today). A day is `null` only when every series is `null` or
+ * missing there — never coerced to `0`.
+ */
+function sumDailySeries(list: Array<Array<number | null>>): Array<number | null> {
+  const len = list.reduce((max, s) => Math.max(max, s.length), 0);
+  const out: Array<number | null> = [];
+  for (let i = 0; i < len; i++) {
+    let sum: number | null = null;
+    for (const s of list) {
+      const v = s[s.length - len + i];
+      if (v != null && Number.isFinite(v)) sum = (sum ?? 0) + v;
+    }
+    out.push(sum);
+  }
+  return out;
+}
+
+interface SparklineOptions {
+  /** Bar pitch in px (bar width + gap). */
+  step?: number;
+  height?: number;
+  /** CSS color for the bars; defaults to the stylesheet's `.sparkline` color. */
+  color?: string;
+}
+
+/**
+ * Hand-built inline SVG column sparkline of a daily cost series (integer
+ * cents), same technique as `renderDonutSvg`: no canvas, no library. One bar
+ * per day scaled to the series peak; a `null` or zero day draws no bar, so an
+ * unmeasured day never reads as a measured one. The SVG is `aria-hidden`;
+ * the text alternative is a visually hidden sentence with the total, the
+ * peak and the number of days with spend. Returns `''` when no day has a
+ * positive value.
+ */
+function renderSparkline(series: Array<number | null>, options?: SparklineOptions): string {
+  const values = series.map(v => (v != null && Number.isFinite(v) && v > 0 ? v : 0));
+  const peak = values.reduce((max, v) => Math.max(max, v), 0);
+  if (peak <= 0) return '';
+  const step = options?.step ?? 3;
+  const height = options?.height ?? 16;
+  const barWidth = Math.max(1, step - 1);
+  const width = values.length * step - (step - barWidth);
+  const bars = values
+    .map((v, i) => {
+      if (v <= 0) return '';
+      const h = Math.max(1, Math.round((v / peak) * height * 10) / 10);
+      return `<rect x="${i * step}" y="${height - h}" width="${barWidth}" height="${h}" rx="0.5" />`;
+    })
+    .join('');
+  const total = values.reduce((sum, v) => sum + v, 0);
+  const activeDays = values.filter(v => v > 0).length;
+  const text = `Daily cost, last ${values.length} days: ${formatQuotaValue(total, 'usd')} total, peak ${formatQuotaValue(peak, 'usd')}, spend on ${activeDays} of ${values.length} days`;
+  const colorStyle = options?.color ? ` style="color:${options.color}"` : '';
+  return `<svg class="sparkline" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" aria-hidden="true" focusable="false"${colorStyle}>${bars}</svg><span class="sr-only">${escapeHtml(text)}</span>`;
 }
 
 function formatSpendHeadline(mode: SpendCardMode, totalCostCents: number | null, totalTokens: number | null): string {
@@ -504,7 +704,7 @@ function renderSpendModeSwitcher(active: SpendCardMode): string {
     { value: 'costPerMtok', label: 'Cost / MTok' },
     { value: 'tokens', label: 'Tokens' },
   ];
-  return `<div class="spend-switch-group" role="tablist" aria-label="Spend metric">${opts
+  return `<div class="spend-switch-group" role="group" aria-label="Spend metric">${opts
     .map(
       o =>
         `<button type="button" class="spend-switch${o.value === active ? ' active' : ''}" data-spend-mode="${o.value}" aria-pressed="${o.value === active}">${escapeHtml(o.label)}</button>`,
@@ -518,7 +718,7 @@ function renderSpendPeriodSwitcher(active: SpendPeriod): string {
     { value: 'yesterday', label: 'Yesterday' },
     { value: 'last30d', label: '30 Days' },
   ];
-  return `<div class="spend-switch-group" role="tablist" aria-label="Spend period">${opts
+  return `<div class="spend-switch-group" role="group" aria-label="Spend period">${opts
     .map(
       o =>
         `<button type="button" class="spend-switch${o.value === active ? ' active' : ''}" data-spend-period="${o.value}" aria-pressed="${o.value === active}">${escapeHtml(o.label)}</button>`,
@@ -530,9 +730,7 @@ function renderSpendPeriodSwitcher(active: SpendPeriod): string {
  * Total Spend card — cross-connector cost/token aggregation with a donut
  * breakdown, plus mode (Cost / Cost-per-MTok / Tokens) and period (Today /
  * Yesterday / 30 Days) switchers. Renders an empty string when no connector
- * has any `spend[]` data at all (true for every connector today, until
- * Phase 4 wires real spend data) — the card simply doesn't exist yet rather
- * than rendering an empty shell.
+ * has any `spend[]` data at all, rather than an empty shell.
  */
 function renderTotalSpendCard(
   snapshots: Record<string, QuotaSnapshot>,
@@ -547,7 +745,7 @@ function renderTotalSpendCard(
     state.period,
   );
 
-  const colorForId = (id: string): string => connectorColor(id, connectors.find(c => c.id === id)?.brandColor);
+  const colorForId = spendColorFor(connectors);
 
   // Cost-per-MTok is a rate, not an additive share — fall back to a cost-share
   // donut for that mode (same as 'cost'); 'tokens' mode shows a token-share donut.
@@ -567,15 +765,22 @@ function renderTotalSpendCard(
   const headline = formatSpendHeadline(state.mode, totalCostCents, totalTokens);
 
   const legendUnit: QuotaUnit = donutMetric === 'tokens' ? 'tokens' : 'usd';
+  // `series` is daily cost, so the per-provider trend only shows where the
+  // row itself is a 30-day cost figure.
+  const showTrend = state.mode === 'cost' && state.period === 'last30d';
   const legendHtml = byConnector.length
     ? `<ul class="spend-legend">${byConnector
         .map(e => {
           const value = donutMetric === 'tokens' ? e.tokens : e.costCents;
           const display = value != null ? formatQuotaValue(value, legendUnit) : 'No data';
+          const trend = showTrend
+            ? renderSparkline(spendSeriesOf(snapshots[e.id]), { step: 2, height: 12, color: colorForId(e.id) })
+            : '';
           return `
             <li class="spend-legend-row">
               <span class="spend-legend-dot" style="--dot-color:${colorForId(e.id)}"></span>
               <span class="spend-legend-name">${escapeHtml(e.name)}</span>
+              ${trend ? `<span class="spend-legend-trend">${trend}</span>` : ''}
               <span class="spend-legend-value">${escapeHtml(display)}</span>
             </li>`;
         })
@@ -633,18 +838,26 @@ function renderSpendSummary(
       const agg = aggregates[i];
       const value = formatSpendHeadline(state.mode, agg.totalCostCents, agg.totalTokens);
       const active = p.value === state.period;
+      // Daily cost trend under the 30-day total; cost mode only, since the
+      // series is cost, not tokens or a rate.
+      const trend =
+        p.value === 'last30d' && state.mode === 'cost'
+          ? renderSparkline(sumDailySeries(connectors.map(def => spendSeriesOf(snapshots[def.id]))))
+          : '';
       return `<button type="button" class="spend-switch spend-period${active ? ' active' : ''}" data-spend-period="${p.value}" aria-pressed="${active}">
           <span class="spend-period-label">${escapeHtml(p.label)}</span>
           <span class="spend-period-value num">${escapeHtml(value)}</span>
+          ${trend ? `<span class="spend-period-trend">${trend}</span>` : ''}
         </button>`;
     })
     .join('');
 
   const unit: QuotaUnit = state.mode === 'tokens' ? 'tokens' : 'usd';
+  const colorForId = spendColorFor(connectors);
   const breakdown = aggregateSpendForPeriod(snapshots, connectors, state.period)
     .byConnector.map(e => {
       const v = state.mode === 'tokens' ? e.tokens : e.costCents;
-      return `<span class="spend-breakdown-item"><span class="spend-legend-dot" style="--dot-color:${connectorColor(e.id, connectors.find(c => c.id === e.id)?.brandColor)}"></span>${escapeHtml(e.name)} <span class="num">${escapeHtml(v != null ? formatQuotaValue(v, unit) : 'No data')}</span></span>`;
+      return `<span class="spend-breakdown-item"><span class="spend-legend-dot" style="--dot-color:${colorForId(e.id)}"></span>${escapeHtml(e.name)} <span class="num">${escapeHtml(v != null ? formatQuotaValue(v, unit) : 'No data')}</span></span>`;
     })
     .join('');
 
@@ -664,7 +877,7 @@ function renderSpendSummary(
 }
 
 interface TrayPopupPlan {
-  /** Connectors to render, in registry order. */
+  /** Connectors to render, most urgent first (see `planTrayPopup`). */
   visible: ConnectorMetadata[];
   /** Text for the empty state when `visible` is empty, else `null`. */
   emptyMessage: string | null;
@@ -680,11 +893,27 @@ interface TrayPopupPlan {
  * loaded yet." row. A connector whose desktop app is closed (`appNotRunning`)
  * is left out too, since the popup is a glance at live numbers and the
  * settings window already explains that state.
+ *
+ * Visible connectors are ordered by `providerAttentionRank`: critical, then
+ * warn, then ok, then no data (errors and not-loaded-yet included), so the
+ * provider about to run out is on top. The sort is stable, so ties keep
+ * registry order. There is no user-defined provider order to respect:
+ * `BucketPref.order` / `starred` rank buckets inside one connector (and pick
+ * the tray line), never connectors against each other.
  */
-function planTrayPopup(connectors: ConnectorMetadata[], quotas: Record<string, QuotaSnapshot>): TrayPopupPlan {
+function planTrayPopup(
+  connectors: ConnectorMetadata[],
+  quotas: Record<string, QuotaSnapshot>,
+  bucketPrefs?: Record<string, Record<string, BucketPref>>,
+  now: number = Date.now(),
+): TrayPopupPlan {
   if (connectors.length === 0) return { visible: [], emptyMessage: 'No integrations configured.' };
   const enabled = connectors.filter(def => def.quotaEnabled);
-  const visible = enabled.filter(def => !isAppNotRunning(quotas[def.id]));
+  const ranked = enabled
+    .filter(def => !isAppNotRunning(quotas[def.id]))
+    .map(def => ({ def, rank: providerAttentionRank(quotas[def.id], bucketPrefs?.[def.id], now) }));
+  ranked.sort((a, b) => b.rank - a.rank);
+  const visible = ranked.map(r => r.def);
   if (visible.length > 0) return { visible, emptyMessage: null };
   if (enabled.length === 0) {
     return { visible, emptyMessage: 'No quota integrations enabled. Open settings to add one.' };
@@ -693,6 +922,28 @@ function planTrayPopup(connectors: ConnectorMetadata[], quotas: Record<string, Q
   const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
   const verb = names.length === 1 ? "isn't" : "aren't";
   return { visible, emptyMessage: `Nothing to show. ${list} ${verb} running.` };
+}
+
+/**
+ * Worst pace state across a snapshot's non-hidden buckets, as a sort key:
+ * 3 critical, 2 warn, 1 ok, 0 no data. A failed or missing snapshot ranks 0.
+ */
+function providerAttentionRank(
+  snap: QuotaSnapshot | undefined,
+  prefs: Record<string, BucketPref> | undefined,
+  now: number,
+): number {
+  if (!snap || !snap.ok) return 0;
+  let rank = 0;
+  // Same buckets the rows render, so a monthly bucket paced from its billing
+  // cycle ranks the way its row is coloured.
+  for (const b of withBillingCycleReset(snap.buckets, snap.billingCycleEnd, snap.billingCycleStart)) {
+    if (prefs?.[b.id]?.hidden) continue;
+    const state = paceStateFor(b, now);
+    const r = state === 'critical' ? 3 : state === 'warn' ? 2 : state === 'ok' ? 1 : 0;
+    if (r > rank) rank = r;
+  }
+  return rank;
 }
 
 const ICON_INFO =
@@ -711,18 +962,60 @@ function renderAppNotRunningNotice(message: string, actionsHtml = ''): string {
     </div>`;
 }
 
+/** Inner markup of a `.provider-updated` label; see `renderProviderBlock`. */
+function freshnessMarkup(fetchedAt: number, intervalMs: number | undefined, now: number): { html: string; stale: boolean } {
+  const { text, stale } = freshnessFor(fetchedAt, intervalMs, now);
+  // The warning colour alone would not reach a screen reader.
+  return { html: `${escapeHtml(text)}${stale ? '<span class="sr-only">, out of date</span>' : ''}`, stale };
+}
+
+/**
+ * Re-renders every `.provider-updated` label under `root` in place ("5m
+ * ago" and its stale flag), the same way `refreshResetChips` does for reset
+ * chips, so the labels keep ticking between quota pushes.
+ */
+function refreshProviderFreshness(root: Document | HTMLElement, now: number = Date.now()): void {
+  root.querySelectorAll<HTMLElement>('.provider-updated').forEach(el => {
+    const fetchedAt = Number(el.dataset.fetchedAt);
+    if (!Number.isFinite(fetchedAt)) return;
+    const interval = el.dataset.intervalMs != null ? Number(el.dataset.intervalMs) : undefined;
+    const { html, stale } = freshnessMarkup(fetchedAt, interval, now);
+    if (el.innerHTML !== html) el.innerHTML = html;
+    el.classList.toggle('stale', stale);
+  });
+}
+
+interface ProviderBlockOptions {
+  /** Effective poll interval of this connector in ms; omit when it only
+   * refreshes by hand, so its data is never flagged stale. */
+  pollIntervalMs?: number;
+  /** Injectable for tests; defaults to Date.now(). */
+  now?: number;
+}
+
 /**
  * Per-provider quota section for the tray popup: a flat, borderless section
- * (name + plan tag, then meter rows). Errors collapse to one line with a
- * shortcut to the settings window, where sign-in and configuration live.
+ * (name + plan tag + a muted "5m ago" freshness label, then meter rows). The
+ * label turns to the warning colour once the data is older than twice the
+ * connector's poll interval. Errors collapse to one line with a shortcut to
+ * the settings window, where sign-in and configuration live.
  */
 function renderProviderBlock(
   def: ConnectorMetadata,
   snap: QuotaSnapshot | undefined,
   bucketPrefs?: Record<string, BucketPref>,
+  options?: ProviderBlockOptions,
 ): string {
+  const now = options?.now ?? Date.now();
   const tag = snap?.ok && snap.membershipType ? `<span class="tag">${escapeHtml(snap.membershipType)}</span>` : '';
-  const head = `<div class="provider-head"><span class="provider-name">${escapeHtml(def.name)}</span>${tag}</div>`;
+  let updated = '';
+  if (snap?.ok) {
+    const interval = options?.pollIntervalMs;
+    const { html, stale } = freshnessMarkup(snap.fetchedAt, interval, now);
+    const intervalAttr = interval != null ? ` data-interval-ms="${interval}"` : '';
+    updated = `<span class="provider-updated${stale ? ' stale' : ''}" data-fetched-at="${snap.fetchedAt}"${intervalAttr} title="Updated ${escapeHtml(formatDateTime(snap.fetchedAt))}">${html}</span>`;
+  }
+  const head = `<div class="provider-head"><span class="provider-name">${escapeHtml(def.name)}</span>${tag}${updated}</div>`;
 
   if (!snap) {
     return `<section class="provider">${head}<p class="provider-note">Not loaded yet.</p></section>`;
@@ -741,7 +1034,11 @@ function renderProviderBlock(
 
   const bucketsHtml =
     (snap.buckets.length > 0 &&
-      renderMeterGroup(snap.buckets, bucketPrefs, { remainingWord: 'left', connectorId: def.id })) ||
+      renderMeterGroup(withBillingCycleReset(snap.buckets, snap.billingCycleEnd, snap.billingCycleStart), bucketPrefs, {
+        remainingWord: 'left',
+        connectorId: def.id,
+        now,
+      })) ||
     '<p class="provider-note">No usage buckets yet.</p>';
 
   return `<section class="provider">${head}${bucketsHtml}</section>`;
@@ -767,9 +1064,9 @@ interface RowMenuHandlers {
   refreshConnector(t: RowMenuTarget): void;
   /**
    * Omit to hide the "Customize…" item entirely. settings.ts supplies this
-   * (switches to the Customize tab in-place); tray-popup.ts supplies it as a
-   * call to `window.awPopup.openSettings()` — the popup has no Customize tab
-   * of its own to switch to.
+   * (opens the connector's drawer at its Meters section); tray-popup.ts
+   * supplies it as a call to `window.awPopup.openSettings()` — the popup has
+   * no meter settings of its own.
    */
   openCustomize?(t: RowMenuTarget): void;
 }
@@ -783,15 +1080,24 @@ interface RowMenuHandlers {
  * decision table).
  */
 function renderRowMenu(): string {
+  // Items are out of the tab order (tabindex -1): arrow keys move between
+  // them while the menu is open (roving focus in `bindRowMenu`).
   return `
-    <div class="row-menu" id="rowMenu" hidden role="menu">
-      <button type="button" class="row-menu-item" data-action="hide" role="menuitem"></button>
-      <button type="button" class="row-menu-item" data-action="star" role="menuitem"></button>
-      <button type="button" class="row-menu-item" data-action="refresh" role="menuitem">Refresh this provider</button>
-      <button type="button" class="row-menu-item" data-action="customize" role="menuitem">Customize…</button>
+    <div class="row-menu" id="rowMenu" hidden role="menu" aria-label="Metric actions">
+      <button type="button" class="row-menu-item" data-action="hide" role="menuitem" tabindex="-1"></button>
+      <button type="button" class="row-menu-item" data-action="star" role="menuitem" tabindex="-1"></button>
+      <button type="button" class="row-menu-item" data-action="refresh" role="menuitem" tabindex="-1">Refresh this provider</button>
+      <button type="button" class="row-menu-item" data-action="customize" role="menuitem" tabindex="-1">Customize…</button>
     </div>
   `;
 }
+
+/**
+ * How long after a keyboard open a `contextmenu` event on the same row is
+ * treated as the echo of that key press (Windows fires both for the
+ * ContextMenu key) instead of a new pointer open.
+ */
+const KEYBOARD_CONTEXTMENU_DEDUPE_MS = 1000;
 
 /**
  * Wires the shared row context menu built by `renderRowMenu()` — call once
@@ -800,22 +1106,53 @@ function renderRowMenu(): string {
  * `renderMeterRow` when its caller passed `options.connectorId`) opens the
  * menu near the cursor; a plain click outside it, or Escape, dismisses it.
  *
+ * Keyboard: with focus on a row (or anything inside it), Shift+F10 or the
+ * ContextMenu key opens the menu under the row and focuses its first item.
+ * Arrow Up/Down (wrapping), Home and End move between enabled items; Escape
+ * closes the menu and returns focus to the row; Tab closes it and moves on
+ * from the row. Escape calls `preventDefault()`, so other Escape handlers on
+ * the page (the settings drawer, the popup's hide-on-Escape) must skip an
+ * event that is already `defaultPrevented`.
+ *
+ * Rows are re-rendered by quota pushes while the menu may be open, so the
+ * row that gets focus back is looked up again by its view key inside the
+ * nearest still-attached ancestor, not kept as a possibly detached node.
+ *
  * Positioned via `position: fixed` and clamped against
  * `window.innerWidth`/`innerHeight` (the *window's* viewport, not page
  * scroll offsets) — the tray popup is a small, non-resizable,
- * `overflow: hidden` window with no scroll container anywhere, so an
- * absolutely-positioned menu that could render past its bottom/right edge
- * would be silently clipped and unreachable, the same failure mode
- * `renderMeterGroup`'s Phase 2a comment calls out for bucket rows.
+ * `overflow: hidden` window, so a menu that could render past its
+ * bottom/right edge would be silently clipped and unreachable.
  */
 function bindRowMenu(root: Document, handlers: RowMenuHandlers): void {
   const menu = root.getElementById('rowMenu');
   if (!menu) return;
   let current: RowMenuTarget | null = null;
+  let openedRow: HTMLElement | null = null;
+  let openedAncestors: HTMLElement[] = [];
+  let keyboardOpenedAt = 0;
 
-  const close = (): void => {
+  const items = (): HTMLButtonElement[] =>
+    Array.from(menu.querySelectorAll<HTMLButtonElement>('.row-menu-item')).filter(b => !b.hidden && !b.disabled);
+
+  const findOpenedRow = (): HTMLElement | null => {
+    if (!openedRow) return null;
+    if (openedRow.isConnected) return openedRow;
+    const key = viewKeyOf(openedRow);
+    const scope = openedAncestors.find(a => a.isConnected);
+    return key && scope ? findByViewKey(scope, key) : null;
+  };
+
+  const close = (restoreFocus: boolean): void => {
+    const row = restoreFocus ? findOpenedRow() : null;
     menu.hidden = true;
     current = null;
+    openedRow = null;
+    openedAncestors = [];
+    // A compact row is a <details> without tabindex; its <summary> is the
+    // focusable part.
+    const target = row instanceof HTMLDetailsElement ? row.querySelector('summary') : row;
+    target?.focus({ preventScroll: true });
   };
 
   const refreshLabels = (): void => {
@@ -830,29 +1167,50 @@ function bindRowMenu(root: Document, handlers: RowMenuHandlers): void {
     if (customizeBtn) customizeBtn.hidden = !handlers.openCustomize;
   };
 
-  root.addEventListener('contextmenu', e => {
-    const row = (e.target as HTMLElement).closest('[data-bucket-id]') as HTMLElement | null;
-    if (!row) return;
-    e.preventDefault();
+  /** Opens the menu for `row`, at `point` (pointer) or under the row (keyboard). */
+  const open = (row: HTMLElement, point: { x: number; y: number } | null): void => {
     const connectorId = row.dataset.connectorId;
     const bucketId = row.dataset.bucketId;
     if (!connectorId || !bucketId) return;
     const titleEl = row.querySelector('.meter-row-title');
     current = { connectorId, bucketId, bucketLabel: titleEl?.textContent ?? bucketId };
+    openedRow = row;
+    openedAncestors = [];
+    for (let a = row.parentElement; a; a = a.parentElement) openedAncestors.push(a);
     refreshLabels();
 
     menu.hidden = false;
-    const me = e as MouseEvent;
     const win = row.ownerDocument.defaultView;
-    const viewportW = win?.innerWidth ?? me.clientX;
-    const viewportH = win?.innerHeight ?? me.clientY;
-    const menuRect = (menu as HTMLElement).getBoundingClientRect();
-    let x = me.clientX;
-    let y = me.clientY;
+    const rowRect = row.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const viewportW = win?.innerWidth ?? rowRect.right;
+    const viewportH = win?.innerHeight ?? rowRect.bottom;
+    let x = point ? point.x : rowRect.left + 8;
+    let y = point ? point.y : rowRect.bottom + 2;
     if (x + menuRect.width > viewportW) x = Math.max(0, viewportW - menuRect.width - 4);
-    if (y + menuRect.height > viewportH) y = Math.max(0, y - menuRect.height);
-    (menu as HTMLElement).style.left = `${x}px`;
-    (menu as HTMLElement).style.top = `${y}px`;
+    if (y + menuRect.height > viewportH) {
+      y = Math.max(0, (point ? point.y : rowRect.top - 2) - menuRect.height);
+    }
+    menu.style.left = `${x}px`;
+    menu.style.top = `${y}px`;
+    if (!point) items()[0]?.focus();
+  };
+
+  root.addEventListener('contextmenu', e => {
+    // The keyboard-triggered event can land on the menu item that just got
+    // focus; it must not open anything else.
+    if ((e.target as HTMLElement).closest('#rowMenu')) {
+      e.preventDefault();
+      return;
+    }
+    const row = (e.target as HTMLElement).closest('[data-bucket-id]') as HTMLElement | null;
+    if (!row) return;
+    e.preventDefault();
+    // On Windows the ContextMenu key can also fire `contextmenu` after the
+    // keydown below already opened the menu; keep it anchored to the row.
+    if (!menu.hidden && openedRow === row && Date.now() - keyboardOpenedAt < KEYBOARD_CONTEXTMENU_DEDUPE_MS) return;
+    const me = e as MouseEvent;
+    open(row, { x: me.clientX, y: me.clientY });
   });
 
   menu.addEventListener('click', e => {
@@ -860,7 +1218,9 @@ function bindRowMenu(root: Document, handlers: RowMenuHandlers): void {
     if (!btn || !current || btn.disabled) return;
     const action = btn.dataset.action;
     const target = current;
-    close();
+    // Focus goes back to the row before the handler re-renders, so the
+    // caller's captureViewState/restoreViewState keeps it there.
+    close(menu.contains(root.activeElement));
     if (action === 'hide') handlers.toggleHidden(target);
     else if (action === 'star') handlers.toggleStarred(target);
     else if (action === 'refresh') handlers.refreshConnector(target);
@@ -871,9 +1231,47 @@ function bindRowMenu(root: Document, handlers: RowMenuHandlers): void {
   // `contextmenu`'s own `preventDefault()`, which only stops the browser's
   // native menu from also appearing on the same right-click.
   root.addEventListener('click', e => {
-    if (!menu.hidden && !(e.target as HTMLElement).closest('#rowMenu')) close();
+    if (!menu.hidden && !(e.target as HTMLElement).closest('#rowMenu')) close(false);
   });
+
+  /** Keys while the menu is open: Escape closes, arrows/Home/End rove, Tab leaves. */
+  const handleOpenMenuKey = (ke: KeyboardEvent): void => {
+    if (ke.key === 'Escape') {
+      ke.preventDefault();
+      close(true);
+      return;
+    }
+    if (!menu.contains(root.activeElement)) return;
+    if (ke.key === 'Tab') {
+      close(true);
+      return;
+    }
+    const list = items();
+    const idx = list.indexOf(root.activeElement as HTMLButtonElement);
+    let next = -1;
+    if (ke.key === 'ArrowDown') next = (idx + 1) % list.length;
+    else if (ke.key === 'ArrowUp') next = (idx - 1 + list.length) % list.length;
+    else if (ke.key === 'Home') next = 0;
+    else if (ke.key === 'End') next = list.length - 1;
+    if (next >= 0 && list[next]) {
+      ke.preventDefault();
+      list[next].focus();
+    }
+  };
+
+  /** Shift+F10 or the ContextMenu key on a row opens the menu under that row. */
+  const openFromKeyboard = (ke: KeyboardEvent): void => {
+    if (ke.key !== 'ContextMenu' && !(ke.key === 'F10' && ke.shiftKey)) return;
+    const row = (ke.target as HTMLElement).closest?.('[data-bucket-id]') as HTMLElement | null;
+    if (!row) return;
+    ke.preventDefault();
+    keyboardOpenedAt = Date.now();
+    open(row, null);
+  };
+
   root.addEventListener('keydown', e => {
-    if (!menu.hidden && (e as KeyboardEvent).key === 'Escape') close();
+    const ke = e as KeyboardEvent;
+    if (menu.hidden) openFromKeyboard(ke);
+    else handleOpenMenuKey(ke);
   });
 }

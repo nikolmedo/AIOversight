@@ -20,10 +20,10 @@ async function main() {
 
   setupNav();
   setupDrawer();
-  renderConnectors();
+  // bindIntegrationFilter (below) restores the stored filter and renders the
+  // integrations list once.
   renderOverview();
   renderTotalSpendCardPanel();
-  renderCustomizeTab();
   renderEvents(initial.settings.recentEvents);
   renderGeneral(initial.settings, initial.settingsPath);
   renderIntegrate();
@@ -35,24 +35,24 @@ async function main() {
   bindResetChips(document);
   bindTotalSpendCard(document, renderTotalSpendCardPanel);
   bindRowMenu(document, settingsRowMenuHandlers);
-  bindCustomizeTab();
+  bindDrawerMeters();
   bindConnectorLinks();
+  bindIntegrationFilter();
   setInterval(() => {
     refreshResetChips(document);
     renderEvents(initial.settings.recentEvents);
   }, 30_000);
 
-  for (const btn of [$('#testBtn'), $('#testBtnPrefs')] as HTMLButtonElement[]) {
-    btn.addEventListener('click', () => {
-      void window.aw.testNotification();
-      flashButtonLabel(btn, 'Sent');
-    });
-  }
+  const testBtn = $('#testBtn') as HTMLButtonElement;
+  testBtn.addEventListener('click', () => {
+    void window.aw.testNotification();
+    flashButtonLabel(testBtn, 'Sent');
+  });
   $('#pauseBtn').addEventListener('click', async () => {
     paused = await window.aw.togglePause();
     reflectPaused();
   });
-  $('#clearEvents').addEventListener('click', async () => {
+  bindConfirmClick($('#clearEvents') as HTMLButtonElement, 'Confirm clear', async () => {
     const s = await window.aw.clearEvents();
     initial.settings.recentEvents = s.recentEvents;
     renderEvents(s.recentEvents);
@@ -66,7 +66,7 @@ async function main() {
         quotas = { ...quotas, ...all };
         for (const id of Object.keys(all)) refreshQuotaCard(id);
         renderTotalSpendCardPanel();
-        renderCustomizeTab();
+        renderDrawerMeters();
       }
     } finally {
       refreshAll.disabled = false;
@@ -87,7 +87,7 @@ async function main() {
     quotas[id] = snapshot;
     refreshQuotaCard(id);
     renderTotalSpendCardPanel();
-    renderCustomizeTab();
+    renderDrawerMeters();
   });
 }
 
@@ -100,15 +100,65 @@ function flashButtonLabel(btn: HTMLButtonElement, label: string): void {
   }, 1500);
 }
 
+/** How long a destructive button stays armed after its first click. */
+const CONFIRM_WINDOW_MS = 3500;
+
+/**
+ * Inline two-step confirm for destructive buttons, instead of a modal
+ * `confirm()`: the first click relabels the button to `confirmLabel`, a
+ * second click within `CONFIRM_WINDOW_MS` runs `action`. Timing out or
+ * moving focus away disarms it. Returns the disarm function, for callers
+ * that disable the button while it may be armed.
+ */
+function bindConfirmClick(
+  btn: HTMLButtonElement,
+  confirmLabel: string,
+  action: () => Promise<void> | void,
+): () => void {
+  const idleLabel = btn.textContent ?? '';
+  let armTimer: ReturnType<typeof setTimeout> | null = null;
+  let running = false;
+
+  const disarm = (): void => {
+    if (armTimer) { clearTimeout(armTimer); armTimer = null; }
+    btn.textContent = idleLabel;
+    delete btn.dataset.confirming;
+  };
+
+  btn.addEventListener('click', async ev => {
+    ev.preventDefault();
+    if (running) return;
+    if (!armTimer) {
+      btn.textContent = confirmLabel;
+      btn.dataset.confirming = 'true';
+      armTimer = setTimeout(disarm, CONFIRM_WINDOW_MS);
+      return;
+    }
+    disarm();
+    running = true;
+    try {
+      await action();
+    } finally {
+      running = false;
+    }
+  });
+  btn.addEventListener('blur', disarm);
+  return disarm;
+}
+
 // ---------------------------------------------------------------------------
 // Navigation
 // ---------------------------------------------------------------------------
 
-const PAGES = ['overview', 'integrations', 'activity', 'preferences', 'webhook', 'logs'];
+const PAGES = ['overview', 'integrations', 'activity', 'general', 'notifications', 'webhook', 'logs'];
 const PAGE_STORAGE_KEY = 'aio.settings.page';
+/** Page ids from earlier versions, still found in localStorage. The old
+ * Preferences page was split into General and Notifications. */
+const LEGACY_PAGE_IDS: Record<string, string> = { preferences: 'general' };
 
 function activatePage(name: string): void {
-  const target = PAGES.includes(name) ? name : 'overview';
+  const resolved = LEGACY_PAGE_IDS[name] ?? name;
+  const target = PAGES.includes(resolved) ? resolved : 'overview';
   for (const item of $$('.nav-item')) {
     if (item.dataset.page === target) item.setAttribute('aria-current', 'page');
     else item.removeAttribute('aria-current');
@@ -162,7 +212,11 @@ function renderOverview(): void {
   const list = $('#overviewQuotas');
   $('#overviewEmpty').hidden = defs.length > 0;
   list.hidden = defs.length === 0;
+  // Quota pushes re-render the whole list: keep open rows, keyboard focus
+  // and the meter fills' previous widths (so they transition) across it.
+  const view = captureViewState(list);
   list.innerHTML = defs.map(renderOverviewItem).join('');
+  restoreViewState(list, view);
 }
 
 function renderOverviewItem(def: ConnectorMetadata): string {
@@ -190,7 +244,10 @@ function renderOverviewItem(def: ConnectorMetadata): string {
   } else {
     const bucketPrefs = initial.settings.connectors.bucketPrefs?.[def.id];
     body =
-      (snap.buckets.length > 0 && renderMeterGroup(snap.buckets, bucketPrefs, { connectorId: def.id })) ||
+      (snap.buckets.length > 0 &&
+        renderMeterGroup(withBillingCycleReset(snap.buckets, snap.billingCycleEnd, snap.billingCycleStart), bucketPrefs, {
+          connectorId: def.id,
+        })) ||
       '<p class="row-note">No usage buckets returned.</p>';
   }
 
@@ -236,7 +293,7 @@ function bucketPrefFor(connectorId: string, bucketId: string): BucketPref | unde
  * `initial.settings` from the (authoritative) response — the star cap is
  * enforced server-side in `SettingsStore.setBucketPref`, so a `starred: true`
  * request past the cap comes back with `starred` still unset; callers that
- * care about that (the row menu, the Display group's star button) compare
+ * care about that (the row menu, the drawer Meters section's star button) compare
  * before/after themselves.
  */
 async function applyBucketPref(
@@ -259,11 +316,11 @@ const settingsRowMenuHandlers: RowMenuHandlers = {
   },
   toggleHidden: t => {
     const hidden = !bucketPrefFor(t.connectorId, t.bucketId)?.hidden;
-    void applyBucketPref(t.connectorId, t.bucketId, { hidden }).then(renderCustomizeTab);
+    void applyBucketPref(t.connectorId, t.bucketId, { hidden }).then(renderDrawerMeters);
   },
   toggleStarred: t => {
     const starred = !bucketPrefFor(t.connectorId, t.bucketId)?.starred;
-    void applyBucketPref(t.connectorId, t.bucketId, { starred }).then(renderCustomizeTab);
+    void applyBucketPref(t.connectorId, t.bucketId, { starred }).then(renderDrawerMeters);
   },
   refreshConnector: t => {
     void (async () => {
@@ -271,19 +328,20 @@ const settingsRowMenuHandlers: RowMenuHandlers = {
       if (snap) {
         quotas[t.connectorId] = snap;
         refreshQuotaCard(t.connectorId);
-        renderCustomizeTab();
+        renderDrawerMeters();
       }
     })();
   },
-  openCustomize: () => {
+  openCustomize: t => {
     closeDrawer();
-    activatePage('preferences');
-    document.getElementById('displayGroup')?.scrollIntoView({ block: 'start' });
+    activatePage('integrations');
+    openDrawer(t.connectorId);
+    focusDrawerMeter(t.bucketId);
   },
 };
 
 // ---------------------------------------------------------------------------
-// Display group (bucket visibility / star / order)
+// Drawer Meters section (bucket visibility / star / order)
 // ---------------------------------------------------------------------------
 
 /**
@@ -302,22 +360,51 @@ function customizeDisplayOrder(buckets: QuotaBucket[], bucketPrefs?: Record<stri
   return sortBucketsByDisplayOrder(buckets, bucketPrefs).map(b => b.id);
 }
 
-function renderCustomizeTab(): void {
-  const root = document.getElementById('customizeList');
-  if (!root) return;
-  const parts: string[] = [];
-  for (const def of initial.connectors) {
-    if (!def.hasQuota) continue;
-    parts.push(renderCustomizeConnectorGroup(def, quotas[def.id]));
-  }
-  root.innerHTML = parts.join('') || '<p class="muted-line">No quota integrations configured.</p>';
+/**
+ * Re-renders the Meters section of the open drawer, if any. Rows are
+ * rebuilt with `innerHTML`, so keyboard focus on one of their controls is
+ * put back on the same control (or the row's first enabled one, when a move
+ * button became disabled at the list edge).
+ */
+function renderDrawerMeters(): void {
+  const drawer = drawerEl();
+  const list = drawer.querySelector<HTMLElement>('[data-role="meters-list"]');
+  const id = drawer.dataset.connectorId;
+  if (drawer.hidden || !list || !id) return;
+  const def = initial.connectors.find(c => c.id === id);
+  if (!def) return;
+
+  const active = document.activeElement as HTMLElement | null;
+  const activeRow = active && list.contains(active) ? (active.closest('.customize-row') as HTMLElement | null) : null;
+  const focusBucket = activeRow?.dataset.bucketId;
+  const focusRole = active?.dataset.role;
+
+  list.innerHTML = renderMetersList(def, quotas[id]);
+
+  if (!focusBucket) return;
+  const row = list.querySelector<HTMLElement>(`.customize-row[data-bucket-id="${cssEscape(focusBucket)}"]`);
+  if (!row) return;
+  const same = focusRole ? row.querySelector<HTMLElement>(`[data-role="${cssEscape(focusRole)}"]`) : null;
+  const target =
+    same && !(same as HTMLButtonElement).disabled
+      ? same
+      : row.querySelector<HTMLElement>('input, select, button:not(:disabled)');
+  target?.focus({ preventScroll: true });
 }
 
-function renderCustomizeConnectorGroup(def: ConnectorMetadata, snap: QuotaSnapshot | undefined): string {
-  const header = `<div class="customize-head">${escapeHtml(def.name)}</div>`;
+/** Scrolls the open drawer to its Meters section and focuses `bucketId`'s row. */
+function focusDrawerMeter(bucketId: string): void {
+  const section = drawerEl().querySelector<HTMLElement>('[data-section="meters"]');
+  if (!section) return;
+  section.scrollIntoView({ block: 'start' });
+  const row = section.querySelector<HTMLElement>(`.customize-row[data-bucket-id="${cssEscape(bucketId)}"]`);
+  row?.querySelector<HTMLElement>('input, select, button:not(:disabled)')?.focus({ preventScroll: true });
+}
+
+function renderMetersList(def: ConnectorMetadata, snap: QuotaSnapshot | undefined): string {
   const note = (text: string): string =>
-    `<div class="customize-group surface-block">${header}<p class="customize-note">${text}</p></div>`;
-  if (!snap) return note('Not loaded yet. Turn on quota for this integration in Integrations.');
+    `<div class="customize-group surface-block"><p class="customize-note">${text}</p></div>`;
+  if (!snap) return note('Not loaded yet. Turn on quota above, then refresh.');
   if (!snap.ok && snap.appNotRunning) return note(escapeHtml(snap.error));
   if (!snap.ok) return note(`Last fetch failed: ${escapeHtml(snap.error)}`);
   if (snap.buckets.length === 0) return note('No usage buckets yet.');
@@ -331,7 +418,7 @@ function renderCustomizeConnectorGroup(def: ConnectorMetadata, snap: QuotaSnapsh
       return renderCustomizeRow(def.id, b, bucketPrefs?.[id], i === 0, i === orderedIds.length - 1);
     })
     .join('');
-  return `<div class="customize-group surface-block" data-connector-id="${escapeHtml(def.id)}">${header}<div class="customize-rows">${rows}</div></div>`;
+  return `<div class="customize-group surface-block" data-connector-id="${escapeHtml(def.id)}"><div class="customize-rows">${rows}</div></div>`;
 }
 
 const ICON_STAR =
@@ -355,7 +442,7 @@ function renderCustomizeRow(
     <div class="customize-row" data-connector-id="${escapeHtml(connectorId)}" data-bucket-id="${escapeHtml(b.id)}">
       <label class="customize-row-main">
         <input type="checkbox" class="switch" data-role="enabled" ${hidden ? '' : 'checked'} aria-label="Show ${escapeHtml(b.label)}" />
-        <span class="customize-row-label">${escapeHtml(b.label)}</span>
+        <span class="customize-row-label" title="${escapeHtml(b.label)}">${escapeHtml(b.label)}</span>
       </label>
       <div class="customize-row-controls">
         <select class="control control-select control-sm" data-role="visibility" aria-label="Visibility">
@@ -426,12 +513,13 @@ async function moveCustomizeBucket(
     // paths above, simply undoes the busy-disable with correct
     // per-row first/last disabled states, cheaper than tracking which
     // branch ran.
-    renderCustomizeTab();
+    renderDrawerMeters();
   }
 }
 
-function bindCustomizeTab(): void {
-  const root = $('#customizeList');
+/** One delegated listener pair on the drawer, which outlives its rebuilt body. */
+function bindDrawerMeters(): void {
+  const root = drawerEl();
 
   root.addEventListener('change', e => {
     const row = (e.target as HTMLElement).closest('.customize-row') as HTMLElement | null;
@@ -441,15 +529,15 @@ function bindCustomizeTab(): void {
     const target = e.target as HTMLElement;
     if (target.matches('[data-role="enabled"]')) {
       const hidden = !(target as HTMLInputElement).checked;
-      void applyBucketPref(connectorId, bucketId, { hidden }).then(renderCustomizeTab);
+      void applyBucketPref(connectorId, bucketId, { hidden }).then(renderDrawerMeters);
     } else if (target.matches('[data-role="visibility"]')) {
       const visibility = (target as HTMLSelectElement).value as 'always' | 'onDemand';
-      void applyBucketPref(connectorId, bucketId, { visibility }).then(renderCustomizeTab);
+      void applyBucketPref(connectorId, bucketId, { visibility }).then(renderDrawerMeters);
     }
   });
 
   root.addEventListener('click', e => {
-    const btn = (e.target as HTMLElement).closest('button[data-role]') as HTMLButtonElement | null;
+    const btn = (e.target as HTMLElement).closest('.customize-row button[data-role]') as HTMLButtonElement | null;
     if (!btn) return;
     const row = btn.closest('.customize-row') as HTMLElement;
     const connectorId = row.dataset.connectorId!;
@@ -461,7 +549,7 @@ function bindCustomizeTab(): void {
         if (wantStar && !after) {
           flashCustomizeMessage(row, `Limit reached: at most ${MAX_STARRED_PER_CONNECTOR} starred per integration.`);
         } else {
-          renderCustomizeTab();
+          renderDrawerMeters();
         }
       });
     } else if (btn.dataset.role === 'move-up' || btn.dataset.role === 'move-down') {
@@ -491,20 +579,110 @@ function renderStatusBadge(id: string): string {
   return `<span class="status status-${s}"><span class="status-dot" aria-hidden="true"></span>${STATUS_LABELS[s]}</span>`;
 }
 
+type IntegrationFilter = 'enabled' | 'all';
+const INTEGRATION_FILTER_KEY = 'aio.settings.integrationFilter';
+/** The search box only earns its space once the list is long. */
+const INTEGRATION_SEARCH_MIN = 10;
+let integrationFilter: IntegrationFilter = 'all';
+let integrationQuery = '';
+
+function isConnectorEnabled(id: string): boolean {
+  const e = initial.settings.connectors.enabled[id];
+  return !!(e?.notifications || e?.quota);
+}
+
+function needsAttention(id: string): boolean {
+  const s = statusFor(id);
+  return s === 'error' || s === 'needs-login';
+}
+
+function matchesIntegrationQuery(def: ConnectorMetadata, query: string): boolean {
+  if (!query) return true;
+  const q = query.toLowerCase();
+  return [def.name, def.vendor, def.description].some(t => t.toLowerCase().includes(q));
+}
+
+/**
+ * Rebuilds the list for the current filter and search. Connectors needing
+ * attention (error, sign-in) sort first inside their vendor group. The order
+ * is computed here only, not on every quota push, so rows don't move under
+ * the pointer; a status change is picked up the next time the list is built.
+ */
 function renderConnectors(): void {
   const root = $('#connectors');
   root.innerHTML = '';
-  const groups = groupByVendor(initial.connectors);
+  const visible = initial.connectors.filter(
+    def =>
+      (integrationFilter === 'all' || isConnectorEnabled(def.id)) &&
+      matchesIntegrationQuery(def, integrationQuery),
+  );
+  const groups = groupByVendor(visible);
   for (const [vendor, defs] of groups) {
+    const ordered = defs
+      .map((def, i) => ({ def, i, attention: needsAttention(def.id) }))
+      .sort((a, b) => Number(b.attention) - Number(a.attention) || a.i - b.i)
+      .map(x => x.def);
     const group = document.createElement('section');
     group.className = 'group';
     group.innerHTML = `<h2 class="overline">${escapeHtml(vendor)}</h2>`;
     const list = document.createElement('div');
     list.className = 'surface-block integration-list';
-    for (const def of defs) list.appendChild(renderIntegrationRow(def));
+    for (const def of ordered) list.appendChild(renderIntegrationRow(def));
     group.appendChild(list);
     root.appendChild(group);
   }
+  renderConnectorsEmpty(visible.length === 0);
+}
+
+function renderConnectorsEmpty(empty: boolean): void {
+  const el = $('#connectorsEmpty');
+  el.hidden = !empty;
+  if (!empty) {
+    el.innerHTML = '';
+    return;
+  }
+  el.innerHTML = integrationQuery
+    ? `<p>No integrations match “${escapeHtml(integrationQuery)}”.</p>`
+    : '<p>No integrations are turned on yet.</p><button type="button" class="btn btn-secondary" data-integration-filter="all">Show all integrations</button>';
+}
+
+function setIntegrationFilter(next: IntegrationFilter): void {
+  integrationFilter = next;
+  for (const btn of $$<HTMLButtonElement>('.segmented-btn[data-integration-filter]')) {
+    btn.setAttribute('aria-pressed', String(btn.dataset.integrationFilter === next));
+  }
+  try {
+    localStorage.setItem(INTEGRATION_FILTER_KEY, next);
+  } catch {
+    /* storage unavailable — the filter choice is a convenience only */
+  }
+  renderConnectors();
+}
+
+function bindIntegrationFilter(): void {
+  let stored: string | null = null;
+  try {
+    stored = localStorage.getItem(INTEGRATION_FILTER_KEY);
+  } catch {
+    stored = null;
+  }
+  if (stored === 'enabled' || stored === 'all') integrationFilter = stored;
+  for (const btn of $$<HTMLButtonElement>('.segmented-btn[data-integration-filter]')) {
+    btn.setAttribute('aria-pressed', String(btn.dataset.integrationFilter === integrationFilter));
+  }
+
+  $('.page[data-page="integrations"]').addEventListener('click', e => {
+    const btn = (e.target as HTMLElement).closest('[data-integration-filter]') as HTMLElement | null;
+    if (btn) setIntegrationFilter(btn.dataset.integrationFilter === 'enabled' ? 'enabled' : 'all');
+  });
+
+  const search = $('#integrationSearch') as HTMLInputElement;
+  search.hidden = initial.connectors.length <= INTEGRATION_SEARCH_MIN;
+  search.addEventListener('input', () => {
+    integrationQuery = search.value.trim();
+    renderConnectors();
+  });
+  renderConnectors();
 }
 
 function groupByVendor(defs: ConnectorMetadata[]): Map<string, ConnectorMetadata[]> {
@@ -561,7 +739,7 @@ function bindConnectorLinks(): void {
     // here or Overview keeps showing a connector the user just switched off.
     if (cap === 'quota' && !checked) delete quotas[id];
     refreshQuotaCard(id);
-    renderCustomizeTab();
+    renderDrawerMeters();
     renderTotalSpendCardPanel();
     void window.aw.setConnectorEnabled(id, { [cap]: checked });
   });
@@ -602,9 +780,11 @@ function setupDrawer(): void {
     const drawer = drawerEl();
     if (drawer.hidden) return;
     if (e.key === 'Escape') {
-      // The row context menu handles its own Escape first.
+      // The row context menu handles its own Escape first; depending on
+      // listener order it has either not run yet (menu still open) or
+      // already closed itself and called preventDefault().
       const menu = document.getElementById('rowMenu');
-      if (menu && !menu.hidden) return;
+      if (e.defaultPrevented || (menu && !menu.hidden)) return;
       e.preventDefault();
       closeDrawer();
     } else if (e.key === 'Tab') {
@@ -697,6 +877,13 @@ function renderConnectorDetail(def: ConnectorMetadata): HTMLElement {
         <div class="detail-actions">
           <button type="button" class="btn btn-secondary" data-role="refresh-quota">Refresh now</button>
         </div>
+      </section>
+      <section class="detail-section" data-section="meters" aria-labelledby="metersTitle-${escapeHtml(def.id)}">
+        <div class="detail-section-head">
+          <h3 class="overline" id="metersTitle-${escapeHtml(def.id)}">Meters</h3>
+        </div>
+        <p class="detail-help">Choose which meters show, star up to ${MAX_STARRED_PER_CONNECTOR} for the menu bar / tray tooltip, and reorder them.</p>
+        <div data-role="meters-list"></div>
       </section>`
     : '';
 
@@ -729,6 +916,7 @@ function renderConnectorDetail(def: ConnectorMetadata): HTMLElement {
         if (snap) {
           quotas[def.id] = snap;
           refreshQuotaCard(def.id);
+          renderDrawerMeters();
         }
       } finally {
         refresh.disabled = false;
@@ -752,6 +940,7 @@ function renderConnectorDetail(def: ConnectorMetadata): HTMLElement {
 
     const panel = root.querySelector('[data-role="quota-snapshot"]') as HTMLElement;
     panel.innerHTML = renderQuotaSnapshot(quotas[def.id], def);
+    (root.querySelector('[data-role="meters-list"]') as HTMLElement).innerHTML = renderMetersList(def, quotas[def.id]);
   }
 
   return root;
@@ -777,9 +966,14 @@ function renderField(
   if (field.type === 'secret') {
     const isSet = (): boolean => !!def.setSecretKeys?.includes(field.key);
     const state = document.createElement('span');
+    const clearBtn = document.createElement('button');
+    let disarmClear = (): void => {};
     const reflect = (): void => {
       state.className = isSet() ? 'tag tag-ok' : 'tag';
       state.textContent = isSet() ? 'Set' : 'Not set';
+      // Nothing to clear when the key isn't set.
+      clearBtn.disabled = !isSet();
+      if (clearBtn.disabled) disarmClear();
     };
     label.appendChild(state);
 
@@ -806,12 +1000,10 @@ function renderField(
       input.placeholder = 'Paste a new value to replace';
       reflect();
     });
-    const clearBtn = document.createElement('button');
     clearBtn.type = 'button';
-    clearBtn.className = 'btn btn-ghost';
+    clearBtn.className = 'btn btn-danger-ghost';
     clearBtn.textContent = 'Clear';
-    clearBtn.addEventListener('click', async ev => {
-      ev.preventDefault();
+    disarmClear = bindConfirmClick(clearBtn, 'Confirm clear', async () => {
       const updated = await window.aw.setConnectorSecret(connectorId, field.key, null);
       const updatedDef = updated.find(d => d.id === connectorId);
       if (updatedDef) def.setSecretKeys = updatedDef.setSecretKeys;
@@ -903,7 +1095,11 @@ function refreshQuotaCard(id: string): void {
   const drawer = drawerEl();
   if (!drawer.hidden && drawer.dataset.connectorId === id) {
     const panel = drawer.querySelector('[data-role="quota-snapshot"]') as HTMLElement | null;
-    if (panel) panel.innerHTML = renderQuotaSnapshot(quotas[id], def);
+    if (panel) {
+      const view = captureViewState(panel);
+      panel.innerHTML = renderQuotaSnapshot(quotas[id], def);
+      restoreViewState(panel, view);
+    }
   }
   renderOverview();
 }
@@ -943,7 +1139,7 @@ function renderQuotaSnapshot(q: QuotaSnapshot | undefined, def?: ConnectorMetada
   const bucketPrefs = def ? initial.settings.connectors.bucketPrefs?.[def.id] : undefined;
   const buckets =
     q.buckets.length > 0
-      ? renderMeterGroup(q.buckets, bucketPrefs, { connectorId: def?.id }) ||
+      ? renderMeterGroup(withBillingCycleReset(q.buckets, q.billingCycleEnd, q.billingCycleStart), bucketPrefs, { connectorId: def?.id }) ||
         '<p class="row-note">No usage buckets returned.</p>'
       : '<p class="row-note">No usage buckets returned.</p>';
   const messages =
@@ -997,7 +1193,7 @@ function renderEvents(events: RecentEvent[]): void {
 }
 
 // ---------------------------------------------------------------------------
-// Preferences
+// General and Notifications pages
 // ---------------------------------------------------------------------------
 
 function applyDensityClass(mode: 'default' | 'compact'): void {
@@ -1022,8 +1218,6 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
   const transparentPopupHint = $('#transparentPopupHint');
   const showSpendCard = $('#showSpendCard') as HTMLInputElement;
   const checkForUpdates = $('#checkForUpdates') as HTMLInputElement;
-  const popupShortcut = $('#popupShortcut') as HTMLInputElement;
-  const popupShortcutStatus = $('#popupShortcutStatus');
 
   launchAtLogin.checked = s.launchAtLogin;
   showNotif.checked = s.showNotifications;
@@ -1033,16 +1227,32 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
   quotaPoll.value = String(s.quotaPollMinutes ?? 5);
   cooldown.value = String(Math.round(s.perSessionCooldownMs / 1000));
   quietEnabled.checked = !!s.quietHours;
-  quietStart.value = String(s.quietHours?.startHour ?? 22);
-  quietEnd.value = String(s.quietHours?.endHour ?? 8);
+  quietStart.value = formatTimeOfDay(s.quietHours?.startMinute ?? 22 * 60);
+  quietEnd.value = formatTimeOfDay(s.quietHours?.endMinute ?? 8 * 60);
+  // A cleared time field reads '' until it is complete again; keep the last
+  // valid value so a half-edited field never persists as midnight.
+  let quietStartMinute = parseTimeOfDay(quietStart.value) ?? 22 * 60;
+  let quietEndMinute = parseTimeOfDay(quietEnd.value) ?? 8 * 60;
   theme.value = s.theme ?? 'system';
   density.value = s.density ?? 'default';
   timeFormat.value = s.timeFormat ?? 'auto';
   transparentPopup.checked = !!s.transparentPopup;
   showSpendCard.checked = s.showSpendCard !== false;
   checkForUpdates.checked = s.checkForUpdates !== false;
-  popupShortcut.value = s.popupShortcut ?? '';
   $('#settingsPath').textContent = `Settings file: ${settingsPath}`;
+
+  // Dependent rows follow their master switch. Disabled, not just dimmed, so
+  // they can't be changed while the master switch makes them moot; `persist`
+  // still reads their values, so nothing is lost.
+  const syncDependentRows = (): void => {
+    notifyWaiting.disabled = !showNotif.checked;
+    notifyFinished.disabled = !showNotif.checked;
+    quietStart.disabled = !quietEnabled.checked;
+    quietEnd.disabled = !quietEnabled.checked;
+  };
+  syncDependentRows();
+  showNotif.addEventListener('change', syncDependentRows);
+  quietEnabled.addEventListener('change', syncDependentRows);
 
   applyDensityClass(density.value as 'default' | 'compact');
   setTimeFormatPref(timeFormat.value as 'auto' | '12h' | '24h');
@@ -1055,6 +1265,8 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
   }
 
   const persist = debounce(() => {
+    quietStartMinute = parseTimeOfDay(quietStart.value) ?? quietStartMinute;
+    quietEndMinute = parseTimeOfDay(quietEnd.value) ?? quietEndMinute;
     void window.aw.update({
       launchAtLogin: launchAtLogin.checked,
       showNotifications: showNotif.checked,
@@ -1063,9 +1275,7 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
       showQuotaInTray: showQuotaTray.checked,
       quotaPollMinutes: Math.max(0, Number(quotaPoll.value)),
       perSessionCooldownMs: Math.max(1, Number(cooldown.value)) * 1000,
-      quietHours: quietEnabled.checked
-        ? { startHour: clampHour(quietStart.value), endHour: clampHour(quietEnd.value) }
-        : null,
+      quietHours: quietEnabled.checked ? { startMinute: quietStartMinute, endMinute: quietEndMinute } : null,
       theme: theme.value as AppSettings['theme'],
       density: density.value as AppSettings['density'],
       timeFormat: timeFormat.value as AppSettings['timeFormat'],
@@ -1103,20 +1313,181 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
     el.addEventListener('input', persist);
   }
 
-  // The shortcut has its own IPC channel (settings:setPopupShortcut) rather
-  // than riding the debounced `update()` above, so a taken-accelerator
-  // failure can be attributed to this one field instead of the whole patch.
-  $('#popupShortcutSave').addEventListener('click', async () => {
-    const res = await window.aw.setPopupShortcut(popupShortcut.value.trim());
-    popupShortcutStatus.textContent = res.ok
-      ? 'Shortcut set.'
-      : `Could not set shortcut: ${res.reason ?? 'unknown error'}`;
+  setupShortcutRecorder(s.popupShortcut ?? '');
+}
+
+const SHORTCUT_HINT = 'Click, then press the keys. Esc cancels, Backspace clears.';
+
+/**
+ * Active keyboard layout (`navigator.keyboard.getLayoutMap()`), so the
+ * recorder names character keys by what they type (AZERTY's `KeyQ` is "A").
+ * `null` until loaded, or where the Keyboard Map API is missing or refused;
+ * `acceleratorFromKeyEvent` then falls back to `e.key` and `code`.
+ */
+let keyboardLayout: AcceleratorLayoutMap | null = null;
+
+/** Loads (or reloads, after a layout switch) `keyboardLayout`. Never rejects. */
+async function refreshKeyboardLayout(): Promise<void> {
+  try {
+    const getLayoutMap = navigator.keyboard?.getLayoutMap;
+    if (typeof getLayoutMap !== 'function') return;
+    keyboardLayout = await getLayoutMap.call(navigator.keyboard);
+  } catch {
+    /* API refused (e.g. not a secure context): keep the fallback */
+  }
+}
+
+/**
+ * Key recorder for the popup shortcut. Focus starts recording; the next
+ * complete combination is built by `acceleratorFromKeyEvent`
+ * (accelerator.ts) and saved through its own IPC channel
+ * (settings:setPopupShortcut) rather than the debounced `update()`, so a
+ * taken accelerator is reported on this field. While recording, the global
+ * shortcut is suspended (settings:suspendPopupShortcut) so the current
+ * combination reaches this page and can be recorded again; saving,
+ * cancelling and blur restore it, and main restores it if this window
+ * blurs, reloads, crashes or closes. "Edit as text" takes a raw accelerator
+ * string for keys the recorder can't capture.
+ */
+function setupShortcutRecorder(initialAccelerator: string): void {
+  const recorder = $('#popupShortcut') as HTMLButtonElement;
+  const clearBtn = $('#popupShortcutClear') as HTMLButtonElement;
+  const status = $('#popupShortcutStatus');
+  const editToggle = $('#popupShortcutEditText') as HTMLButtonElement;
+  const textRow = $('#popupShortcutTextRow') as HTMLFormElement;
+  const textInput = $('#popupShortcutText') as HTMLInputElement;
+  const textCancel = $('#popupShortcutTextCancel') as HTMLButtonElement;
+  let saved = initialAccelerator;
+  let recording = false;
+  /** Serializes suspend/resume/save so a resume can't overtake a save. */
+  let queue: Promise<unknown> = Promise.resolve();
+  const enqueue = <T>(task: () => Promise<T>): Promise<T> => {
+    const next = queue.then(task, task);
+    queue = next.catch(() => undefined);
+    return next;
+  };
+
+  const show = (): void => {
+    const human = formatAccelerator(saved, initial.platform);
+    recorder.textContent = recording ? 'Press keys…' : human || 'Not set';
+    recorder.classList.toggle('recording', recording);
+    recorder.classList.toggle('empty', !recording && !human);
+    recorder.setAttribute(
+      'aria-label',
+      recording ? 'Recording popup shortcut, press keys' : `Popup shortcut: ${human || 'not set'}. Press to record a new one`,
+    );
+    clearBtn.disabled = !saved;
+  };
+
+  const start = (): void => {
+    if (recording) return;
+    recording = true;
+    status.textContent = SHORTCUT_HINT;
+    show();
+    void refreshKeyboardLayout();
+    void enqueue(async () => {
+      const res = await window.aw.suspendPopupShortcut(true);
+      // The global shortcut is still active, so its keys never reach this
+      // page: don't look like we're listening.
+      if (res.ok || !recording) return;
+      recording = false;
+      status.textContent = `Could not start recording: ${res.reason ?? 'unknown error.'} Click the field again to record.`;
+      show();
+    });
+  };
+
+  /** Ends recording; `resume` is false when a save follows, which restores on its own. */
+  const stop = (resume: boolean): void => {
+    if (!recording) return;
+    recording = false;
+    show();
+    if (!resume) return;
+    void enqueue(async () => {
+      const res = await window.aw.suspendPopupShortcut(false);
+      const before = saved;
+      if (res.shortcut !== undefined) saved = res.shortcut;
+      else if (!res.ok) saved = '';
+      if (!res.ok && before && !saved) {
+        status.textContent = `Shortcut turned off: ${res.reason ?? 'another application took it'}`;
+      }
+      show();
+    });
+  };
+
+  const save = (accelerator: string): Promise<boolean> =>
+    enqueue(async () => {
+      const res = await window.aw.setPopupShortcut(accelerator);
+      // Main returns the saved value: a failed rollback may have cleared it.
+      saved = res.shortcut ?? (res.ok ? accelerator.trim() : saved);
+      if (res.ok) {
+        status.textContent = saved ? 'Shortcut set.' : 'Shortcut cleared.';
+      } else {
+        status.textContent = `Could not set shortcut: ${res.reason ?? 'unknown error'}`;
+      }
+      show();
+      return res.ok;
+    });
+
+  recorder.addEventListener('focus', start);
+  // Clicking an already focused recorder restarts recording.
+  recorder.addEventListener('click', start);
+  recorder.addEventListener('blur', () => {
+    if (status.textContent === SHORTCUT_HINT) status.textContent = '';
+    stop(true);
   });
-  $('#popupShortcutClear').addEventListener('click', async () => {
-    popupShortcut.value = '';
-    const res = await window.aw.setPopupShortcut('');
-    popupShortcutStatus.textContent = res.ok ? 'Shortcut cleared.' : `Failed to clear: ${res.reason ?? 'unknown error'}`;
+  recorder.addEventListener('keydown', e => {
+    if (!recording) return;
+    const step = acceleratorFromKeyEvent(e, initial.platform, keyboardLayout);
+    if (step.kind === 'pass') return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (step.kind === 'pending') return;
+    if (step.kind === 'invalid') {
+      status.textContent = step.reason;
+      return;
+    }
+    if (step.kind === 'cancel') {
+      status.textContent = '';
+      stop(true);
+      return;
+    }
+    stop(false);
+    void save(step.kind === 'clear' ? '' : step.accelerator);
   });
+  clearBtn.addEventListener('click', () => void save(''));
+
+  const setTextEditor = (open: boolean): void => {
+    textRow.hidden = !open;
+    editToggle.setAttribute('aria-expanded', String(open));
+    editToggle.textContent = open ? 'Hide text editor' : 'Edit as text';
+    if (open) {
+      textInput.value = saved;
+      textInput.focus();
+      textInput.select();
+    }
+  };
+  editToggle.addEventListener('click', () => setTextEditor(textRow.hidden));
+  textCancel.addEventListener('click', () => {
+    setTextEditor(false);
+    editToggle.focus();
+  });
+  textRow.addEventListener('submit', e => {
+    e.preventDefault();
+    void save(textInput.value).then(ok => {
+      if (ok) setTextEditor(false);
+      else textInput.focus();
+    });
+  });
+  textInput.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    e.preventDefault();
+    setTextEditor(false);
+    editToggle.focus();
+  });
+
+  window.addEventListener('focus', () => void refreshKeyboardLayout());
+  void refreshKeyboardLayout();
+  show();
 }
 
 // ---------------------------------------------------------------------------
@@ -1256,10 +1627,18 @@ function appendLog(entry: LogEntry): void {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function clampHour(s: string): number {
-  const n = Number(s);
-  if (Number.isNaN(n)) return 0;
-  return Math.max(0, Math.min(23, Math.round(n)));
+/** `"HH:MM"` (an `<input type="time">` value) to minutes after midnight, or `null` while incomplete. */
+function parseTimeOfDay(value: string): number | null {
+  const m = /^(\d{2}):(\d{2})/.exec(value);
+  if (!m) return null;
+  const minutes = Number(m[1]) * 60 + Number(m[2]);
+  return minutes >= 0 && minutes < 24 * 60 ? minutes : null;
+}
+
+function formatTimeOfDay(minutes: number): string {
+  const h = Math.floor(minutes / 60) % 24;
+  const m = minutes % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
 function debounce<F extends (...args: never[]) => void>(fn: F, ms: number): F {

@@ -47,6 +47,7 @@ Reads and writes `<userData>/settings.json`. Handles:
 - Legacy migration — old `detectors.*` shape from pre-0.2 builds is transparently upgraded
 - Recent events — capped at 50 entries, prepended on new events
 - Synchronous writes — the whole state is `JSON.stringify`-ed and written with `fs.writeFileSync` on every mutation (no temp-file + rename, so not atomic)
+- Downgrade-safe quiet hours — `quietHours` is written as `{ startMinute, endMinute, startHour, endHour }` (`persistedQuietHours`); the hour keys are `Math.floor(minute / 60)` for builds before 0.3.6
 
 AppSettings shape:
 ```ts
@@ -59,6 +60,14 @@ AppSettings shape:
   recentEvents
 }
 ```
+
+### PopupShortcut (`popup-shortcut.ts`)
+
+Owns the global accelerator that toggles the tray popup; every register and unregister (startup, `settings:setPopupShortcut` and its rollback, suspend/resume) goes through it, including `release()` at quit and before installing an update, with `globalShortcut` injected so it is unit-tested without Electron.
+- `apply(accelerator)` — registers or clears; never throws. A taken accelerator (`register` returns `false`) and a malformed one (`register` throws) both return `{ ok: false, reason }`. Always ends a suspension.
+- `suspend()` / `resume()` — the settings window's shortcut recorder releases the accelerator while it listens (`settings:suspendPopupShortcut`), because the OS delivers a registered accelerator to its global handler, not to the page. `resume()` is a no-op unless suspended, so a save that lands before the recorder's resume doesn't bring the old accelerator back.
+- Failure safety — `index.ts` also resumes when the settings window blurs, starts loading (reload), its renderer is gone, its `webContents` is destroyed, or the window closes. Only the settings window's `webContents` may suspend, and only while that window is focused. If the accelerator can't be taken back (another app grabbed it meanwhile), main logs it and clears `popupShortcut`, like a failed registration at startup. A failure from main's own restore (blur) is kept until the renderer's next `suspendPopupShortcut(false)`, which returns it as `ok: false`; both shortcut channels also return the saved `shortcut`, so the recorder never shows a cleared value.
+- `acceleratorRuleViolation()` — the recorder's rule (a key needs Ctrl/Cmd, Alt or Super; F1–F24 may stand alone) for accelerator strings. `settings:setPopupShortcut` applies it, so *Edit as text* can't bypass the recorder. It lives in main because renderer scripts compile as non-module globals main can't `require`; startup doesn't apply it, so a legacy saved value keeps working.
 
 ### SecretStore (`connectors/secret-store.ts`)
 
@@ -87,8 +96,9 @@ Runs a polling loop per connector:
 - Coalesces concurrent refresh calls — if a fetch is already in flight, the second caller awaits the same promise
 - Fetch budget — each `provider.fetch()` is raced against a 45 s watchdog (`FETCH_BUDGET_MS`). On expiry the snapshot becomes `ok: false` ("timed out") and counts as an ordinary failure; the abandoned fetch's late result is discarded
 - Backoff — each failure arms a gate for the periodic tick. If the snapshot carries `retryAfterMs` (e.g. from an HTTP 429 `Retry-After`), the next fetch waits that long from now; otherwise it waits `interval × 2^(failures − 1)` from the start of the failed fetch, capped at 30 minutes. A successful fetch clears the gate, and so does an `appNotRunning` snapshot (the connector's desktop app is closed): that is an expected state, so polling stays at the normal interval and data appears soon after the app opens. A skipped tick leaves the cached snapshot untouched
-- Manual refresh — `refresh(id)` / `refreshAll()` (the Refresh buttons) bypass the backoff gate
+- Manual refresh — `refresh(id)` / `refreshAll()` (the Refresh buttons) bypass the backoff gate. Only explicit user actions call them; the tray popup has no timed refresh and renders the cached state that main pushes (`trayPopup:quotas`) after every fetch and on every show
 - Caches the last `QuotaSnapshot` per connector
+- `pollIntervals()` reports the effective interval (ms, after the 60 s floor) of every connector with a running timer; manual-only connectors are left out. The tray popup reads it (`trayPopup:getPollIntervals`) to flag a provider whose data is older than twice its interval
 - Emits `update(id, snapshot)` after every fetch (success or failure), and `removed(id)` when a connector's quota is disabled
 - `refreshAll()` fans out parallel calls to all enabled providers
 - `destroy()` clears all timers on app quit
@@ -98,7 +108,7 @@ Runs a polling loop per connector:
 Applies notification policy before dispatching to the OS:
 - Per-session cooldown keyed on `(sessionId, kind)` — prevents duplicate alerts within `perSessionCooldownMs` (default 30 s)
 - Kind filter — `notifyOnWaiting` and `notifyOnFinished` toggles
-- Quiet hours — compares wall-clock hour against `[startHour, endHour)` range
+- Quiet hours — compares local minutes after midnight against `[startMinute, endMinute)`; wraps past midnight when start > end, equal values mean no window. `sanitizeQuietHours` (settings-store.ts) runs on load and on every `update()` patch: it clamps to 0..1439, turns the pre-0.3.6 `{ startHour, endHour }` shape into whole-hour minutes, and maps anything malformed to `null`. The file keeps both shapes, so a pre-0.3.6 build (which passes `quietHours` through and reads only the hours) keeps an hour-rounded window. On load the minutes win when they agree with the hours (`Math.floor(minute / 60)`); when they don't, an older build rewrote the hours after the minutes were saved, so the hours win. Malformed minutes fall back to valid hours.
 - Electron `Notification` — includes the app icon, dispatches click handler to reveal the source file in Finder/Explorer
 - `notifyUpdate()` — the update notification; honors only `showNotifications` (not pause or quiet hours); click opens the settings window
 
@@ -227,7 +237,8 @@ tsc: src/**/*.ts → dist/**/*.js + *.js.map
      tsconfig.json: target ES2022, module CommonJS, strict
      All three process types (main, preload, renderer) compile together
 
-copy-renderer.js: copies every non-.ts file in src/renderer/ (HTML, CSS) → dist/renderer/
+copy-renderer.js: copies every non-.ts file in src/renderer/ (HTML, CSS, including the
+                  shared tokens.css and meters.css) → dist/renderer/
                   copies top-level assets/ → dist/renderer/assets/
 
 npm test
@@ -269,7 +280,7 @@ Complete reference in `CLAUDE.md`. The short invariants:
 
 - All channels are handled in `registerIpc()` in `src/main/index.ts`
 - Login channels (`connector:login:${id}`) are registered dynamically for connectors that declare `login`
-- Tray popup channels are prefixed `trayPopup:`; `trayPopup:resize` (an `ipcMain.on` listener) and the `trayPopup:quotas` / `trayPopup:visibility` / `trayPopup:updateState` pushes live in `src/main/tray-popup.ts`
+- Tray popup channels are prefixed `trayPopup:`; `trayPopup:resize` and `trayPopup:hide` (`ipcMain.on` listeners that ignore any sender but the popup) and the `trayPopup:quotas` / `trayPopup:visibility` / `trayPopup:updateState` pushes live in `src/main/tray-popup.ts`
 - Push channels (main → renderer) use `webContents.send()`; the renderer subscribes via the preload bridge's `on*` methods
 
 ---

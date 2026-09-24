@@ -29,6 +29,16 @@
   --danger:      #F87171;
   --danger-soft: rgba(248, 113, 113, .12);
 
+  /* Categorical palette for per-provider marks (spend donut, legend dots).
+     No red, green or amber hue, so a provider never reads as a status.
+     Order: blue, fuchsia, cyan, violet, pink, slate. */
+  --cat-1: #60A5FA;
+  --cat-2: #E879F9;
+  --cat-3: #22D3EE;
+  --cat-4: #A78BFA;
+  --cat-5: #F472B6;
+  --cat-6: #94A3B8;
+
   --radius:    8px;
   --radius-sm: 6px;
   --shadow-float: 0 12px 32px rgba(0, 0, 0, .28);
@@ -65,6 +75,13 @@
     --warn-soft:   rgba(171, 79, 8, .10);
     --danger:      #B91C1C;
     --danger-soft: rgba(185, 28, 28, .10);
+
+    --cat-1: #2563EB;
+    --cat-2: #A21CAF;
+    --cat-3: #0E7490;
+    --cat-4: #6D28D9;
+    --cat-5: #DB2777;
+    --cat-6: #64748B;
 
     --shadow-float: 0 12px 32px rgba(17, 18, 23, .12);
     --backdrop:     rgba(17, 18, 23, .16);
