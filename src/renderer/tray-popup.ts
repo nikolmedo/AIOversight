@@ -11,50 +11,40 @@
   let connectors: ConnectorMetadata[] = [];
   let bucketPrefs: Record<string, Record<string, BucketPref>> = {};
   let lastQuotas: Record<string, QuotaSnapshot> = {};
-  let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
-  let countdownTimer: ReturnType<typeof setInterval> | null = null;
+  let updatedLabelTimer: ReturnType<typeof setInterval> | null = null;
   let resetChipTimer: ReturnType<typeof setInterval> | null = null;
-  let nextRefreshAt = 0;
+  /** Newest `fetchedAt` among the rendered snapshots, 0 when none. */
+  let lastUpdatedAt = 0;
 
-  const AUTO_REFRESH_MS = 30_000;
+  const UPDATED_LABEL_TICK_MS = 1_000;
   const RESET_CHIP_REFRESH_MS = 30_000;
 
-  function updateCountdown(): void {
+  /** "Updated 42s ago" in the footer. Not a live region: it changes every
+   * second while the popup is open and is not worth announcing. */
+  function updateUpdatedLabel(): void {
     const el = document.getElementById('refreshTimer');
     if (!el) return;
-    const secs = Math.max(0, Math.round((nextRefreshAt - Date.now()) / 1000));
-    el.textContent = `auto · ${secs}s`;
+    const text = lastUpdatedAt > 0 ? formatUpdatedAgo(lastUpdatedAt, Date.now()) : '';
+    if (el.textContent !== text) el.textContent = text;
   }
 
-  function startAutoRefresh(): void {
-    stopAutoRefresh();
-    nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
-    updateCountdown();
-
-    countdownTimer = setInterval(updateCountdown, 1_000);
-    // The popup window is hidden, not destroyed, between shows — this timer
-    // (like the two above) must stop while hidden or it leaks indefinitely.
+  // There is no periodic fetch here: main pushes `trayPopup:quotas` on every
+  // poll result (and on every show), so the popup only renders what the
+  // poller already has. A timed `refresh()` would bypass the poller's
+  // backoff and Retry-After gate and hit vendor APIs every 30s while the
+  // popup stays open. Only the Refresh button and the row menu force a fetch.
+  function startTimers(): void {
+    stopTimers();
+    updateUpdatedLabel();
+    updatedLabelTimer = setInterval(updateUpdatedLabel, UPDATED_LABEL_TICK_MS);
+    // The popup window is hidden, not destroyed, between shows, so both
+    // timers must stop while hidden or they leak indefinitely.
     resetChipTimer = setInterval(() => refreshResetChips(document), RESET_CHIP_REFRESH_MS);
-    autoRefreshTimer = setInterval(async () => {
-      nextRefreshAt = Date.now() + AUTO_REFRESH_MS;
-      const btn = document.getElementById('refreshAll') as HTMLButtonElement | null;
-      if (btn) btn.disabled = true;
-      try {
-        const next = (await window.awPopup.refresh()) as Record<string, QuotaSnapshot>;
-        render(next);
-        requestAnimationFrame(() => requestAnimationFrame(reportSize));
-      } finally {
-        if (btn) btn.disabled = false;
-      }
-    }, AUTO_REFRESH_MS);
   }
 
-  function stopAutoRefresh(): void {
-    if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
-    if (countdownTimer)   { clearInterval(countdownTimer);   countdownTimer   = null; }
-    if (resetChipTimer)   { clearInterval(resetChipTimer);   resetChipTimer   = null; }
-    const el = document.getElementById('refreshTimer');
-    if (el) el.textContent = '';
+  function stopTimers(): void {
+    if (updatedLabelTimer) { clearInterval(updatedLabelTimer); updatedLabelTimer = null; }
+    if (resetChipTimer)    { clearInterval(resetChipTimer);    resetChipTimer    = null; }
   }
 
   // renderBucket / renderBuckets / renderConnectorBlock moved to the shared
@@ -91,8 +81,12 @@
   function renderTotalSpendCardPanel(): void {
     const el = document.getElementById('totalSpendCard');
     if (!el) return;
+    // A keyboard press on a spend switch re-renders this panel; keep focus on
+    // the switch instead of dropping it to <body>.
+    const view = captureViewState(el);
     // `#totalSpendCard:empty { display: none }` collapses the hidden card.
     el.innerHTML = showSpendCard ? renderTotalSpendCard(lastQuotas, connectors) : '';
+    restoreViewState(el, view);
   }
 
   function render(quotas: Record<string, QuotaSnapshot>): void {
@@ -100,11 +94,17 @@
     renderTotalSpendCardPanel();
     const panel = $('#content');
     const plan = planTrayPopup(connectors, quotas);
+    lastUpdatedAt = plan.visible.reduce((max, def) => Math.max(max, quotas[def.id]?.fetchedAt ?? 0), 0);
+    updateUpdatedLabel();
     if (plan.emptyMessage != null) {
       panel.innerHTML = `<p class="empty">${escapeHtml(plan.emptyMessage)}</p>`;
       return;
     }
+    // Pushes arrive on every poll; keep open "More metrics" rows open and
+    // the focused control focused across the innerHTML swap.
+    const view = captureViewState(panel);
     panel.innerHTML = plan.visible.map(def => renderProviderBlock(def, quotas[def.id], bucketPrefs[def.id])).join('');
+    restoreViewState(panel, view);
   }
 
   function reportSize(): void {
@@ -245,19 +245,18 @@
 
   window.awPopup.onVisibilityChange(visible => {
     if (visible) {
-      startAutoRefresh();
+      startTimers();
       void applyUiPrefs();
       void refreshConnectors();
       void refreshBucketPrefs();
     } else {
-      stopAutoRefresh();
+      stopTimers();
     }
   });
 
   // bindResetChips/bindRowMenu are one-time delegated listeners (not timers)
-  // — safe to leave running while hidden. The countdown-refresh timer itself
-  // lives inside startAutoRefresh/stopAutoRefresh above, in lockstep with
-  // onVisibilityChange, same as the other two popup timers.
+  // — safe to leave running while hidden. The popup's timers live inside
+  // startTimers/stopTimers above, in lockstep with onVisibilityChange.
   document.body.insertAdjacentHTML('beforeend', renderRowMenu());
   bindResetChips(document);
   bindRowMenu(document, trayRowMenuHandlers);
@@ -306,7 +305,6 @@
       const next = (await window.awPopup.refresh()) as Record<string, QuotaSnapshot>;
       render(next);
       requestAnimationFrame(() => requestAnimationFrame(reportSize));
-      if (autoRefreshTimer) startAutoRefresh();
     } finally {
       btn.disabled = false;
     }

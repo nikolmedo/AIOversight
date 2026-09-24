@@ -9,6 +9,8 @@
  *   - white on accent-solid (primary button, checked switch)
  *   - ok / warn / danger on their -soft pill background, composited over surface
  *   - accent on accent-soft, composited over surface
+ * and the categorical palette (cat-1..cat-N: donut arcs and legend dots,
+ * graphical objects under WCAG 1.4.11) against surface at 3:1.
  *
  * Usage: node scripts/check-contrast.js
  * Exit code 1 if any pair fails. Dependency-free.
@@ -20,6 +22,7 @@ const path = require('path');
 
 const TOKENS_PATH = path.join(__dirname, '..', 'src', 'renderer', 'tokens.css');
 const MIN_RATIO = 4.5;
+const MIN_GRAPHIC_RATIO = 3;
 
 function parseBlock(text) {
   const out = {};
@@ -77,7 +80,7 @@ function checkTheme(name, t) {
     return c.rgb;
   };
   const results = [];
-  const add = (label, fg, bg) => results.push({ label, r: ratio(fg, bg) });
+  const add = (label, fg, bg, min = MIN_RATIO) => results.push({ label, r: ratio(fg, bg), min });
 
   for (const fg of ['text', 'text-2', 'text-3', 'accent', 'ok', 'warn', 'danger']) {
     for (const bg of ['bg', 'surface', 'surface-2']) add(`${fg} on ${bg}`, solid(fg), solid(bg));
@@ -88,13 +91,16 @@ function checkTheme(name, t) {
     const softBg = composite(parseColor(t[`${s}-soft`]), surface);
     add(`${s} on ${s}-soft over surface`, solid(s), softBg);
   }
+  const catKeys = Object.keys(t).filter(k => /^cat-\d+$/.test(k));
+  if (catKeys.length === 0) throw new Error(`No --cat-N palette tokens in ${name} theme`);
+  for (const k of catKeys) add(`${k} on surface (graphic)`, solid(k), surface, MIN_GRAPHIC_RATIO);
 
   console.log(`== ${name}`);
   let failures = 0;
-  for (const { label, r } of results) {
-    const bad = r < MIN_RATIO;
+  for (const { label, r, min } of results) {
+    const bad = r < min;
     if (bad) failures++;
-    console.log(`  ${bad ? 'FAIL' : 'ok  '}  ${r.toFixed(2).padStart(5)}  ${label}`);
+    console.log(`  ${bad ? 'FAIL' : 'ok  '}  ${r.toFixed(2).padStart(5)}  ${label}${min !== MIN_RATIO ? ` (min ${min}:1)` : ''}`);
   }
   return failures;
 }
@@ -103,10 +109,10 @@ function main() {
   const { dark, light } = readTokens();
   const failures = checkTheme('dark', dark) + checkTheme('light', light);
   if (failures) {
-    console.log(`\n${failures} pair(s) below ${MIN_RATIO}:1`);
+    console.log(`\n${failures} pair(s) below their minimum ratio`);
     process.exitCode = 1;
   } else {
-    console.log(`\nAll pairs meet ${MIN_RATIO}:1`);
+    console.log(`\nAll pairs meet their minimum (${MIN_RATIO}:1 text, ${MIN_GRAPHIC_RATIO}:1 palette)`);
   }
 }
 

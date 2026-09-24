@@ -6,7 +6,7 @@ Covers the settings window (`src/renderer/settings.html`, `settings.css`) and th
 
 A native system utility: dense but calm, closer to an OS settings pane than to a web dashboard.
 
-- Colour carries meaning only: accent for interactive and selected state, `ok` / `warn` / `danger` for status. Everything else is neutral.
+- Colour carries meaning only: accent for interactive and selected state, `ok` / `warn` / `danger` for status. Everything else is neutral. The one exception is the categorical palette (`--cat-N`), which tells providers apart in the spend donut and legend; it has no red, green or amber hue so it never reads as a status.
 - No gradients, glow, glassmorphism, emoji icons, or decorative illustration. Icons are small inline SVG strokes.
 - Flat surfaces separated by hairline borders. The tray popup is one surface with sections divided by hairlines, not nested cards.
 - Motion is short (`--dur: 140ms`) and disabled under `prefers-reduced-motion: reduce`.
@@ -46,6 +46,12 @@ Dark is the `:root` default; light overrides it inside `@media (prefers-color-sc
 | `--danger-soft` | `rgba(248, 113, 113, .12)` | `rgba(185, 28, 28, .10)` | Pill background |
 | `--shadow-float` | `0 12px 32px rgba(0, 0, 0, .28)` | `0 12px 32px rgba(17, 18, 23, .12)` | Drawer, menus |
 | `--backdrop` | `rgba(0, 0, 0, .4)` | `rgba(17, 18, 23, .16)` | Drawer backdrop |
+| `--cat-1` | `#60A5FA` | `#2563EB` | Provider colour: blue |
+| `--cat-2` | `#E879F9` | `#A21CAF` | Provider colour: fuchsia |
+| `--cat-3` | `#22D3EE` | `#0E7490` | Provider colour: cyan |
+| `--cat-4` | `#A78BFA` | `#6D28D9` | Provider colour: violet |
+| `--cat-5` | `#F472B6` | `#DB2777` | Provider colour: pink |
+| `--cat-6` | `#94A3B8` | `#64748B` | Provider colour: slate |
 
 Theme-independent: `--radius: 8px`, `--radius-sm: 6px`, `--ease: cubic-bezier(.2, .8, .2, 1)`, `--dur: 140ms`.
 
@@ -59,6 +65,8 @@ Every text/background pair must reach at least 4.5:1 in both themes:
 - white on `--accent-solid`;
 - `ok`, `warn`, `danger` and `accent` on their `-soft` background composited over `--surface` (pills, selected rows).
 
+The categorical palette (`--cat-N`) is only used for graphical marks (donut arcs, legend dots), so it must reach 3:1 against `--surface` in both themes (WCAG 1.4.11) rather than 4.5:1.
+
 Two light values were darkened to pass: `--ok` `#15803D` to `#157A3A` and `--warn` `#B45309` to `#AB4F08`. The originals measured 4.41:1 on `--surface-2` and about 4.3:1 on their own pill backgrounds.
 
 Check with:
@@ -67,7 +75,7 @@ Check with:
 node scripts/check-contrast.js
 ```
 
-It reads both themes from `tokens.css`, prints every ratio, and exits non-zero if any pair is below 4.5:1. Run it after any token change.
+It reads both themes from `tokens.css`, prints every ratio, and exits non-zero if any pair is below its minimum (4.5:1 for text, 3:1 for the palette). Run it after any token change.
 
 ## Theme
 
@@ -82,6 +90,9 @@ The theme setting (system / light / dark) is applied in the main process through
 ## Component rules
 
 - **Buttons**: 28px high (`.btn`), 24px for `.btn-sm`. Variants: `btn-primary` (accent-solid, white text), `btn-secondary`, `btn-ghost`, `btn-danger-ghost`. Icon buttons are square (`.btn-icon`).
+- **Destructive actions** (Activity *Clear*, a connector secret's *Clear*): inline two-step confirm (`bindConfirmClick` in `settings.ts`). The first click relabels the button to *Confirm clear* for 3.5 s; a second click inside that window runs the action; timing out or moving focus away disarms it. No `confirm()` dialogs. A secret's *Clear* is `btn-danger-ghost` and disabled while the key is not set.
+- **Disabled rows**: a row whose control depends on a master switch (notification kinds under *Show desktop notifications*, the quiet-hours window under its switch) disables that control while the master is off. Disabled rows use `--text-3` for their label and description, never opacity, so the text still meets contrast.
+- **Spend switches** (`.spend-switch`): toggle buttons with `aria-pressed`, grouped in a `role="group"` with an `aria-label` (not a tablist). At least 24px high.
 - **Switch**: native checkbox with `appearance: none`, 28x16px; off is `--border-strong`, on is `--accent-solid` with a white 12px knob.
 - **Inputs** (`.control`): 28px high (24px for `.control-sm`), `--surface` background, `--border-strong` border; on focus the border becomes `--accent` with a 3px `--accent-soft` halo.
 - **Meters**: 4px bar on a `--surface-2` track. Fill and percentage colour come from `paceStateFor` in `src/renderer/quota-math.ts`:
@@ -89,6 +100,9 @@ The theme setting (system / light / dark) is applied in the main process through
   - Otherwise pace-projected: `projected = used fraction / elapsed fraction`; warn when projected is at least 0.9, critical when projected is at least 1.0 or usage has reached 100%.
   - The bar carries no elapsed-time ("even pace") marker. One existed and was removed at the owner's request as visual noise; pace is expressed only through colour and the reset countdown.
 - **Bucket placement**: buckets with no limit, or marked `defaultVisibility: 'onDemand'`, render in the compact "More metrics" section below the main meters (`renderMeterGroup` in `quota-view.ts`).
+- **No-data meter rows** (`.meter-row.no-data`): `--text-2` title and `--text-3` value, not reduced opacity.
+- **Provider colours** (`connectorColor` in `quota-view.ts`): a valid `brandColor` wins; otherwise a `--cat-N` slot is assigned in registry order among the connectors that report spend (`spendColorFor`), so up to six spend providers never share a colour; the id hash is the fallback. Donut arcs set the colour through `style="stroke:…"`, since `var()` does not work in SVG presentation attributes.
+- **Tray popup footer**: an *Updated 42s ago* label from the newest `fetchedAt` among visible providers. It ticks each second while the popup is shown and is not a live region. The popup never fetches on a timer: it renders what main pushes, and only the Refresh button and the row menu's *Refresh this provider* force a fetch. Re-renders keep open *More metrics* rows open and keep keyboard focus (`captureViewState` / `restoreViewState` in `quota-view.ts`).
 - **Status**: small dot plus text. "App not running" (`status-app-not-running`) uses a `--text-3` dot and `--text-2` text: it is expected, not an error. Pills (`.pill-waiting`, `.pill-finished`) use the status colour on its `-soft` background.
 - **Update banner** (`.update-banner`, `renderUpdateBanner` in `update-banner.ts`): `--accent-soft` background with a hairline border, `--accent` download icon, `--text` copy, one small `btn-primary` action (*Update now* / *Restart to update* where the package can install, *Download* to the release page otherwise) and a ghost dismiss button. While downloading, a 4px `--accent-solid` progress bar replaces the action. Settings window: above the page content, same max width as `.page`. Tray popup: compact variant between the header and the scroll area, divided by a hairline.
 - **Neutral notice** (`.inline-notice`, `renderAppNotRunningNotice` in `quota-view.ts`): info icon plus `--text-2` text, used instead of the red error styling for `appNotRunning` snapshots. The tray popup does not show those connectors at all.

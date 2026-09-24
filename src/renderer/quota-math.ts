@@ -107,11 +107,12 @@ function projectedRemainingFraction(bucket: PaceBucket, now: number): number | n
   return Math.max(0, 1 - projected);
 }
 
-/** e.g. "3h 25m", "12m", "now" for <=0. */
+/** e.g. "2d 6h" (from 48h up), "3h 25m", "12m", "now" for <=0. */
 function formatCountdown(msRemaining: number): string {
   if (msRemaining <= 0) return 'now';
   const h = Math.floor(msRemaining / 3_600_000);
   const m = Math.floor((msRemaining % 3_600_000) / 60_000);
+  if (h >= 48) return `${Math.floor(h / 24)}d ${h % 24}h`;
   if (h > 0) return `${h}h ${m}m`;
   if (m > 0) return `${m}m`;
   return '<1m';
@@ -131,6 +132,16 @@ function formatRelativeTime(ts: number, now: number): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+
+/** Footer label for the tray popup: "Updated just now", "Updated 42s ago",
+ * then `formatRelativeTime`'s coarse steps ("Updated 3m ago"). A timestamp in
+ * the future (clock skew) reads as "just now". */
+function formatUpdatedAgo(ts: number, now: number): string {
+  const diff = now - ts;
+  if (diff < 10_000) return 'Updated just now';
+  if (diff < 60_000) return `Updated ${Math.floor(diff / 1000)}s ago`;
+  return `Updated ${formatRelativeTime(ts, now)}`;
 }
 
 type ConnectorStatus = 'off' | 'active' | 'error' | 'needs-login' | 'app-not-running';

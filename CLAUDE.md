@@ -67,7 +67,7 @@ Every integration lives in `src/main/connectors/<id>/`. The `Connector` object i
 | `login` | The app itself can run the sign-in (OAuth / browser). Only then does `needsLogin: true` show a sign-in button; without `login`, the `error` text must carry the instruction |
 | `quotaEnabledByDefault` | Quota works without any extra config (e.g. reads a local file) |
 | `integrateInfo` | The connector is an HTTP server — drives the curl example on the Advanced → Webhook page |
-| `brandColor` | Optional hex accent; falls back to an id-hash color in the renderer |
+| `brandColor` | Optional hex accent; falls back to a slot of the categorical palette (`--cat-N` in `tokens.css`) in the renderer |
 
 Connectors never refresh or rewrite another tool's credential files (e.g. Codex CLI's or Grok CLI's `auth.json`): an expired session returns `needsLogin: true` with an instruction to sign in with that tool.
 

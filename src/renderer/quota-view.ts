@@ -308,6 +308,83 @@ function renderMeterGroup(
 }
 
 // ---------------------------------------------------------------------------
+// View state across innerHTML re-renders
+// ---------------------------------------------------------------------------
+
+/** Open `<details>` rows and the focused element inside a container, keyed so
+ * they can be found again in freshly rendered markup. */
+interface ViewState {
+  openKeys: string[];
+  /** Key of the nearest keyed ancestor (or the element itself), `null` when
+   * the path starts at the container. */
+  focusAnchor: string | null;
+  /** Child indices from the anchor down to the focused element. */
+  focusPath: number[] | null;
+}
+
+const VIEW_KEY_SELECTOR = '[data-bucket-id], [data-spend-mode], [data-spend-period]';
+
+/** Stable identity for rendered elements that survive a re-render: meter
+ * rows (bucket ids repeat across connectors, so the connector id is part of
+ * the key) and spend switches. `null` for anything else. */
+function viewKeyOf(el: Element): string | null {
+  const d = (el as HTMLElement).dataset;
+  if (!d) return null;
+  if (d.bucketId != null) return `bucket:${d.connectorId ?? ''}:${d.bucketId}`;
+  if (d.spendMode != null) return `spend-mode:${d.spendMode}`;
+  if (d.spendPeriod != null) return `spend-period:${d.spendPeriod}`;
+  return null;
+}
+
+function findByViewKey(root: HTMLElement, key: string): HTMLElement | null {
+  for (const el of Array.from(root.querySelectorAll<HTMLElement>(VIEW_KEY_SELECTOR))) {
+    if (viewKeyOf(el) === key) return el;
+  }
+  return null;
+}
+
+/** Call before replacing `root.innerHTML`; pass the result to `restoreViewState`. */
+function captureViewState(root: HTMLElement): ViewState {
+  const openKeys = Array.from(root.querySelectorAll('details[open]'))
+    .map(viewKeyOf)
+    .filter((k): k is string => k != null);
+
+  let focusAnchor: string | null = null;
+  let focusPath: number[] | null = null;
+  const active = document.activeElement;
+  if (active && active !== root && root.contains(active)) {
+    const path: number[] = [];
+    let el: Element = active;
+    while (el !== root) {
+      const key = viewKeyOf(el);
+      if (key) { focusAnchor = key; break; }
+      const parent = el.parentElement;
+      if (!parent) break;
+      path.unshift(Array.prototype.indexOf.call(parent.children, el));
+      el = parent;
+    }
+    focusPath = path;
+  }
+  return { openKeys, focusAnchor, focusPath };
+}
+
+/** Re-opens the captured `<details>` rows and moves focus back to the
+ * equivalent element, if it still exists. */
+function restoreViewState(root: HTMLElement, state: ViewState): void {
+  for (const key of state.openKeys) {
+    const el = findByViewKey(root, key);
+    if (el instanceof HTMLDetailsElement) el.open = true;
+  }
+  if (!state.focusPath) return;
+  let target: Element | null = state.focusAnchor ? findByViewKey(root, state.focusAnchor) : root;
+  for (const i of state.focusPath) {
+    if (!target) break;
+    target = target.children[i] ?? null;
+  }
+  if (target instanceof HTMLElement && target !== root) target.focus({ preventScroll: true });
+}
+
+// ---------------------------------------------------------------------------
 // Total Spend card (Phase 2b)
 // ---------------------------------------------------------------------------
 
@@ -396,29 +473,60 @@ function aggregateSpendForPeriod(
   return { totalCostCents, totalTokens, byConnector };
 }
 
-/** Stable 0-360 hue derived from an id string, so the same connector always
- * gets the same color across renders/sessions without a lookup table. */
-function hashHue(id: string): number {
+/** Number of `--cat-N` categorical tokens in tokens.css (`--cat-1`..`--cat-6`).
+ * Keep in sync with tokens.css and scripts/check-contrast.js. */
+const CATEGORICAL_PALETTE_SIZE = 6;
+
+/** Stable non-negative hash of an id string, so the same connector always
+ * gets the same palette slot across renders/sessions without a lookup table. */
+function hashId(id: string): number {
   let hash = 0;
   for (let i = 0; i < id.length; i++) {
     hash = (hash * 31 + id.charCodeAt(i)) >>> 0;
   }
-  return hash % 360;
+  return hash;
 }
 
 /** Matches a well-formed CSS hex color (#rgb / #rgba / #rrggbb / #rrggbbaa).
  * `brandColor` reaches HTML attribute sinks unescaped (SVG `stroke`, a CSS
  * custom-property `style` value) — validate at the source instead of
  * escaping at each call site, so a malformed value falls back cleanly to
- * the hash-derived color rather than rendering broken markup. No shipping
+ * the palette color rather than rendering broken markup. No shipping
  * connector sets `brandColor` today, but Phase 5 connectors will. */
 const HEX_COLOR_RE = /^#[0-9a-f]{3,8}$/i;
 
-/** `Connector.brandColor` when it's a well-formed hex color, else a
- * deterministic id-hash color. */
-function connectorColor(id: string, brandColor?: string): string {
+/** `Connector.brandColor` when it's a well-formed hex color, else a slot of
+ * the categorical palette (`var(--cat-N)`, both themes in tokens.css). The
+ * palette has no red, green or amber hue, so a provider color never reads
+ * as a status. `index` picks the slot when known (see `spendColorFor`, which
+ * keeps the first six spend providers distinct); the id hash is the
+ * fallback. */
+function connectorColor(id: string, brandColor?: string, index?: number): string {
   if (brandColor && HEX_COLOR_RE.test(brandColor)) return brandColor;
-  return `hsl(${hashHue(id)}, 62%, 55%)`;
+  const slot = index != null && index >= 0 ? index : hashId(id);
+  return `var(--cat-${(slot % CATEGORICAL_PALETTE_SIZE) + 1})`;
+}
+
+/** `connectorColor` for an id looked up in the caller's connector list. */
+function connectorColorIn(id: string, connectors: ConnectorMetadata[]): string {
+  const index = connectors.findIndex(c => c.id === id);
+  return connectorColor(id, index >= 0 ? connectors[index].brandColor : undefined, index);
+}
+
+/** Color lookup for the spend views. Slots are assigned in registry order
+ * among connectors that report spend at all (not per period), so up to six
+ * spend providers never share a color, and a provider keeps its color when
+ * switching periods. With registry-wide indices, e.g. Claude Code (2) and
+ * OpenCode (8) would both land on slot 3. */
+function spendColorFor(
+  snapshots: Record<string, QuotaSnapshot>,
+  connectors: ConnectorMetadata[],
+): (id: string) => string {
+  const withSpend = connectors.filter(c => {
+    const snap = snapshots[c.id];
+    return !!snap && snap.ok && Array.isArray(snap.spend) && snap.spend.length > 0;
+  });
+  return id => connectorColorIn(id, withSpend.some(c => c.id === id) ? withSpend : connectors);
 }
 
 interface DonutSlice {
@@ -477,7 +585,7 @@ function renderDonutSvg(slices: DonutSlice[], colorFor: (id: string) => string):
     .map(a => {
       const len = a.fraction * circumference;
       const dasharray = `${len} ${Math.max(0, circumference - len)}`;
-      const circle = `<circle data-spend-slice="${escapeHtml(a.id)}" cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${colorFor(a.id)}" stroke-width="${strokeWidth}" stroke-dasharray="${dasharray}" stroke-dashoffset="${-offset}" transform="rotate(-90 ${cx} ${cy})" />`;
+      const circle = `<circle data-spend-slice="${escapeHtml(a.id)}" cx="${cx}" cy="${cy}" r="${r}" fill="none" style="stroke:${colorFor(a.id)}" stroke-width="${strokeWidth}" stroke-dasharray="${dasharray}" stroke-dashoffset="${-offset}" transform="rotate(-90 ${cx} ${cy})" />`;
       offset += len;
       return circle;
     })
@@ -504,7 +612,7 @@ function renderSpendModeSwitcher(active: SpendCardMode): string {
     { value: 'costPerMtok', label: 'Cost / MTok' },
     { value: 'tokens', label: 'Tokens' },
   ];
-  return `<div class="spend-switch-group" role="tablist" aria-label="Spend metric">${opts
+  return `<div class="spend-switch-group" role="group" aria-label="Spend metric">${opts
     .map(
       o =>
         `<button type="button" class="spend-switch${o.value === active ? ' active' : ''}" data-spend-mode="${o.value}" aria-pressed="${o.value === active}">${escapeHtml(o.label)}</button>`,
@@ -518,7 +626,7 @@ function renderSpendPeriodSwitcher(active: SpendPeriod): string {
     { value: 'yesterday', label: 'Yesterday' },
     { value: 'last30d', label: '30 Days' },
   ];
-  return `<div class="spend-switch-group" role="tablist" aria-label="Spend period">${opts
+  return `<div class="spend-switch-group" role="group" aria-label="Spend period">${opts
     .map(
       o =>
         `<button type="button" class="spend-switch${o.value === active ? ' active' : ''}" data-spend-period="${o.value}" aria-pressed="${o.value === active}">${escapeHtml(o.label)}</button>`,
@@ -547,7 +655,7 @@ function renderTotalSpendCard(
     state.period,
   );
 
-  const colorForId = (id: string): string => connectorColor(id, connectors.find(c => c.id === id)?.brandColor);
+  const colorForId = spendColorFor(snapshots, connectors);
 
   // Cost-per-MTok is a rate, not an additive share — fall back to a cost-share
   // donut for that mode (same as 'cost'); 'tokens' mode shows a token-share donut.
@@ -641,10 +749,11 @@ function renderSpendSummary(
     .join('');
 
   const unit: QuotaUnit = state.mode === 'tokens' ? 'tokens' : 'usd';
+  const colorForId = spendColorFor(snapshots, connectors);
   const breakdown = aggregateSpendForPeriod(snapshots, connectors, state.period)
     .byConnector.map(e => {
       const v = state.mode === 'tokens' ? e.tokens : e.costCents;
-      return `<span class="spend-breakdown-item"><span class="spend-legend-dot" style="--dot-color:${connectorColor(e.id, connectors.find(c => c.id === e.id)?.brandColor)}"></span>${escapeHtml(e.name)} <span class="num">${escapeHtml(v != null ? formatQuotaValue(v, unit) : 'No data')}</span></span>`;
+      return `<span class="spend-breakdown-item"><span class="spend-legend-dot" style="--dot-color:${colorForId(e.id)}"></span>${escapeHtml(e.name)} <span class="num">${escapeHtml(v != null ? formatQuotaValue(v, unit) : 'No data')}</span></span>`;
     })
     .join('');
 

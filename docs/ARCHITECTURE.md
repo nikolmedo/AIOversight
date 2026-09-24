@@ -87,7 +87,7 @@ Runs a polling loop per connector:
 - Coalesces concurrent refresh calls — if a fetch is already in flight, the second caller awaits the same promise
 - Fetch budget — each `provider.fetch()` is raced against a 45 s watchdog (`FETCH_BUDGET_MS`). On expiry the snapshot becomes `ok: false` ("timed out") and counts as an ordinary failure; the abandoned fetch's late result is discarded
 - Backoff — each failure arms a gate for the periodic tick. If the snapshot carries `retryAfterMs` (e.g. from an HTTP 429 `Retry-After`), the next fetch waits that long from now; otherwise it waits `interval × 2^(failures − 1)` from the start of the failed fetch, capped at 30 minutes. A successful fetch clears the gate, and so does an `appNotRunning` snapshot (the connector's desktop app is closed): that is an expected state, so polling stays at the normal interval and data appears soon after the app opens. A skipped tick leaves the cached snapshot untouched
-- Manual refresh — `refresh(id)` / `refreshAll()` (the Refresh buttons) bypass the backoff gate
+- Manual refresh — `refresh(id)` / `refreshAll()` (the Refresh buttons) bypass the backoff gate. Only explicit user actions call them; the tray popup has no timed refresh and renders the cached state that main pushes (`trayPopup:quotas`) after every fetch and on every show
 - Caches the last `QuotaSnapshot` per connector
 - Emits `update(id, snapshot)` after every fetch (success or failure), and `removed(id)` when a connector's quota is disabled
 - `refreshAll()` fans out parallel calls to all enabled providers

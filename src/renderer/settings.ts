@@ -52,7 +52,7 @@ async function main() {
     paused = await window.aw.togglePause();
     reflectPaused();
   });
-  $('#clearEvents').addEventListener('click', async () => {
+  bindConfirmClick($('#clearEvents') as HTMLButtonElement, 'Confirm clear', async () => {
     const s = await window.aw.clearEvents();
     initial.settings.recentEvents = s.recentEvents;
     renderEvents(s.recentEvents);
@@ -98,6 +98,52 @@ function flashButtonLabel(btn: HTMLButtonElement, label: string): void {
   setTimeout(() => {
     btn.textContent = original;
   }, 1500);
+}
+
+/** How long a destructive button stays armed after its first click. */
+const CONFIRM_WINDOW_MS = 3500;
+
+/**
+ * Inline two-step confirm for destructive buttons, instead of a modal
+ * `confirm()`: the first click relabels the button to `confirmLabel`, a
+ * second click within `CONFIRM_WINDOW_MS` runs `action`. Timing out or
+ * moving focus away disarms it. Returns the disarm function, for callers
+ * that disable the button while it may be armed.
+ */
+function bindConfirmClick(
+  btn: HTMLButtonElement,
+  confirmLabel: string,
+  action: () => Promise<void> | void,
+): () => void {
+  const idleLabel = btn.textContent ?? '';
+  let armTimer: ReturnType<typeof setTimeout> | null = null;
+  let running = false;
+
+  const disarm = (): void => {
+    if (armTimer) { clearTimeout(armTimer); armTimer = null; }
+    btn.textContent = idleLabel;
+    delete btn.dataset.confirming;
+  };
+
+  btn.addEventListener('click', async ev => {
+    ev.preventDefault();
+    if (running) return;
+    if (!armTimer) {
+      btn.textContent = confirmLabel;
+      btn.dataset.confirming = 'true';
+      armTimer = setTimeout(disarm, CONFIRM_WINDOW_MS);
+      return;
+    }
+    disarm();
+    running = true;
+    try {
+      await action();
+    } finally {
+      running = false;
+    }
+  });
+  btn.addEventListener('blur', disarm);
+  return disarm;
 }
 
 // ---------------------------------------------------------------------------
@@ -777,9 +823,14 @@ function renderField(
   if (field.type === 'secret') {
     const isSet = (): boolean => !!def.setSecretKeys?.includes(field.key);
     const state = document.createElement('span');
+    const clearBtn = document.createElement('button');
+    let disarmClear = (): void => {};
     const reflect = (): void => {
       state.className = isSet() ? 'tag tag-ok' : 'tag';
       state.textContent = isSet() ? 'Set' : 'Not set';
+      // Nothing to clear when the key isn't set.
+      clearBtn.disabled = !isSet();
+      if (clearBtn.disabled) disarmClear();
     };
     label.appendChild(state);
 
@@ -806,12 +857,10 @@ function renderField(
       input.placeholder = 'Paste a new value to replace';
       reflect();
     });
-    const clearBtn = document.createElement('button');
     clearBtn.type = 'button';
-    clearBtn.className = 'btn btn-ghost';
+    clearBtn.className = 'btn btn-danger-ghost';
     clearBtn.textContent = 'Clear';
-    clearBtn.addEventListener('click', async ev => {
-      ev.preventDefault();
+    disarmClear = bindConfirmClick(clearBtn, 'Confirm clear', async () => {
       const updated = await window.aw.setConnectorSecret(connectorId, field.key, null);
       const updatedDef = updated.find(d => d.id === connectorId);
       if (updatedDef) def.setSecretKeys = updatedDef.setSecretKeys;
@@ -1043,6 +1092,19 @@ function renderGeneral(s: AppSettings, settingsPath: string): void {
   checkForUpdates.checked = s.checkForUpdates !== false;
   popupShortcut.value = s.popupShortcut ?? '';
   $('#settingsPath').textContent = `Settings file: ${settingsPath}`;
+
+  // Dependent rows follow their master switch. Disabled, not just dimmed, so
+  // they can't be changed while the master switch makes them moot; `persist`
+  // still reads their values, so nothing is lost.
+  const syncDependentRows = (): void => {
+    notifyWaiting.disabled = !showNotif.checked;
+    notifyFinished.disabled = !showNotif.checked;
+    quietStart.disabled = !quietEnabled.checked;
+    quietEnd.disabled = !quietEnabled.checked;
+  };
+  syncDependentRows();
+  showNotif.addEventListener('change', syncDependentRows);
+  quietEnabled.addEventListener('change', syncDependentRows);
 
   applyDensityClass(density.value as 'default' | 'compact');
   setTimeFormatPref(timeFormat.value as 'auto' | '12h' | '24h');

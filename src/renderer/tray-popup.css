@@ -130,7 +130,8 @@ main::-webkit-scrollbar-thumb {
 
 /* ── Meter rows (shared renderMeterRow markup) ──────────── */
 .meter-row + .meter-row { margin-top: 10px; }
-.meter-row.no-data { opacity: .75; }
+.meter-row.no-data .meter-row-title { color: var(--text-2); }
+.meter-row.no-data .meter-row-value { color: var(--text-3); }
 .meter-row-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
 .meter-row-title { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .meter-row-side { display: flex; align-items: baseline; gap: 8px; flex-shrink: 0; }
@@ -186,7 +187,7 @@ main::-webkit-scrollbar-thumb {
 .spend-headline { font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .spend-switch-group { display: inline-flex; padding: 2px; gap: 2px; background: var(--surface-2); border-radius: var(--radius-sm); align-self: flex-start; }
 .spend-switch {
-  height: 22px; padding: 0 7px; border: 0; border-radius: 4px; background: transparent;
+  height: 24px; padding: 0 7px; border: 0; border-radius: 4px; background: transparent;
   color: var(--text-2); font-size: 11px; font-weight: 500; cursor: pointer;
 }
 .spend-switch:hover { color: var(--text); }

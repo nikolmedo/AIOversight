@@ -180,7 +180,7 @@ svg { flex-shrink: 0; }
   outline: none; border-radius: var(--radius-sm);
   border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
 }
-.control:disabled { opacity: .5; }
+.control:disabled { color: var(--text-3); background: var(--surface-2); border-color: var(--border); cursor: default; }
 .control::placeholder { color: var(--text-3); }
 .control-num { width: 72px; font-variant-numeric: tabular-nums; }
 .control-text { width: 220px; }
@@ -209,7 +209,8 @@ select.control option { background: var(--surface); color: var(--text); }
 }
 .switch:checked { background: var(--accent-solid); }
 .switch:checked::after { transform: translateX(12px); }
-.switch:disabled { opacity: .5; cursor: default; }
+.switch:disabled { background: var(--border); cursor: default; }
+.switch:disabled:checked { background: var(--text-3); }
 .switch:focus-visible { outline-offset: 3px; border-radius: 999px; }
 
 .tag {
@@ -261,8 +262,11 @@ label.row:has(.switch) { cursor: pointer; }
 .row-desc:empty { display: none; }
 .control-cluster { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .cluster-sep { color: var(--text-2); font-size: 12px; }
-.surface-block:has(#quietEnabled:not(:checked)) .row.dependent,
-.surface-block:has(#showNotifications:not(:checked)) .row.dependent-notif { opacity: .5; }
+/* Rows whose control is disabled (dependent rows while their master switch
+   is off, platform-unsupported options). Token colour, not opacity, so the
+   text still meets contrast. */
+.row:has(.switch:disabled, .control:disabled) :is(.row-label, .row-desc, .cluster-sep) { color: var(--text-3); }
+label.row:has(.switch:disabled) { cursor: default; }
 
 .settings-path {
   margin-top: 8px; padding: 0 2px;
@@ -370,7 +374,8 @@ label.row:has(.switch) { cursor: pointer; }
 
 /* ── Meter rows (shared renderMeterRow markup) ──────────── */
 .meter-row { min-width: 0; }
-.meter-row.no-data { opacity: .75; }
+.meter-row.no-data .meter-row-title { color: var(--text-2); }
+.meter-row.no-data .meter-row-value { color: var(--text-3); }
 .meter-row-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
 .meter-row-title {
   font-size: 12px; color: var(--text);

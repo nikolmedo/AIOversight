@@ -278,7 +278,7 @@ export interface Connector {
   login?: ConnectorLogin;
   /** Hint for the Integrate tab. Declare when this connector acts as an HTTP server. */
   integrateInfo?: ConnectorIntegrateInfo;
-  /** Optional brand accent color (hex). Falls back to an id-hash color in the renderer. */
+  /** Optional brand accent color (hex). Falls back to a categorical palette color (`--cat-N`) in the renderer. */
   brandColor?: string;
 }
 
@@ -344,7 +344,7 @@ export interface ConnectorMetadata {
   loginLabel?: string;
   /** Integrate tab hint; present only when the connector acts as an HTTP server. */
   integrateInfo?: ConnectorIntegrateInfo;
-  /** Optional brand accent color (hex). Falls back to an id-hash color in the renderer. */
+  /** Optional brand accent color (hex). Falls back to a categorical palette color (`--cat-N`) in the renderer. */
   brandColor?: string;
   /**
    * Whether this connector's quota polling is currently enabled per user
