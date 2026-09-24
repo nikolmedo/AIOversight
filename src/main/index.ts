@@ -447,6 +447,7 @@ function registerIpc(): void {
   ipcMain.handle('trayPopup:dismissUpdate', () => updates!.dismiss());
   ipcMain.handle('trayPopup:getConnectors', () => runtime!.metadata(settings!.get().connectors.enabled));
   ipcMain.handle('trayPopup:getBucketPrefs', () => settings!.get().connectors.bucketPrefs ?? {});
+  ipcMain.handle('trayPopup:getPollIntervals', () => quotaService!.pollIntervals());
   ipcMain.handle('trayPopup:getUiPrefs', () => {
     const s = settings!.get();
     return {

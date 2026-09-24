@@ -50,6 +50,7 @@ const CursorConnector: Connector = {
   detector: { create: createCursorDetector },
   quota: {
     defaultIntervalMinutes: 5,
+    reportsSpend: true,
     create: createCursorQuotaProvider,
   },
 };

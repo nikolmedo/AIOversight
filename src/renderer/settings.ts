@@ -208,7 +208,11 @@ function renderOverview(): void {
   const list = $('#overviewQuotas');
   $('#overviewEmpty').hidden = defs.length > 0;
   list.hidden = defs.length === 0;
+  // Quota pushes re-render the whole list: keep open rows, keyboard focus
+  // and the meter fills' previous widths (so they transition) across it.
+  const view = captureViewState(list);
   list.innerHTML = defs.map(renderOverviewItem).join('');
+  restoreViewState(list, view);
 }
 
 function renderOverviewItem(def: ConnectorMetadata): string {
@@ -236,7 +240,10 @@ function renderOverviewItem(def: ConnectorMetadata): string {
   } else {
     const bucketPrefs = initial.settings.connectors.bucketPrefs?.[def.id];
     body =
-      (snap.buckets.length > 0 && renderMeterGroup(snap.buckets, bucketPrefs, { connectorId: def.id })) ||
+      (snap.buckets.length > 0 &&
+        renderMeterGroup(withBillingCycleReset(snap.buckets, snap.billingCycleEnd), bucketPrefs, {
+          connectorId: def.id,
+        })) ||
       '<p class="row-note">No usage buckets returned.</p>';
   }
 
@@ -648,9 +655,11 @@ function setupDrawer(): void {
     const drawer = drawerEl();
     if (drawer.hidden) return;
     if (e.key === 'Escape') {
-      // The row context menu handles its own Escape first.
+      // The row context menu handles its own Escape first; depending on
+      // listener order it has either not run yet (menu still open) or
+      // already closed itself and called preventDefault().
       const menu = document.getElementById('rowMenu');
-      if (menu && !menu.hidden) return;
+      if (e.defaultPrevented || (menu && !menu.hidden)) return;
       e.preventDefault();
       closeDrawer();
     } else if (e.key === 'Tab') {
@@ -952,7 +961,11 @@ function refreshQuotaCard(id: string): void {
   const drawer = drawerEl();
   if (!drawer.hidden && drawer.dataset.connectorId === id) {
     const panel = drawer.querySelector('[data-role="quota-snapshot"]') as HTMLElement | null;
-    if (panel) panel.innerHTML = renderQuotaSnapshot(quotas[id], def);
+    if (panel) {
+      const view = captureViewState(panel);
+      panel.innerHTML = renderQuotaSnapshot(quotas[id], def);
+      restoreViewState(panel, view);
+    }
   }
   renderOverview();
 }
@@ -992,7 +1005,7 @@ function renderQuotaSnapshot(q: QuotaSnapshot | undefined, def?: ConnectorMetada
   const bucketPrefs = def ? initial.settings.connectors.bucketPrefs?.[def.id] : undefined;
   const buckets =
     q.buckets.length > 0
-      ? renderMeterGroup(q.buckets, bucketPrefs, { connectorId: def?.id }) ||
+      ? renderMeterGroup(withBillingCycleReset(q.buckets, q.billingCycleEnd), bucketPrefs, { connectorId: def?.id }) ||
         '<p class="row-note">No usage buckets returned.</p>'
       : '<p class="row-note">No usage buckets returned.</p>';
   const messages =

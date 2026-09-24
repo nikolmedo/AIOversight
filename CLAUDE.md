@@ -66,6 +66,7 @@ Every integration lives in `src/main/connectors/<id>/`. The `Connector` object i
 | `quota` | The tool has an API that returns usage/billing data |
 | `login` | The app itself can run the sign-in (OAuth / browser). Only then does `needsLogin: true` show a sign-in button; without `login`, the `error` text must carry the instruction |
 | `quotaEnabledByDefault` | Quota works without any extra config (e.g. reads a local file) |
+| `quota.reportsSpend` | Snapshots can carry `spend[]`; gives the connector its own palette slot in the spend views (at most six) |
 | `integrateInfo` | The connector is an HTTP server — drives the curl example on the Advanced → Webhook page |
 | `brandColor` | Optional hex accent; falls back to a slot of the categorical palette (`--cat-N` in `tokens.css`) in the renderer |
 
@@ -126,6 +127,7 @@ Channels prefixed with `trayPopup:` — bridge in `src/preload/tray-popup.ts` (`
 | `trayPopup:getConnectors` | invoke | — | `ConnectorMetadata[]` |
 | `trayPopup:getBucketPrefs` | invoke | — | `bucketPrefs` map |
 | `trayPopup:getUiPrefs` | invoke | — | `{ theme, density, timeFormat, transparentPopup, showSpendCard }` |
+| `trayPopup:getPollIntervals` | invoke | — | `Record<string, number>` — effective poll interval in ms per polled connector (manual-only ones absent) |
 | `trayPopup:refresh` | invoke | `id?` | `{ [id]: QuotaSnapshot }` (with `id`) or the full map |
 | `trayPopup:setBucketPref` | invoke | `id, bucketId, Partial<BucketPref>` | `bucketPrefs` map |
 | `trayPopup:getUpdateState` | invoke | — | `UpdateState` |
@@ -134,6 +136,7 @@ Channels prefixed with `trayPopup:` — bridge in `src/preload/tray-popup.ts` (`
 | `trayPopup:openRelease` | invoke | — | — |
 | `trayPopup:dismissUpdate` | invoke | — | `UpdateState` |
 | `trayPopup:resize` | send (popup → main) | `height` | — |
+| `trayPopup:hide` | send (popup → main) | — | — (Escape with no row menu open) |
 | `trayPopup:quotas` | push (main → popup) | `Record<string, QuotaSnapshot>` | — |
 | `trayPopup:visibility` | push (main → popup) | `boolean` | — |
 | `trayPopup:updateState` | push (main → popup) | `UpdateState` | — |

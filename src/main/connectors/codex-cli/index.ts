@@ -36,6 +36,7 @@ const CodexCliConnector: Connector = {
   detector: { create: createCodexCliDetector },
   quota: {
     defaultIntervalMinutes: 15,
+    reportsSpend: true,
     create: createCodexCliQuotaProvider,
   },
 };

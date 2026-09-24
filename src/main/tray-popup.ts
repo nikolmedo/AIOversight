@@ -135,6 +135,14 @@ export function createTrayPopup(actions: TrayPopupActions, initialTransparent = 
   };
   ipcMain.on('trayPopup:resize', resizeListener);
 
+  // Escape in the popup with no row menu open (tray-popup.ts).
+  const hideListener = (e: Electron.IpcMainEvent): void => {
+    if (!popup || popup.isDestroyed()) return;
+    if (e.sender !== popup.webContents) return;
+    if (popup.isVisible()) popup.hide();
+  };
+  ipcMain.on('trayPopup:hide', hideListener);
+
   const ensureWindow = (): BrowserWindow => {
     if (popup && !popup.isDestroyed()) return popup;
 
@@ -248,6 +256,7 @@ export function createTrayPopup(actions: TrayPopupActions, initialTransparent = 
     destroy() {
       if (blurHideTimer) clearTimeout(blurHideTimer);
       ipcMain.removeListener('trayPopup:resize', resizeListener);
+      ipcMain.removeListener('trayPopup:hide', hideListener);
       if (popup && !popup.isDestroyed()) popup.destroy();
       popup = null;
     },

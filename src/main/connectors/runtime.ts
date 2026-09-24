@@ -82,6 +82,7 @@ export class ConnectorRuntime extends EventEmitter {
       hasDetector: !!c.detector,
       hasQuota: !!c.quota,
       defaultIntervalMinutes: c.quota?.defaultIntervalMinutes,
+      reportsSpend: !!c.quota?.reportsSpend,
       configSchema: c.configSchema,
       setSecretKeys: c.configSchema
         .filter(f => f.type === 'secret')

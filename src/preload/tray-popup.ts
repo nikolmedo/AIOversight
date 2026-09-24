@@ -18,6 +18,10 @@ contextBridge.exposeInMainWorld('awPopup', {
   getBucketPrefs: () =>
     ipcRenderer.invoke('trayPopup:getBucketPrefs') as Promise<Record<string, Record<string, BucketPref>>>,
   getUiPrefs: () => ipcRenderer.invoke('trayPopup:getUiPrefs') as Promise<TrayPopupUiPrefs>,
+  /** Effective poll interval in ms per polled connector; hand-refresh-only
+   * connectors are absent. */
+  getPollIntervals: () =>
+    ipcRenderer.invoke('trayPopup:getPollIntervals') as Promise<Record<string, number>>,
   openSettings: () => ipcRenderer.invoke('trayPopup:openSettings'),
   /** Omit `id` to refresh every enabled connector; passing `id` resolves to
    * `{ [id]: snapshot }`, not the full map — see tray-popup.ts's caller. */
@@ -45,6 +49,7 @@ contextBridge.exposeInMainWorld('awPopup', {
     return () => ipcRenderer.removeListener('trayPopup:quotas', listener);
   },
   resize: (height: number) => ipcRenderer.send('trayPopup:resize', height),
+  hide: () => ipcRenderer.send('trayPopup:hide'),
   onVisibilityChange: (cb: (visible: boolean) => void) => {
     const listener = (_e: Electron.IpcRendererEvent, visible: boolean) => cb(visible);
     ipcRenderer.on('trayPopup:visibility', listener);

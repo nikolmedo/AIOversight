@@ -13,6 +13,7 @@ const GrokConnector: Connector = {
   configSchema: [],
   quota: {
     defaultIntervalMinutes: 15,
+    reportsSpend: true,
     create: createGrokQuotaProvider,
   },
 };

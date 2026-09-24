@@ -11,20 +11,26 @@
   let connectors: ConnectorMetadata[] = [];
   let bucketPrefs: Record<string, Record<string, BucketPref>> = {};
   let lastQuotas: Record<string, QuotaSnapshot> = {};
+  /** Effective poll interval (ms) per connector, re-fetched on every show;
+   * drives each provider's stale freshness label. */
+  let pollIntervals: Record<string, number> = {};
   let updatedLabelTimer: ReturnType<typeof setInterval> | null = null;
   let resetChipTimer: ReturnType<typeof setInterval> | null = null;
-  /** Newest `fetchedAt` among the rendered snapshots, 0 when none. */
+  /** Newest `fetchedAt` among the rendered ok snapshots, 0 when none. */
   let lastUpdatedAt = 0;
 
   const UPDATED_LABEL_TICK_MS = 1_000;
   const RESET_CHIP_REFRESH_MS = 30_000;
 
-  /** "Updated 42s ago" in the footer. Not a live region: it changes every
-   * second while the popup is open and is not worth announcing. */
+  /** "Updated 42s ago" in the footer, plus each provider's "5m ago"
+   * label. Not live regions: they change every second while the popup is
+   * open and are not worth announcing. */
   function updateUpdatedLabel(): void {
-    const el = document.getElementById('refreshTimer');
+    const now = Date.now();
+    refreshProviderFreshness(document, now);
+    const el = document.getElementById('updatedAgo');
     if (!el) return;
-    const text = lastUpdatedAt > 0 ? formatUpdatedAgo(lastUpdatedAt, Date.now()) : '';
+    const text = lastUpdatedAt > 0 ? formatUpdatedAgo(lastUpdatedAt, now) : '';
     if (el.textContent !== text) el.textContent = text;
   }
 
@@ -93,18 +99,30 @@
     lastQuotas = quotas;
     renderTotalSpendCardPanel();
     const panel = $('#content');
-    const plan = planTrayPopup(connectors, quotas);
-    lastUpdatedAt = plan.visible.reduce((max, def) => Math.max(max, quotas[def.id]?.fetchedAt ?? 0), 0);
-    updateUpdatedLabel();
+    const now = Date.now();
+    const plan = planTrayPopup(connectors, quotas, bucketPrefs, now);
+    // Only successful fetches count: a failed attempt a second ago doesn't
+    // make the numbers on screen any fresher.
+    lastUpdatedAt = plan.visible.reduce((max, def) => {
+      const snap = quotas[def.id];
+      return snap?.ok ? Math.max(max, snap.fetchedAt) : max;
+    }, 0);
     if (plan.emptyMessage != null) {
       panel.innerHTML = `<p class="empty">${escapeHtml(plan.emptyMessage)}</p>`;
+      updateUpdatedLabel();
       return;
     }
-    // Pushes arrive on every poll; keep open "More metrics" rows open and
-    // the focused control focused across the innerHTML swap.
+    // Pushes arrive on every poll; keep open "More metrics" rows open, the
+    // focused control focused and meter fills transitioning across the
+    // innerHTML swap (providers may also have changed places).
     const view = captureViewState(panel);
-    panel.innerHTML = plan.visible.map(def => renderProviderBlock(def, quotas[def.id], bucketPrefs[def.id])).join('');
+    panel.innerHTML = plan.visible
+      .map(def =>
+        renderProviderBlock(def, quotas[def.id], bucketPrefs[def.id], { pollIntervalMs: pollIntervals[def.id], now }),
+      )
+      .join('');
     restoreViewState(panel, view);
+    updateUpdatedLabel();
   }
 
   function reportSize(): void {
@@ -206,6 +224,12 @@
    * `renderProviderBlock`. Called on every show, same rationale as
    * `refreshConnectors`/`applyUiPrefs`.
    */
+  /** Poll intervals change only through settings; re-read them on show. */
+  async function refreshPollIntervals(): Promise<void> {
+    pollIntervals = await window.awPopup.getPollIntervals();
+    render(lastQuotas);
+  }
+
   async function refreshBucketPrefs(): Promise<void> {
     bucketPrefs = (await window.awPopup.getBucketPrefs()) as Record<string, Record<string, BucketPref>>;
     render(lastQuotas);
@@ -236,6 +260,7 @@
   async function bootstrap(): Promise<void> {
     connectors = (await window.awPopup.getConnectors()) as ConnectorMetadata[];
     bucketPrefs = (await window.awPopup.getBucketPrefs()) as Record<string, Record<string, BucketPref>>;
+    pollIntervals = await window.awPopup.getPollIntervals();
     await applyUiPrefs();
     renderUpdate(await window.awPopup.getUpdateState());
     const quotas = (await window.awPopup.getQuotas()) as Record<string, QuotaSnapshot>;
@@ -249,6 +274,7 @@
       void applyUiPrefs();
       void refreshConnectors();
       void refreshBucketPrefs();
+      void refreshPollIntervals();
     } else {
       stopTimers();
     }
@@ -260,6 +286,16 @@
   document.body.insertAdjacentHTML('beforeend', renderRowMenu());
   bindResetChips(document);
   bindRowMenu(document, trayRowMenuHandlers);
+  // Escape with no row menu open hides the popup, like a native flyout.
+  // Registered after bindRowMenu, whose Escape closes the menu and calls
+  // preventDefault(); the hidden check also covers the opposite order.
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape' || e.defaultPrevented) return;
+    const menu = document.getElementById('rowMenu');
+    if (menu && !menu.hidden) return;
+    e.preventDefault();
+    window.awPopup.hide();
+  });
   bindTotalSpendCard(document, () => {
     renderTotalSpendCardPanel();
     requestAnimationFrame(() => requestAnimationFrame(reportSize));

@@ -89,6 +89,7 @@ Runs a polling loop per connector:
 - Backoff — each failure arms a gate for the periodic tick. If the snapshot carries `retryAfterMs` (e.g. from an HTTP 429 `Retry-After`), the next fetch waits that long from now; otherwise it waits `interval × 2^(failures − 1)` from the start of the failed fetch, capped at 30 minutes. A successful fetch clears the gate, and so does an `appNotRunning` snapshot (the connector's desktop app is closed): that is an expected state, so polling stays at the normal interval and data appears soon after the app opens. A skipped tick leaves the cached snapshot untouched
 - Manual refresh — `refresh(id)` / `refreshAll()` (the Refresh buttons) bypass the backoff gate. Only explicit user actions call them; the tray popup has no timed refresh and renders the cached state that main pushes (`trayPopup:quotas`) after every fetch and on every show
 - Caches the last `QuotaSnapshot` per connector
+- `pollIntervals()` reports the effective interval (ms, after the 60 s floor) of every connector with a running timer; manual-only connectors are left out. The tray popup reads it (`trayPopup:getPollIntervals`) to flag a provider whose data is older than twice its interval
 - Emits `update(id, snapshot)` after every fetch (success or failure), and `removed(id)` when a connector's quota is disabled
 - `refreshAll()` fans out parallel calls to all enabled providers
 - `destroy()` clears all timers on app quit
@@ -269,7 +270,7 @@ Complete reference in `CLAUDE.md`. The short invariants:
 
 - All channels are handled in `registerIpc()` in `src/main/index.ts`
 - Login channels (`connector:login:${id}`) are registered dynamically for connectors that declare `login`
-- Tray popup channels are prefixed `trayPopup:`; `trayPopup:resize` (an `ipcMain.on` listener) and the `trayPopup:quotas` / `trayPopup:visibility` / `trayPopup:updateState` pushes live in `src/main/tray-popup.ts`
+- Tray popup channels are prefixed `trayPopup:`; `trayPopup:resize` and `trayPopup:hide` (`ipcMain.on` listeners that ignore any sender but the popup) and the `trayPopup:quotas` / `trayPopup:visibility` / `trayPopup:updateState` pushes live in `src/main/tray-popup.ts`
 - Push channels (main → renderer) use `webContents.send()`; the renderer subscribes via the preload bridge's `on*` methods
 
 ---

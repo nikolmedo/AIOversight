@@ -106,6 +106,8 @@ interface ConnectorMetadata {
   hasDetector: boolean;
   hasQuota: boolean;
   defaultIntervalMinutes?: number;
+  /** Snapshots can carry `spend[]` — see `Connector.quota.reportsSpend` in types.ts. */
+  reportsSpend?: boolean;
   configSchema: ConnectorConfigField[];
   setSecretKeys?: string[];
   /** Present only when the connector declares a `login` handler — see types.ts. */

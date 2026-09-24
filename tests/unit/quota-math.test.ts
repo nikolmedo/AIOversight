@@ -58,44 +58,115 @@ describe('formatUpdatedAgo', () => {
   });
 });
 
-describe('connectorColor', () => {
-  const { connectorColor, connectorColorIn } = loadRenderer('quota-math.js', 'quota-view.js');
+describe('projectedRemainingFraction', () => {
+  const { projectedRemainingFraction } = loadRenderer('quota-math.js');
+  const now = 1_700_000_000_000;
+  const W = 5 * H;
 
-  it('falls back to a categorical palette token, never an arbitrary hue', () => {
-    for (const id of ['claude-code', 'codex-cli', 'cursor', 'zai', 'opencode', 'grok', 'devin']) {
-      assert.match(connectorColor(id), /^var\(--cat-[1-6]\)$/);
-    }
+  it('projects the share left at reset from the burn so far', () => {
+    // Half the window gone, 40% used -> 80% projected, 20% left.
+    const b = { used: 40, limit: 100, resetsAt: now + W / 2, windowMs: W };
+    assert.ok(Math.abs(projectedRemainingFraction(b, now) - 0.2) < 1e-9);
   });
 
-  it('is deterministic per id', () => {
-    assert.equal(connectorColor('cursor'), connectorColor('cursor'));
+  it('declines to project early in the window or once it has passed', () => {
+    assert.equal(projectedRemainingFraction({ used: 1, limit: 100, resetsAt: now + W - 60_000, windowMs: W }, now), null);
+    assert.equal(projectedRemainingFraction({ used: 50, limit: 100, resetsAt: now - 1, windowMs: W }, now), null);
+  });
+});
+
+describe('paceForecast', () => {
+  const { paceForecast } = loadRenderer('quota-math.js');
+  const now = 1_700_000_000_000;
+  const W = 10 * H;
+
+  it('says when a critical bucket runs out before the reset', () => {
+    // 4h of 10h gone, 80% used: the last 20% goes in 1h at this rate.
+    const b = { used: 80, limit: 100, resetsAt: now + 6 * H, windowMs: W };
+    assert.equal(paceForecast(b, now), 'At this pace: runs out in ~1h, before reset');
   });
 
-  it('uses the registry index when given, wrapping around the palette', () => {
-    assert.equal(connectorColor('a', undefined, 0), 'var(--cat-1)');
-    assert.equal(connectorColor('a', undefined, 5), 'var(--cat-6)');
-    assert.equal(connectorColor('a', undefined, 6), 'var(--cat-1)');
+  it('gives the share left at reset for a warn bucket', () => {
+    // Half gone, 47% used -> 94% projected (warn), ~6% left.
+    const b = { used: 47, limit: 100, resetsAt: now + 5 * H, windowMs: W };
+    assert.equal(paceForecast(b, now), 'At this pace: ~6% left at reset');
   });
 
-  it('keeps a well-formed brandColor and rejects a malformed one', () => {
-    assert.equal(connectorColor('a', '#ff0000', 2), '#ff0000');
-    assert.equal(connectorColor('a', '"><b>', 2), 'var(--cat-3)');
+  it('stays silent for ok, static-band, exhausted and no-data buckets', () => {
+    assert.equal(paceForecast({ used: 10, limit: 100, resetsAt: now + 5 * H, windowMs: W }, now), null);
+    // Critical by the static bands only: no window to project from.
+    assert.equal(paceForecast({ used: 95, limit: 100 }, now), null);
+    assert.equal(paceForecast({ used: 100, limit: 100, resetsAt: now + 5 * H, windowMs: W }, now), null);
+    assert.equal(paceForecast({ used: null, limit: 100, resetsAt: now + 5 * H, windowMs: W }, now), null);
+  });
+});
+
+describe('formatApproxDuration', () => {
+  const { formatApproxDuration } = loadRenderer('quota-math.js');
+
+  it('rounds to one coarse unit', () => {
+    assert.equal(formatApproxDuration(30_000), '<1m');
+    assert.equal(formatApproxDuration(40 * M), '~40m');
+    assert.equal(formatApproxDuration(3 * H + 20 * M), '~3h');
+    assert.equal(formatApproxDuration(5 * 24 * H), '~5d');
+  });
+});
+
+describe('paceStateLabel', () => {
+  const { paceStateLabel } = loadRenderer('quota-math.js');
+
+  it('names every pace state for accessible labels', () => {
+    assert.equal(paceStateLabel('ok'), 'on track');
+    assert.equal(paceStateLabel('warn'), 'running high');
+    assert.equal(paceStateLabel('critical'), 'critical');
+    assert.equal(paceStateLabel('none'), '');
+  });
+});
+
+describe('withBillingCycleReset', () => {
+  const { withBillingCycleReset } = loadRenderer('quota-math.js');
+  const bucket = (over: Record<string, unknown>) => ({
+    id: 'b', label: 'B', used: 5, limit: 10, remaining: 5, unit: 'requests', enabled: true, ...over,
   });
 
-  it('assigns spend colors among spend-reporting providers only', () => {
-    const { spendColorFor } = loadRenderer('quota-math.js', 'quota-view.js');
-    // Registry positions 2 and 8 would share slot 3 with registry-wide indices.
-    const list = Array.from({ length: 10 }, (_, i) => ({ id: `c${i}`, name: `C${i}` }));
-    const spend = [{ period: 'today', label: 'Today', costCents: 1, tokens: 1 }];
-    const snap = { ok: true, fetchedAt: 0, buckets: [], displayMessages: [], spend };
-    const colorFor = spendColorFor({ c2: snap, c8: snap }, list);
-    assert.equal(colorFor('c2'), 'var(--cat-1)');
-    assert.equal(colorFor('c8'), 'var(--cat-2)');
+  it('fills resetsAt from the cycle end for measured buckets without one', () => {
+    const [b] = withBillingCycleReset([bucket({})], '2026-10-01T00:00:00Z');
+    assert.equal(b.resetsAt, Date.parse('2026-10-01T00:00:00Z'));
+    assert.equal(b.windowMs, undefined);
   });
 
-  it('gives the first providers in the list distinct slots', () => {
-    const list = ['a', 'b', 'c', 'd', 'e', 'f'].map(id => ({ id, name: id }));
-    const colors = list.map(c => connectorColorIn(c.id, list));
-    assert.equal(new Set(colors).size, 6);
+  it('keeps an explicit resetsAt and skips balances and limit-less totals', () => {
+    const [own, balance, total] = withBillingCycleReset(
+      [bucket({ resetsAt: 42 }), bucket({ used: null }), bucket({ limit: null })],
+      '2026-10-01',
+    );
+    assert.equal(own.resetsAt, 42);
+    assert.equal(balance.resetsAt, undefined);
+    assert.equal(total.resetsAt, undefined);
+  });
+
+  it('accepts a date-only string and an epoch-ms digit string', () => {
+    assert.equal(withBillingCycleReset([bucket({})], '2026-10-01')[0].resetsAt, Date.parse('2026-10-01'));
+    assert.equal(withBillingCycleReset([bucket({})], '1790000000000')[0].resetsAt, 1_790_000_000_000);
+  });
+
+  it('returns the input unchanged for a missing or unparsable date', () => {
+    const list = [bucket({})];
+    assert.equal(withBillingCycleReset(list, undefined), list);
+    assert.equal(withBillingCycleReset(list, 'not a date'), list);
+  });
+});
+
+describe('freshnessFor', () => {
+  const { freshnessFor } = loadRenderer('quota-math.js');
+  const now = 1_700_000_000_000;
+
+  it('labels the age and flags data older than twice the poll interval', () => {
+    assert.deepEqual({ ...freshnessFor(now - 5 * M, 5 * M, now) }, { text: '5m ago', stale: false });
+    assert.deepEqual({ ...freshnessFor(now - 11 * M, 5 * M, now) }, { text: '11m ago', stale: true });
+  });
+
+  it('never flags a connector without a known poll interval', () => {
+    assert.equal(freshnessFor(now - 5 * H, undefined, now).stale, false);
   });
 });

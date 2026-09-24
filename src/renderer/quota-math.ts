@@ -102,9 +102,93 @@ function projectedRemainingFraction(bucket: PaceBucket, now: number): number | n
   const pct = bucket.used / bucket.limit;
   const elapsed = Math.min(bucket.windowMs, Math.max(0, bucket.windowMs - (bucket.resetsAt - now)));
   const f = elapsed / bucket.windowMs;
-  if (f < 0.05) return null;
+  // Same guards as `paceStateFor`: no projection this early in the window,
+  // nor once the window has passed without fresh post-reset data.
+  if (f < 0.05 || f >= 1) return null;
   const projected = pct / f;
   return Math.max(0, 1 - projected);
+}
+
+/** Coarse duration for forecasts: "<1m", "~40m", "~3h", "~5d". */
+function formatApproxDuration(ms: number): string {
+  if (ms < 60_000) return '<1m';
+  const m = Math.round(ms / 60_000);
+  if (m < 60) return `~${m}m`;
+  const h = Math.round(ms / 3_600_000);
+  if (h < 48) return `~${h}h`;
+  return `~${Math.round(ms / 86_400_000)}d`;
+}
+
+/**
+ * One-line forecast for a bucket whose pace is warn or critical, e.g.
+ * "At this pace: runs out in ~3h, before reset" or "At this pace: ~6% left
+ * at reset". Built on `projectedRemainingFraction`, so it only speaks when
+ * the colour came from the pace projection: `null` for ok/no-data buckets,
+ * for the static-band fallback (no `resetsAt`/`windowMs`, first 5% of the
+ * window, or past the reset) and for a bucket already at its limit, whose
+ * 100% says it all.
+ */
+function paceForecast(bucket: PaceBucket, now: number): string | null {
+  const state = paceStateFor(bucket, now);
+  if (state !== 'warn' && state !== 'critical') return null;
+  const remaining = projectedRemainingFraction(bucket, now);
+  if (remaining == null) return null;
+  const used = bucket.used!;
+  const limit = bucket.limit!;
+  if (used >= limit || used <= 0) return null;
+  if (remaining > 0) {
+    const pct = Math.round(remaining * 100);
+    return `At this pace: ${pct < 1 ? '<1%' : `~${pct}%`} left at reset`;
+  }
+  // Linear burn since the window opened: time to cover what's left at the
+  // average rate so far. `remaining === 0` means this lands before resetsAt.
+  const elapsed = bucket.windowMs! - (bucket.resetsAt! - now);
+  const msToLimit = ((limit - used) / used) * elapsed;
+  return `At this pace: runs out in ${formatApproxDuration(msToLimit)}, before reset`;
+}
+
+/** Words for a pace state in accessible labels; `''` for 'none'. */
+function paceStateLabel(state: 'none' | 'ok' | 'warn' | 'critical'): string {
+  if (state === 'critical') return 'critical';
+  if (state === 'warn') return 'running high';
+  if (state === 'ok') return 'on track';
+  return '';
+}
+
+/**
+ * Buckets with the snapshot's `billingCycleEnd` filled in as `resetsAt`
+ * where a bucket has none of its own, so monthly plans show when they reset.
+ * Only metered buckets get it (measured `used` and a positive `limit`):
+ * a remaining-only balance (prepaid credits) and a limit-less running total
+ * (Cursor's rolling "last 30 days" usage) don't reset with the cycle.
+ * `windowMs` is left alone, so pace colouring for these buckets stays on
+ * the static bands. Accepts ISO strings (Copilot's date-only form parses as
+ * UTC midnight) and epoch-ms digit strings; returns the input array
+ * unchanged when the date is missing or unparsable.
+ */
+function withBillingCycleReset(buckets: QuotaBucket[], billingCycleEnd: string | undefined): QuotaBucket[] {
+  if (!billingCycleEnd) return buckets;
+  const end = /^\d+$/.test(billingCycleEnd) ? Number(billingCycleEnd) : Date.parse(billingCycleEnd);
+  if (!Number.isFinite(end)) return buckets;
+  return buckets.map(b =>
+    b.resetsAt == null && b.used != null && b.limit != null && b.limit > 0 ? { ...b, resetsAt: end } : b,
+  );
+}
+
+/**
+ * Per-provider freshness for the tray popup: `formatRelativeTime`'s label
+ * ("just now", "5m ago") and whether the data is older than twice the
+ * connector's poll interval. `intervalMs` is `undefined` when the connector
+ * only refreshes by hand (poll override 0) or the interval is unknown; such
+ * data is never flagged stale.
+ */
+function freshnessFor(
+  fetchedAt: number,
+  intervalMs: number | undefined,
+  now: number,
+): { text: string; stale: boolean } {
+  const stale = intervalMs != null && intervalMs > 0 && now - fetchedAt > 2 * intervalMs;
+  return { text: formatRelativeTime(fetchedAt, now), stale };
 }
 
 /** e.g. "2d 6h" (from 48h up), "3h 25m", "12m", "now" for <=0. */

@@ -454,7 +454,7 @@ function testQuotaView() {
   const normalHtml = sandbox.renderMeterRow(bucket(), undefined, { now });
   check("renderMeterRow: normal bucket has --fill:45%", normalHtml.includes('--fill:45%'), normalHtml);
   check('renderMeterRow: normal bucket shows 45% pct',
-        /class="meter-pct[^"]*">45%</.test(normalHtml), normalHtml);
+        /class="meter-pct[^"]*">45% used</.test(normalHtml), normalHtml);
   check('renderMeterRow: normal bucket has no no-data class', !normalHtml.includes('no-data'));
 
   // --- used === null -----------------------------------------------------
@@ -502,7 +502,7 @@ function testQuotaView() {
     undefined,
     { now },
   );
-  check('renderMeterRow: percent/limit100 shows bare 45%', pctHtml.includes('>45%<'), pctHtml);
+  check('renderMeterRow: percent/limit100 shows bare "45% used"', pctHtml.includes('>45% used<'), pctHtml);
   check('renderMeterRow: percent/limit100 suppresses "/ 100% percent"',
         !pctHtml.includes('/ 100% percent'), pctHtml);
 
@@ -627,7 +627,7 @@ function testQuotaView() {
   const popupDefs = [popupDef('live', 'Live'), popupDef('broken', 'Broken'), popupDef('desk', 'Desk App'), popupDef('off', 'Off', true, false)];
 
   const mixedPlan = sandbox.planTrayPopup(popupDefs, { live: okSnap, broken: errSnap, desk: closedApp });
-  check('planTrayPopup: omits appNotRunning and not-enabled connectors, keeps real errors, in registry order',
+  check('planTrayPopup: omits appNotRunning and not-enabled connectors, keeps real errors (ranked below data, else registry order)',
         JSON.stringify(mixedPlan.visible.map(d => d.id)) === JSON.stringify(['live', 'broken']) && mixedPlan.emptyMessage === null,
         JSON.stringify(mixedPlan));
   const onlyClosedPlan = sandbox.planTrayPopup([popupDef('desk', 'Desk App')], { desk: closedApp });
@@ -820,10 +820,11 @@ function testQuotaView() {
         sandbox.connectorColor('x', undefined, 0) === 'var(--cat-1)'
           && sandbox.connectorColor('y', undefined, 5) === 'var(--cat-6)'
           && sandbox.connectorColor('z', undefined, 6) === 'var(--cat-1)');
-  const inListColors = ['a', 'b', 'c'].map(id =>
-    sandbox.connectorColorIn(id, [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }, { id: 'c', name: 'C' }]));
-  check('connectorColorIn: the first providers in registry order get distinct palette slots',
-        new Set(inListColors).size === 3, inListColors.join(', '));
+  const spendDefs = [{ id: 'a', name: 'A', reportsSpend: true }, { id: 'n', name: 'N' },
+    { id: 'b', name: 'B', reportsSpend: true }, { id: 'c', name: 'C', reportsSpend: true }];
+  const inListColors = ['a', 'b', 'c'].map(sandbox.spendColorFor(spendDefs));
+  check('spendColorFor: the spend-reporting providers in registry order get distinct palette slots',
+        new Set(inListColors).size === 3 && inListColors[1] === 'var(--cat-2)', inListColors.join(', '));
   const donutHtml = sandbox.renderDonutSvg([{ id: 'a', value: 1 }], () => 'var(--cat-1)');
   check('renderDonutSvg: arc color is set through style (var() is not valid in a presentation attribute)',
         donutHtml.includes('style="stroke:var(--cat-1)"') && !donutHtml.includes(' stroke="'), donutHtml);
