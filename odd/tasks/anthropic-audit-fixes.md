@@ -28,7 +28,7 @@ Route: all delegated (writer trigger: 2+ non-trivial files per stream). Parallel
 - [x] B — Pricing table (Opus): Opus 5.5, Haiku 5.5 (100K prompt-only tier), Sonnet 5.5 cache read, 1h cache-write rate field, fast-mode multiplier, PRICING_VINTAGE.
 - [ ] C — Claude Code spend (Opus, after B): dedupe by message.id+requestId, 5m/1h split, fast tier, advisor iterations, spend shown without claude.ai login, CLAUDE_CONFIG_DIR, scanner cache version bump.
 - [x] D — Watcher/detector (Sonnet): ignore unknown trailing lines, skip subagent transcripts for notifications only.
-- [ ] E — UI fixes (Sonnet): event ts, unit doubling + USD format, empty spend card, 2-line errors, statuses Off/Needs setup, platform wording, refresh/login feedback, copy, contrast/disabled, small a11y.
+- [x] E — UI fixes (Sonnet): event ts, unit doubling + USD format, empty spend card, 2-line errors, statuses Off/Needs setup, platform wording, refresh/login feedback, copy, contrast/disabled, small a11y.
 - [ ] G — First-run "not detected" state + popup error actions (Opus, after E): neutral notDetected outcome for Cursor/Codex/OpenCode, sign-in button in popup, deep-link popup → connector drawer.
 - [ ] F — Docs (Sonnet, last): CONNECTOR-SOURCES.md, DESIGN.md, ARCHITECTURE.md, CLAUDE.md IPC table.
 - [ ] V — Full verification (Haiku): tsc, npm test, npm run smoke, check-contrast.
@@ -40,6 +40,7 @@ Route: all delegated (writer trigger: 2+ non-trivial files per stream). Parallel
 - A: delegated (Opus, worktree). Commit 25c7b61; vendor premises re-verified 2026-10-09; npm test 455 pass, smoke pass (writer); parent tsc after merge clean. Not verified live (no admin key).
 - D: delegated (Sonnet, worktree). Commit 455cb1d, merged 38975fb. tsc clean; npm test 451 pass; smoke pass (writer-reported); parent tsc re-run clean.
 - B: delegated (Opus, worktree). Commit ea16f95 + smoke fix; rates confirmed against vendor page 2026-10-09; geo 1.1x deferred. Parent smoke re-run: pass.
+- E: delegated (Sonnet, worktree). Commits 3f327f8, 8ccfecb. Row ⋯ button placed on meter rows (menu is per bucket). Finished-pill mismatch moved to G (detector snippet). Parent re-run after merge: tsc, smoke, check-contrast pass. Visuals not checked on screen yet.
 
 ## Deferred
 _(none yet)_
