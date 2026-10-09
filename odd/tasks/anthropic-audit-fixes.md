@@ -30,6 +30,7 @@ Route: all delegated (writer trigger: 2+ non-trivial files per stream). Parallel
 - [x] D — Watcher/detector (Sonnet): ignore unknown trailing lines, skip subagent transcripts for notifications only.
 - [x] E — UI fixes (Sonnet): event ts, unit doubling + USD format, empty spend card, 2-line errors, statuses Off/Needs setup, platform wording, refresh/login feedback, copy, contrast/disabled, small a11y.
 - [ ] G — First-run "not detected" state + popup error actions (Opus, after E): neutral notDetected outcome for Cursor/Codex/OpenCode, sign-in button in popup, deep-link popup → connector drawer.
+- [ ] H — Review follow-ups (Sonnet, after C+G): six non-blocking findings from the approved review.
 - [ ] F — Docs (Sonnet, last): CONNECTOR-SOURCES.md, DESIGN.md, ARCHITECTURE.md, CLAUDE.md IPC table.
 - [ ] V — Full verification (Haiku): tsc, npm test, npm run smoke, check-contrast.
 
@@ -41,6 +42,7 @@ Route: all delegated (writer trigger: 2+ non-trivial files per stream). Parallel
 - D: delegated (Sonnet, worktree). Commit 455cb1d, merged 38975fb. tsc clean; npm test 451 pass; smoke pass (writer-reported); parent tsc re-run clean.
 - B: delegated (Opus, worktree). Commit ea16f95 + smoke fix; rates confirmed against vendor page 2026-10-09; geo 1.1x deferred. Parent smoke re-run: pass.
 - E: delegated (Sonnet, worktree). Commits 3f327f8, 8ccfecb. Row ⋯ button placed on meter rows (menu is per bucket). Finished-pill mismatch moved to G (detector snippet). Parent re-run after merge: tsc, smoke, check-contrast pass. Visuals not checked on screen yet.
+- Review slice 6ae6bd9..A+B+D+E (risk high): consent granted; 4-lens native review APPROVED, acknowledged (lineage review-250d67cc15620e93, authority burned). Non-blocking follow-ups queued as task H: notifier onRecord throw blocks notification; anthropic MAX_PAGES partial sum shown as complete; duplicate busy-state in settings sign-in; hasMissingQuotaSecret naming; split main CSS rule; CLAUDE_CONFIG_DIR untested.
 
 ## Deferred
 _(none yet)_
