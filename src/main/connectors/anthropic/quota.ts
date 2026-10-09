@@ -48,7 +48,7 @@ function parseRetryAfterMs(raw: string | null | undefined): number {
  * literal that must be bumped alongside package.json's `version` field.
  */
 function userAgent(): string {
-  let version = '0.2.3';
+  let version = '0.4.0';
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { app } = require('electron') as typeof import('electron');
