@@ -77,6 +77,8 @@ Connectors never refresh or rewrite another tool's credential files (e.g. Codex 
 
 A quota snapshot sets `appNotRunning: true` only when its sole source is a desktop app that isn't running (Antigravity). `error` carries the notice; the tray popup and tooltip hide the connector, settings shows a neutral notice, and the poller does not back off.
 
+A snapshot sets `notDetected: true` only when the tool's default install/data location is absent (Cursor, Codex CLI, OpenCode); a custom path that does not exist stays a real error. `error` carries a short, friendly notice; the popup and tooltip hide the connector, Settings shows a neutral "Not installed" status that does not count as needing attention, and the poller does not back off.
+
 **Adding a connector: edit only `registry.ts`.** All other files (settings store, IPC, UI) iterate `ALL_CONNECTORS` generically. See `src/main/connectors/README.md` for the full authoring guide.
 
 ---
@@ -114,7 +116,8 @@ A quota snapshot sets `appNotRunning: true` only when its sole source is a deskt
 
 | Channel | Payload |
 |---|---|
-| `event` | `AgentEvent` |
+| `event` | `RecentEvent` (`ts`, `agent`, `sessionId`, `message`, `kind`, `source?`): the stored record, pushed only when the notifier keeps the event (cooldown-dropped events are not pushed) |
+| `settings:openConnector` | `id` (opens that connector's drawer; the preload buffers it until the page calls `onOpenConnector`) |
 | `log` | `LogEntry` |
 | `paused` | `boolean` |
 | `quota:update` | `{ id: string; snapshot: QuotaSnapshot }` |
@@ -126,7 +129,8 @@ Channels prefixed with `trayPopup:` — bridge in `src/preload/tray-popup.ts` (`
 
 | Channel | Direction | Arguments | Returns / payload |
 |---|---|---|---|
-| `trayPopup:openSettings` | invoke | — | — |
+| `trayPopup:openSettings` | invoke | `id?` | — (with `id`, opens that connector's drawer in Settings) |
+| `trayPopup:login` | invoke | `id` | `true`; rejects an unknown id or a connector without `login` (same `runConnectorLogin` as `connector:login:${id}`) |
 | `trayPopup:getQuotas` | invoke | — | `Record<string, QuotaSnapshot>` |
 | `trayPopup:getConnectors` | invoke | — | `ConnectorMetadata[]` |
 | `trayPopup:getBucketPrefs` | invoke | — | `bucketPrefs` map |

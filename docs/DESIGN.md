@@ -32,6 +32,7 @@ Dark is the `:root` default; light overrides it inside `@media (prefers-color-sc
 | `--surface-2` | `#1D1F26` | `#F0F0F3` | Secondary buttons, hover, meter track |
 | `--border` | `#2A2C35` | `#E3E3E8` | Hairlines |
 | `--border-strong` | `#3A3D48` | `#CFCFD6` | Input borders, switch off state |
+| `--control-border` | `#6C7182` | `#80848F` | Outline of controls and the meter track that must be visible on their own (off switch, meter bar) |
 | `--text` | `#ECEDF1` | `#111217` | Primary text |
 | `--text-2` | `#A4A7B3` | `#50535E` | Secondary text |
 | `--text-3` | `#8A8E9B` | `#666A76` | Tertiary text, placeholders |
@@ -67,6 +68,8 @@ Every text/background pair must reach at least 4.5:1 in both themes:
 
 The categorical palette (`--cat-N`) is only used for graphical marks (donut arcs, legend dots), so it must reach 3:1 against `--surface` in both themes (WCAG 1.4.11) rather than 4.5:1.
 
+UI components (WCAG 1.4.11) must reach 3:1: `--control-border` on `bg`, `surface` and `surface-2`, and the `accent-solid`, `ok`, `warn` and `danger` fills on `surface`.
+
 Two light values were darkened to pass: `--ok` `#15803D` to `#157A3A` and `--warn` `#B45309` to `#AB4F08`. The originals measured 4.41:1 on `--surface-2` and about 4.3:1 on their own pill backgrounds.
 
 Check with:
@@ -75,7 +78,7 @@ Check with:
 node scripts/check-contrast.js
 ```
 
-It reads both themes from `tokens.css`, prints every ratio, and exits non-zero if any pair is below its minimum (4.5:1 for text, 3:1 for the palette). Run it after any token change.
+It reads both themes from `tokens.css`, prints every ratio, and exits non-zero if any pair is below its minimum (4.5:1 for text, 3:1 for the palette and UI components). Run it after any token change.
 
 ## Theme
 
@@ -86,7 +89,7 @@ The theme setting (system / light / dark) is applied in the main process through
 - Left sidebar with the brand, the main pages **Overview**, **Integrations**, **Activity**, **General**, **Notifications**, then an **Advanced** group (`nav-group-label`) with **Webhook** and **Logs**. The footer shows the monitoring status dot and the Pause button.
   - **General**: Startup, Updates, Quota (tray summary, default auto-refresh), Appearance, Tray popup (transparency, shortcut recorder), and the settings file path.
   - **Notifications**: the master switch, per-kind toggles, cooldown and *Send test*, then Quiet hours. *Send test* lives only here, not in the Overview header.
-- Each page is a `<section class="page" data-page="...">`; only one is visible at a time. The last page is remembered in `localStorage` (`aio.settings.page`); `activatePage` maps ids from older versions (`LEGACY_PAGE_IDS`: `preferences` → `general`), so a stored id never lands on a missing page. Main never opens a specific page.
+- Each page is a `<section class="page" data-page="...">`; only one is visible at a time. The last page is remembered in `localStorage` (`aio.settings.page`); `activatePage` maps ids from older versions (`LEGACY_PAGE_IDS`: `preferences` → `general`), so a stored id never lands on a missing page. Main never opens a specific page, but it can open a specific connector's drawer: the popup's *Configure* button and its row menu's *Customize…* call `trayPopup:openSettings(id)`, main sends `settings:openConnector`, and the settings page opens that drawer. Unknown ids are ignored.
 - **Integrations list**: a toolbar with an *Enabled / All* segmented control (`.segmented`, toggle buttons with `aria-pressed` in a `role="group"`; the choice is remembered in `localStorage`, `aio.settings.integrationFilter`) and a search box that only appears with more than 10 connectors. Inside each vendor group, connectors in `error` or `needs-login` sort first. The order is computed when the list is built (filter or search change, page load), not on quota pushes, so rows do not move under the pointer. An empty result shows one `.empty-state` line.
 - **Drawer Meters section** (`data-section="meters"`, after Quota for quota connectors): per-bucket show switch, visibility select, star (cap `MAX_STARRED_PER_CONNECTOR`) and move up/down, through the `connectors:setBucketPref` IPC. Long labels truncate (full text in `title`) so controls stay aligned. Re-renders keep focus on the same control. The row menu's *Customize…* opens this section for the row's connector.
 - Connector details open in a side drawer (`#connectorDrawer`): `role="dialog"`, `aria-modal="true"`, labelled by its title. While open, Tab and Shift+Tab are trapped inside it, Escape closes it (unless the row context menu is open, which handles Escape first), clicking the backdrop closes it, and focus returns to the row that opened it.
@@ -95,7 +98,7 @@ The theme setting (system / light / dark) is applied in the main process through
 
 - **Buttons**: 28px high (`.btn`), 24px for `.btn-sm`. Variants: `btn-primary` (accent-solid, white text), `btn-secondary`, `btn-ghost`, `btn-danger-ghost`. Icon buttons are square (`.btn-icon`).
 - **Destructive actions** (Activity *Clear*, a connector secret's *Clear*): inline two-step confirm (`bindConfirmClick` in `settings.ts`). The first click relabels the button to *Confirm clear* for 3.5 s; a second click inside that window runs the action; timing out or moving focus away disarms it. No `confirm()` dialogs. A secret's *Clear* is `btn-danger-ghost` and disabled while the key is not set.
-- **Disabled rows**: a row whose control depends on a master switch (notification kinds under *Show desktop notifications*, the quiet-hours start and end times under their switch) disables that control while the master is off. Disabled rows use `--text-3` for their label and description, never opacity, so the text still meets contrast.
+- **Disabled rows**: a row whose control depends on a master switch (notification kinds under *Show desktop notifications*, the quiet-hours start and end times under their switch) disables that control while the master is off. Disabled rows use `--text-3` for their label and description, never opacity, so the text still meets contrast. Disabled buttons and row-menu items follow the same rule.
 - **Spend switches** (`.spend-switch`): toggle buttons with `aria-pressed`, grouped in a `role="group"` with an `aria-label` (not a tablist). At least 24px high.
 - **Switch**: native checkbox with `appearance: none`, 28x16px; off is `--border-strong`, on is `--accent-solid` with a white 12px knob.
 - **Inputs** (`.control`): 28px high (24px for `.control-sm`), `--surface` background, `--border-strong` border; on focus the border becomes `--accent` with a 3px `--accent-soft` halo.
@@ -120,9 +123,17 @@ The theme setting (system / light / dark) is applied in the main process through
 - **Tray popup order**: quotas first, then the spend card. Providers sort by their worst non-hidden bucket, critical, then warn, then ok, then no data (errors and not-loaded-yet rank with no data); ties keep registry order (`planTrayPopup`). Users cannot order providers: `BucketPref.order` and `starred` work inside one connector only, so there is no user order to respect here.
 - **Provider freshness** (`.provider-updated`): a muted `--text-3` "5m ago" at the right of each ok provider's heading, from its `fetchedAt`. It turns `--warn` (plus an `.sr-only` "out of date") once the data is older than twice that connector's effective poll interval, read from main (`trayPopup:getPollIntervals`); manual-only connectors are never flagged. It ticks with the footer label.
 - **Tray popup footer**: an *Updated 42s ago* label (`#updatedAgo`) from the newest `fetchedAt` among visible providers with an ok snapshot; a failed attempt does not count as an update. It ticks each second while the popup is shown and is not a live region. The popup never fetches on a timer: it renders what main pushes, and only the Refresh button and the row menu's *Refresh this provider* force a fetch. Re-renders keep open *More metrics* rows open and keep keyboard focus (`captureViewState` / `restoreViewState` in `quota-view.ts`).
-- **Status**: small dot plus text. "App not running" (`status-app-not-running`) uses a `--text-3` dot and `--text-2` text: it is expected, not an error. Pills (`.pill-waiting`, `.pill-finished`) use the status colour on its `-soft` background.
+- **Status**: small dot plus text. Labels: *Off* (quota switched off), *Needs setup* (quota on, a required secret missing, quota not working), *Not installed* (`notDetected`), *App not running*. "App not running" (`status-app-not-running`) and "Not installed" (`status-not-detected`) use a `--text-3` dot and `--text-2` text: they are expected, not errors. Pills (`.pill-waiting`, `.pill-finished`) use the status colour on its `-soft` background.
 - **Update banner** (`.update-banner`, `renderUpdateBanner` in `update-banner.ts`): `--accent-soft` background with a hairline border, `--accent` download icon, `--text` copy, one small `btn-primary` action (*Update now* / *Restart to update* where the package can install, *Download* to the release page otherwise) and a ghost dismiss button. While downloading, a 4px `--accent-solid` progress bar replaces the action. Settings window: above the page content, same max width as `.page`. Tray popup: compact variant between the header and the scroll area, divided by a hairline.
-- **Neutral notice** (`.inline-notice`, `renderAppNotRunningNotice` in `quota-view.ts`): info icon plus `--text-2` text, used instead of the red error styling for `appNotRunning` snapshots. The tray popup does not show those connectors at all.
+- **Neutral notice** (`.inline-notice`, `renderAppNotRunningNotice` in `quota-view.ts`): info icon plus `--text-2` text, used instead of the red error styling for `appNotRunning` and `notDetected` snapshots. The tray popup does not show those connectors at all.
+- **Popup sign-in**: a connector that reports `needsLogin` and declares `login` shows a sign-in button in its popup row (`trayPopup:login`); it is busy ("Opening sign-in…") until the sign-in returns. A *Configure* link opens that connector's drawer.
+- **Row menu button**: each meter row that the menu can target carries a `⋯` button (`.row-menu-btn`, `aria-haspopup="menu"`) shown on hover and `:focus-within`, always reachable by keyboard.
+- **Reset chip**: always in the meter header.
+- **Units**: a unit word is written only for requests, credits and tokens. USD is formatted with `Intl.NumberFormat` (`en-US`, currency), and `%` and `$` are never repeated beside a figure that already carries them.
+- **Stale cue**: a provider's "5m ago" label gains "· stale" (plus the `--warn` colour) when it is out of date, so the cue does not rely on colour alone.
+- **Scroll cue**: the popup's scroller shows a soft shadow on any edge with more content behind it; the shadow is off in transparent mode.
+- **Refresh busy state**: refresh buttons set `aria-busy`, disable themselves, spin their icon and relabel to "Refreshing…".
+- **Copy**: sentence case; "No usage reported yet." and "Waiting for the first refresh." for empty meters; the Activity source column shows the project folder name with the full path in `title`; provider names are `h2`.
 
 - **Row menu keyboard**: meter rows that the row menu can target are tab stops (`tabindex="0"`; compact rows use their `<summary>`). Shift+F10 or the ContextMenu key opens the menu under the row and focuses its first item; Arrow Up/Down, Home and End move between enabled items; Escape closes it and returns focus to the row. In the tray popup, Escape with no menu open hides the popup (`trayPopup:hide`).
 - **Selectable text**: the popup body sets `user-select: none`; `.provider-error-text` opts back in so an error can be copied.
