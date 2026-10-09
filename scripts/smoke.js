@@ -1327,7 +1327,7 @@ function testModelPricing() {
   check('rateFor: a dated snapshot is not mistaken for a minor version',
         rateFor('claude-sonnet-4-5-20250929').inputPerMTokUsd === 3);
   check('rateFor: a newer-than-known version resolves to the newest tier, never null',
-        rateFor('claude-opus-6') === rateFor('claude-opus-5'));
+        rateFor('claude-opus-6') === rateFor('claude-opus-5-5'));
   check('rateFor: the fable family is priced instead of falling through to null',
         rateFor('claude-fable-5-1').outputPerMTokUsd === 50);
 
