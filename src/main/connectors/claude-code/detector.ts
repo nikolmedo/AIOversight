@@ -1,6 +1,24 @@
 import { ConnectorContext, Detector, LineStatus } from '../types';
 import { TranscriptWatcher } from '../shared/transcript-watcher';
 
+/** True for `<project>/<session-id>/subagents/agent-<id>.jsonl` (either path separator). */
+export function isSubagentTranscript(file: string): boolean {
+  return file.split(/[\\/]/).slice(0, -1).includes('subagents');
+}
+
+/**
+ * Adds the projects glob under $CLAUDE_CONFIG_DIR to the watched patterns when the
+ * variable is set, skipping it when an existing pattern already resolves to it.
+ */
+function withConfigDirPattern(patterns: string[], ctx: ConnectorContext): string[] {
+  const dir = process.env.CLAUDE_CONFIG_DIR?.trim();
+  if (!dir) return patterns;
+  const extra = `${dir.replace(/[\\/]+$/, '')}/projects/**/*.jsonl`;
+  const norm = (p: string): string => ctx.resolvePath(p).replace(/\\/g, '/').toLowerCase();
+  if (patterns.some(p => norm(p) === norm(extra))) return patterns;
+  return [...patterns, extra];
+}
+
 /**
  * Claude Code (Anthropic CLI) notification detector.
  *
@@ -14,7 +32,7 @@ export function createClaudeCodeDetector(
   config: Record<string, unknown>,
   ctx: ConnectorContext,
 ): Detector {
-  const patterns = (config.paths as string[] | undefined) ?? [];
+  const patterns = withConfigDirPattern((config.paths as string[] | undefined) ?? [], ctx);
   const idleSeconds = (config.idleSeconds as number | undefined) ?? 6;
   return new TranscriptWatcher(
     {
@@ -22,9 +40,12 @@ export function createClaudeCodeDetector(
       detectorId: 'claude-code',
       patterns,
       idleMs: Math.max(2, idleSeconds) * 1000,
+      ignorePath: isSubagentTranscript,
       extractStatus(line): LineStatus {
         if (!line || typeof line !== 'object') return 'unknown';
         const obj = line as Record<string, unknown>;
+        // Subagent (sidechain) turns must not notify on their own.
+        if (obj.isSidechain === true) return 'unknown';
         const t = obj.type ?? obj.role;
         if (t === 'user') return 'user';
         if (t === 'tool_use' || t === 'tool_result' || t === 'tool') return 'tool';

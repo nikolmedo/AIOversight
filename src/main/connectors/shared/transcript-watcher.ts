@@ -8,8 +8,9 @@ import { ConnectorContext, Detector, EventKind, LineStatus } from '../types';
  * agent transcripts (Cursor, Claude Code, Codex CLI, custom JSONL).
  *
  * Heuristic: every transcript file is tailed. After N seconds of inactivity,
- * we look at the *last* JSON line and classify it via the connector-supplied
- * `extractStatus` hook:
+ * we classify the newest line whose status is not 'unknown' via the
+ * connector-supplied `extractStatus` hook (trailing metadata lines that a
+ * tool appends after the final turn are skipped):
  *   - 'pending' (assistant turn with a tool_use awaiting result) or
  *     'tool' (orphan tool result) -> emit kind: 'waiting'.
  *   - 'final' (assistant text response with no pending tool) -> emit
@@ -26,6 +27,8 @@ export interface TranscriptWatcherOptions {
   idleMs: number;
   extractStatus(line: unknown): LineStatus;
   extractSnippet?(line: unknown): string | undefined;
+  /** Files for which this returns true are never tailed (e.g. subagent transcripts). */
+  ignorePath?(file: string): boolean;
 }
 
 interface FileState {
@@ -82,6 +85,7 @@ export class TranscriptWatcher implements Detector {
   }
 
   private onChange(file: string, initial: boolean): void {
+    if (this.opts.ignorePath?.(file)) return;
     let stat: fs.Stats;
     try {
       stat = fs.statSync(file);
@@ -93,7 +97,7 @@ export class TranscriptWatcher implements Detector {
     const newSize = stat.size;
     const startAt = prev ? prevSize : Math.max(0, newSize - 64 * 1024);
 
-    let lastLine: string | undefined;
+    let lines: string[] = [];
     if (newSize > startAt) {
       try {
         const fd = fs.openSync(file, 'r');
@@ -102,8 +106,7 @@ export class TranscriptWatcher implements Detector {
         fs.readSync(fd, buf, 0, len, startAt);
         fs.closeSync(fd);
         const text = buf.toString('utf8');
-        const lines = text.split('\n').filter(l => l.trim().length > 0);
-        lastLine = lines[lines.length - 1];
+        lines = text.split('\n').filter(l => l.trim().length > 0);
       } catch (err) {
         this.ctx.log('debug', `[${this.opts.detectorId}] read failed`, { file, err: String(err) });
       }
@@ -111,14 +114,21 @@ export class TranscriptWatcher implements Detector {
 
     let status: LineStatus = prev?.lastStatus ?? 'unknown';
     let snippet = prev?.lastSnippet;
-    if (lastLine) {
+    // Walk newest -> oldest and take the last line that classifies as something
+    // other than 'unknown'; malformed lines are skipped. If nothing qualifies,
+    // the previous status and snippet are kept.
+    for (let i = lines.length - 1; i >= 0; i--) {
+      let parsed: unknown;
       try {
-        const parsed = JSON.parse(lastLine);
-        status = this.opts.extractStatus(parsed);
-        snippet = this.opts.extractSnippet?.(parsed) ?? snippet;
+        parsed = JSON.parse(lines[i]);
       } catch {
-        // Malformed last line -- ignore, keep previous status.
+        continue;
       }
+      const lineStatus = this.opts.extractStatus(parsed);
+      if (lineStatus === 'unknown') continue;
+      status = lineStatus;
+      snippet = this.opts.extractSnippet?.(parsed) ?? snippet;
+      break;
     }
 
     // On the very first observation, mark both kinds as already-notified at

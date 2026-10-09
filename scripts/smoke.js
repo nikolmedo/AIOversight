@@ -1788,6 +1788,51 @@ async function testTranscriptWatcher() {
 }
 
 // --------------------------------------------------------------------------
+// TranscriptWatcher: trailing metadata lines + ignorePath (Claude Code)
+// --------------------------------------------------------------------------
+async function testTranscriptWatcherMetadataAndIgnore() {
+  console.log('TranscriptWatcher: trailing metadata lines and ignorePath');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-smoke-cc-'));
+  const mainFile = path.join(tmp, 'session-a.jsonl');
+  const subDir = path.join(tmp, 'session-a', 'subagents');
+  fs.mkdirSync(subDir, { recursive: true });
+  const subFile = path.join(subDir, 'agent-1.jsonl');
+  fs.writeFileSync(mainFile, '');
+  fs.writeFileSync(subFile, '');
+
+  const captured = [];
+  const watcher = findConnector('claude-code').detector.create(
+    { paths: [path.join(tmp, '**', '*.jsonl').split(path.sep).join('/')], idleSeconds: 2 },
+    makeCtx(captured),
+  );
+  await watcher.start();
+  await sleep(500);
+
+  fs.appendFileSync(subFile, JSON.stringify({
+    type: 'assistant', isSidechain: true, message: { content: [{ type: 'text', text: 'sub done' }] },
+  }) + '\n');
+  fs.appendFileSync(mainFile, [
+    { type: 'assistant', message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'All finished.' }] } },
+    { type: 'queue-operation', operation: 'dequeue' },
+    { type: 'system', subtype: 'stop_hook_summary' },
+    { type: 'system', subtype: 'turn_duration' },
+    { type: 'last-prompt', lastPrompt: 'x' },
+  ].map(l => JSON.stringify(l)).join('\n') + '\n');
+  await sleep(4500);
+
+  check('assistant final followed by metadata lines still fires finished',
+        captured.some(e => e.kind === 'finished' && /All finished/.test(e.message)),
+        `events=${JSON.stringify(captured)}`);
+  check('subagent transcript path does not notify',
+        !captured.some(e => /sub done/.test(e.message) || /agent-1/.test(e.source)),
+        `events=${JSON.stringify(captured)}`);
+  check('exactly one event total', captured.length === 1, `got ${captured.length}`);
+
+  await watcher.stop();
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+// --------------------------------------------------------------------------
 // Per-connector classifier: Cursor + Claude Code + Codex CLI shape recognition
 // --------------------------------------------------------------------------
 function testConnectorClassifiers() {
@@ -2665,6 +2710,7 @@ function testUpdater() {
   testClaudeUsageParsing();
   await testCodexCumulativeStateRestart();
   await testTranscriptWatcher();
+  await testTranscriptWatcherMetadataAndIgnore();
   await testWebhook();
   console.log('---');
   if (failures === 0) {
