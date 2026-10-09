@@ -1,0 +1,43 @@
+# Feature: anthropic-audit-fixes
+
+Branch: `261009-anthropic-audit-fixes` · Engram mirror: `odd/anthropic-audit-fixes/tasks`
+
+## Objective
+Apply every fix from the 2026-10-09 audit (Anthropic Console connector, Claude Code connector, model pricing, UI/UX).
+
+## Problem / why
+- Anthropic Admin API spend never shows (cost `amount` is a cents string), month-to-date covers only 7 days (pagination), cache-write tokens always 0.
+- Claude Code local spend is ~2x overcounted (duplicate usage per content block), 1h cache writes underpriced, advisor iterations uncounted, fast mode unpriced.
+- Price table is stale for Opus 5.5, Haiku 5.5, Sonnet 5.5 cache reads.
+- "Finished" notifications missed on ~62% of turns (trailing metadata lines); subagents spawn extra notifications.
+- UI: "NaNd ago" activity, doubled units, first-run red errors, truncated popup errors, oversized empty spend card, undiscoverable row menu, misleading statuses, missing refresh feedback, copy/contrast issues.
+
+## Constraints
+- Connector ids and bucket ids are persisted settings keys: never rename.
+- No new dependencies, no bundler, no renderer framework, CommonJS, English artifacts, conventional commits without attribution lines.
+- Never refresh/rewrite other tools' credentials; do not use the Claude OAuth token.
+- After tokens.css changes run `node scripts/check-contrast.js`.
+
+## Delivery
+Strategy: ask-on-risk. Forecast > 400 authored lines (≈1500–2500). Chain strategy: single-pr (user choice 2026-10-09).
+
+## Tasks
+Route: all delegated (writer trigger: 2+ non-trivial files per stream). Parallel writers run in isolated git worktrees, merged into the feature branch by the parent.
+
+- [ ] A — Anthropic Admin API parsing (Opus): cents-string `amount`, USD check, `limit=31` + `next_page` pagination on usage and cost, nested `cache_creation` 5m/1h, 401/403 message, help URL, real-shape fixtures.
+- [ ] B — Pricing table (Opus): Opus 5.5, Haiku 5.5 (100K prompt-only tier), Sonnet 5.5 cache read, 1h cache-write rate field, fast-mode multiplier, PRICING_VINTAGE.
+- [ ] C — Claude Code spend (Opus, after B): dedupe by message.id+requestId, 5m/1h split, fast tier, advisor iterations, spend shown without claude.ai login, CLAUDE_CONFIG_DIR, scanner cache version bump.
+- [ ] D — Watcher/detector (Sonnet): ignore unknown trailing lines, skip subagent transcripts for notifications only.
+- [ ] E — UI fixes (Sonnet): event ts, unit doubling + USD format, empty spend card, 2-line errors, statuses Off/Needs setup, platform wording, refresh/login feedback, copy, contrast/disabled, small a11y.
+- [ ] G — First-run "not detected" state + popup error actions (Opus, after E): neutral notDetected outcome for Cursor/Codex/OpenCode, sign-in button in popup, deep-link popup → connector drawer.
+- [ ] F — Docs (Sonnet, last): CONNECTOR-SOURCES.md, DESIGN.md, ARCHITECTURE.md, CLAUDE.md IPC table.
+- [ ] V — Full verification (Haiku): tsc, npm test, npm run smoke, check-contrast.
+
+## Acceptance criteria
+`npx tsc --noEmit`, `npm test`, `npm run smoke`, `node scripts/check-contrast.js` all pass; each finding fixed or explicitly deferred below.
+
+## Progress / evidence
+_(updated per task: commit, checks, review tier)_
+
+## Deferred
+_(none yet)_
