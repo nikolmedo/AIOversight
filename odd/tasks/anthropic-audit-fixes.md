@@ -30,7 +30,7 @@ Route: all delegated (writer trigger: 2+ non-trivial files per stream). Parallel
 - [x] D — Watcher/detector (Sonnet): ignore unknown trailing lines, skip subagent transcripts for notifications only.
 - [x] E — UI fixes (Sonnet): event ts, unit doubling + USD format, empty spend card, 2-line errors, statuses Off/Needs setup, platform wording, refresh/login feedback, copy, contrast/disabled, small a11y.
 - [x] G — First-run "not detected" state + popup error actions (Opus, after E): neutral notDetected outcome for Cursor/Codex/OpenCode, sign-in button in popup, deep-link popup → connector drawer.
-- [ ] H — Follow-ups (Sonnet, after G): six non-blocking review findings + show spend on ok:false snapshots in renderer + sub-cent rounding (optional).
+- [x] H — Follow-ups (Sonnet, after G): six non-blocking review findings + show spend on ok:false snapshots in renderer + sub-cent rounding (optional).
 - [x] F — Docs (Sonnet, last): CONNECTOR-SOURCES.md, DESIGN.md, ARCHITECTURE.md, CLAUDE.md IPC table.
 - [ ] V — Full verification (Haiku): tsc, npm test, npm run smoke, check-contrast.
 
@@ -44,6 +44,7 @@ Route: all delegated (writer trigger: 2+ non-trivial files per stream). Parallel
 - C: delegated (Opus, worktree). Commit 10b5510. Local 7-day spend $580.15 -> $330.58 (dedupe; advisor adds ~$29.5). Parent after merge: tsc clean, npm test 504/504. Renderer still hides spend on ok:false snapshots -> task H.
 - G: delegated (Opus, worktree). Commits 869489d, 558def1. Parent after merge: tsc clean, npm test 520/520, smoke pass.
 - F: delegated (Sonnet, worktree). Commit 8614366; structural readback + grep of every documented name (writer). Rounding limitation line pending H outcome.
+- H: delegated (Sonnet, worktree). Commits 8b7ee43, 5315893, cbf1a98 (writer: 530 tests pass, smoke, contrast). RED observed only for items 7-8. Docs aligned by parent.
 - E: delegated (Sonnet, worktree). Commits 3f327f8, 8ccfecb. Row ⋯ button placed on meter rows (menu is per bucket). Finished-pill mismatch moved to G (detector snippet). Parent re-run after merge: tsc, smoke, check-contrast pass. Visuals not checked on screen yet.
 - Review slice 6ae6bd9..A+B+D+E (risk high): consent granted; 4-lens native review APPROVED, acknowledged (lineage review-250d67cc15620e93, authority burned). Non-blocking follow-ups queued as task H: notifier onRecord throw blocks notification; anthropic MAX_PAGES partial sum shown as complete; duplicate busy-state in settings sign-in; hasMissingQuotaSecret naming; split main CSS rule; CLAUDE_CONFIG_DIR untested.
 
