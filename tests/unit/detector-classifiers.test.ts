@@ -174,6 +174,47 @@ describe('Claude Code classifier (extractStatus) — edge cases', () => {
     // Assert
     assert.equal(snippet, 'Top-level text fallback');
   });
+
+  it('extractSnippet clears the snippet for a finished line without text, so a stale "awaiting approval" is not reused', () => {
+    // Arrange — Claude Code writes one JSONL line per content block, so the
+    // last line of a finished turn can carry only a thinking block. The
+    // watcher keeps the previous snippet when the hook returns undefined.
+    const line = {
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'done here' }] },
+    };
+
+    // Act
+    const status = opts.extractStatus(line);
+    const snippet = opts.extractSnippet?.(line);
+
+    // Assert
+    assert.equal(status, 'final');
+    assert.equal(snippet, '');
+  });
+
+  it('a finished event never carries the previous pending line\'s tool snippet', () => {
+    // Arrange — pending tool_use, its tool_result, then a thinking-only final line.
+    const lines = [
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'WebFetch', input: {} }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] } },
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'wrap up' }] } },
+    ];
+
+    // Act — the watcher's rule: a defined snippet replaces the previous one.
+    let snippet: string | undefined;
+    let status = 'unknown';
+    for (const line of lines) {
+      const s = opts.extractStatus(line);
+      if (s === 'unknown') continue;
+      status = s;
+      snippet = opts.extractSnippet?.(line) ?? snippet;
+    }
+
+    // Assert
+    assert.equal(status, 'final');
+    assert.doesNotMatch(snippet ?? '', /awaiting approval/);
+  });
 });
 
 describe('Codex CLI classifier (extractStatus) — edge cases', () => {
