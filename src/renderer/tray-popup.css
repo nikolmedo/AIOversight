@@ -73,7 +73,9 @@ h1 { font-size: 13px; font-weight: 600; }
   font-size: 12px; font-weight: 500; white-space: nowrap; cursor: pointer;
   transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.btn:disabled { opacity: .5; cursor: default; }
+/* Token colour, not opacity (DESIGN.md): the label keeps its contrast. */
+.btn:disabled { color: var(--text-3); cursor: default; }
+.btn-primary:disabled { background: var(--surface-2); }
 .btn-ghost { background: transparent; color: var(--text-2); }
 .btn-ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
 .btn-secondary { background: var(--surface-2); border-color: var(--border); color: var(--text); }
@@ -107,6 +109,18 @@ h1 { font-size: 13px; font-weight: 600; }
 
 /* ── Scroll area ────────────────────────────────────────── */
 main { flex: 1; overflow-y: auto; overflow-x: hidden; }
+/* Scroll cue: a soft shadow on whichever edge has more content behind it.
+   The two `local` gradients repaint --surface over the `scroll` shadows once
+   the content reaches that edge, so nothing shows when it all fits. */
+main {
+  background:
+    linear-gradient(var(--surface) 30%, transparent) top / 100% 24px no-repeat local,
+    linear-gradient(transparent, var(--surface) 70%) bottom / 100% 24px no-repeat local,
+    radial-gradient(farthest-side at 50% 0, var(--border-strong), transparent) top / 100% 10px no-repeat scroll,
+    radial-gradient(farthest-side at 50% 100%, var(--border-strong), transparent) bottom / 100% 10px no-repeat scroll;
+}
+/* The covers are opaque, which would block a translucent window. */
+body.popup-transparent main { background: none; }
 main::-webkit-scrollbar { width: 8px; }
 main::-webkit-scrollbar-track { background: transparent; }
 main::-webkit-scrollbar-thumb {
@@ -135,10 +149,12 @@ main::-webkit-scrollbar-thumb {
   font-size: 11px; font-weight: 500; white-space: nowrap;
 }
 .provider-note { font-size: 12px; color: var(--text-2); }
-.provider-error { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.provider-error { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
 .provider-error-text {
   flex: 1; min-width: 0; font-size: 12px; color: var(--danger);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  /* Two lines before the ellipsis; the full text is in the title. */
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  overflow: hidden; overflow-wrap: anywhere;
   /* The body disables selection; error text stays copyable for bug reports. */
   user-select: text; cursor: text;
 }
@@ -150,7 +166,8 @@ main::-webkit-scrollbar-thumb {
 
 .empty { padding: 20px 16px; text-align: center; font-size: 12px; color: var(--text-2); }
 
-/* ── Total Spend (shared renderTotalSpendCard markup, flattened) ── */
+/* ── Total spend (shared renderTotalSpendCard markup, flattened) ── */
+.spend-empty { padding: 10px 12px; font-size: 12px; color: var(--text-2); }
 .spend-card { padding: 10px 12px 12px; }
 .spend-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 .spend-card-title { font-size: 13px; font-weight: 600; }
@@ -203,7 +220,7 @@ main::-webkit-scrollbar-thumb {
   border: 0; border-radius: 4px; background: transparent; font-size: 12px; cursor: pointer;
 }
 .row-menu-item:hover:not(:disabled) { background: var(--accent-soft); }
-.row-menu-item:disabled { opacity: .5; cursor: default; }
+.row-menu-item:disabled { color: var(--text-3); cursor: default; }
 
 /* ── Density ────────────────────────────────────────────── */
 body.density-compact .provider { padding-top: 7px; padding-bottom: 9px; }

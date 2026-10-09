@@ -12,6 +12,9 @@
   --surface-2:     #1D1F26;
   --border:        #2A2C35;
   --border-strong: #3A3D48;
+  /* Outline of controls whose edge is the only cue (off switch, meter track):
+     3:1 against bg, surface and surface-2 (WCAG 1.4.11). */
+  --control-border: #6C7182;
 
   --text:   #ECEDF1;
   --text-2: #A4A7B3;
@@ -58,6 +61,7 @@
     --surface-2:     #F0F0F3;
     --border:        #E3E3E8;
     --border-strong: #CFCFD6;
+    --control-border: #80848F;
 
     --text:   #111217;
     --text-2: #50535E;
