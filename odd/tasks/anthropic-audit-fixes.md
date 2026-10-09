@@ -25,7 +25,7 @@ Strategy: ask-on-risk. Forecast > 400 authored lines (≈1500–2500). Chain str
 Route: all delegated (writer trigger: 2+ non-trivial files per stream). Parallel writers run in isolated git worktrees, merged into the feature branch by the parent.
 
 - [ ] A — Anthropic Admin API parsing (Opus): cents-string `amount`, USD check, `limit=31` + `next_page` pagination on usage and cost, nested `cache_creation` 5m/1h, 401/403 message, help URL, real-shape fixtures.
-- [ ] B — Pricing table (Opus): Opus 5.5, Haiku 5.5 (100K prompt-only tier), Sonnet 5.5 cache read, 1h cache-write rate field, fast-mode multiplier, PRICING_VINTAGE.
+- [x] B — Pricing table (Opus): Opus 5.5, Haiku 5.5 (100K prompt-only tier), Sonnet 5.5 cache read, 1h cache-write rate field, fast-mode multiplier, PRICING_VINTAGE.
 - [ ] C — Claude Code spend (Opus, after B): dedupe by message.id+requestId, 5m/1h split, fast tier, advisor iterations, spend shown without claude.ai login, CLAUDE_CONFIG_DIR, scanner cache version bump.
 - [x] D — Watcher/detector (Sonnet): ignore unknown trailing lines, skip subagent transcripts for notifications only.
 - [ ] E — UI fixes (Sonnet): event ts, unit doubling + USD format, empty spend card, 2-line errors, statuses Off/Needs setup, platform wording, refresh/login feedback, copy, contrast/disabled, small a11y.
@@ -38,6 +38,7 @@ Route: all delegated (writer trigger: 2+ non-trivial files per stream). Parallel
 
 ## Progress / evidence
 - D: delegated (Sonnet, worktree). Commit 455cb1d, merged 38975fb. tsc clean; npm test 451 pass; smoke pass (writer-reported); parent tsc re-run clean.
+- B: delegated (Opus, worktree). Commit ea16f95 + smoke fix; rates confirmed against vendor page 2026-10-09; geo 1.1x deferred. Parent smoke re-run: pass.
 
 ## Deferred
 _(none yet)_
