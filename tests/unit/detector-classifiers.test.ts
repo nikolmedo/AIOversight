@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { findConnector } from '../../src/main/connectors/registry';
 import { TranscriptWatcher, TranscriptWatcherOptions } from '../../src/main/connectors/shared/transcript-watcher';
+import { isSubagentTranscript } from '../../src/main/connectors/claude-code/detector';
 import { createFakeContext } from '../helpers/fake-context';
 
 /** Reach into the TranscriptWatcher's opts to extract the connector's classifier hooks. */
@@ -319,5 +320,44 @@ describe('Generic JSONL classifier (extractStatus) — speaker/author heuristics
 
     // Assert
     assert.equal(snippet, 'from text');
+  });
+});
+
+describe('Claude Code classifier — sidechain and metadata lines', () => {
+  const opts = classifierFor('claude-code', { paths: [], idleSeconds: 4 });
+
+  it('returns "unknown" for sidechain (subagent) lines of any role', () => {
+    const text = [{ type: 'text', text: 'done' }];
+    assert.equal(opts.extractStatus({ type: 'assistant', isSidechain: true, message: { content: text } }), 'unknown');
+    assert.equal(opts.extractStatus({ type: 'user', isSidechain: true, message: { content: text } }), 'unknown');
+    assert.equal(opts.extractStatus({ type: 'tool_result', isSidechain: true }), 'unknown');
+  });
+
+  it('keeps classifying lines with isSidechain false normally', () => {
+    const line = { type: 'assistant', isSidechain: false, message: { content: [{ type: 'text', text: 'ok' }] } };
+    assert.equal(opts.extractStatus(line), 'final');
+  });
+
+  it('returns "unknown" for trailing metadata line types', () => {
+    const types = [
+      'queue-operation', 'system', 'last-prompt', 'bridge-session', 'atis-latch',
+      'ai-title', 'cost-state', 'pr-link', 'file-history-snapshot', 'permission-mode',
+    ];
+    for (const type of types) {
+      assert.equal(opts.extractStatus({ type, subtype: 'turn_duration' }), 'unknown', type);
+    }
+  });
+});
+
+describe('isSubagentTranscript', () => {
+  it('matches a subagents directory segment with either separator', () => {
+    assert.equal(isSubagentTranscript('/h/.claude/projects/p/s1/subagents/agent-1.jsonl'), true);
+    assert.equal(isSubagentTranscript('C:\\h\\.claude\\projects\\p\\s1\\subagents\\agent-1.jsonl'), true);
+  });
+
+  it('does not match ordinary transcripts or a file merely named subagents.jsonl', () => {
+    assert.equal(isSubagentTranscript('/h/.claude/projects/p/s1.jsonl'), false);
+    assert.equal(isSubagentTranscript('/h/.claude/projects/p/subagents.jsonl'), false);
+    assert.equal(isSubagentTranscript('/h/.claude/projects/my-subagents/s1.jsonl'), false);
   });
 });
