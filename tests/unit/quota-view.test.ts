@@ -384,3 +384,27 @@ describe('renderProviderBlock freshness', () => {
     assert.match(html, new RegExp(`data-resets-at="${Date.parse(end)}"`));
   });
 });
+
+describe('spend on failed snapshots', () => {
+  const view = loadView();
+  const tile = { period: 'today', costCents: 250, tokens: 1000, series: [] };
+  const last30 = { period: 'last30d', costCents: 900, tokens: 5000, series: [1, 2, 3] };
+  const failed = { ok: false, fetchedAt: NOW, error: 'Sign in', needsLogin: true, spend: [tile, last30] };
+
+  it('counts local spend carried by an ok:false snapshot', () => {
+    assert.equal(view.hasAnySpendData({ 'claude-code': failed }), true);
+    const agg = view.aggregateSpendForPeriod({ 'claude-code': failed }, [{ id: 'claude-code', name: 'Claude Code' }], 'today');
+    assert.equal(agg.totalCostCents, 250);
+    assert.equal(agg.byConnector.length, 1);
+  });
+
+  it('exposes the daily series of an ok:false snapshot', () => {
+    assert.deepEqual(Array.from(view.spendSeriesOf(failed)), [1, 2, 3]);
+  });
+
+  it('still ignores a failed snapshot without spend', () => {
+    const bare = { ok: false, fetchedAt: NOW, error: 'x' };
+    assert.equal(view.hasAnySpendData({ a: bare }), false);
+    assert.deepEqual(Array.from(view.spendSeriesOf(bare)), []);
+  });
+});

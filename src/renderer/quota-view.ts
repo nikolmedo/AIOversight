@@ -485,7 +485,7 @@ function bindTotalSpendCard(root: Document, rerender: () => void): void {
 
 /** True when at least one connector's latest snapshot has a non-empty `spend[]`. */
 function hasAnySpendData(snapshots: Record<string, QuotaSnapshot>): boolean {
-  return Object.values(snapshots).some(s => s.ok && Array.isArray(s.spend) && s.spend.length > 0);
+  return Object.values(snapshots).some(s => Array.isArray(s.spend) && s.spend.length > 0);
 }
 
 interface SpendAggregateEntry {
@@ -521,7 +521,7 @@ function aggregateSpendForPeriod(
 
   for (const def of connectors) {
     const snap = snapshots[def.id];
-    if (!snap || !snap.ok || !snap.spend) continue;
+    if (!snap || !snap.spend) continue;
     const tile = snap.spend.find(t => t.period === period);
     if (!tile) continue;
 
@@ -662,7 +662,7 @@ function renderDonutSvg(slices: DonutSlice[], colorFor: (id: string) => string):
 /** The `last30d` tile's daily cost series (integer cents, oldest -> newest)
  * of one snapshot, `[]` when absent. */
 function spendSeriesOf(snap: QuotaSnapshot | undefined): Array<number | null> {
-  if (!snap || !snap.ok || !snap.spend) return [];
+  if (!snap || !snap.spend) return [];
   return snap.spend.find(t => t.period === 'last30d')?.series ?? [];
 }
 

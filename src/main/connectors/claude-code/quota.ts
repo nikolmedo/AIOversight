@@ -1,7 +1,8 @@
 import { ConnectorContext, QuotaBucket, QuotaProvider, QuotaSnapshot, SpendTile } from '../types';
 import { fetchClaudeUsage, UsageResult } from './browser-session';
 import { JsonlSpendScanner, SpendRecord } from '../shared/jsonl-spend-scanner';
-import { costCentsFor } from '../shared/model-pricing';
+import { costCentsExact } from '../shared/model-pricing';
+import { withConfigDirPattern } from './detector';
 
 /**
  * Plan-usage source policy for this connector.
@@ -42,29 +43,12 @@ const DEFAULT_SPEND_PATHS = [
 ];
 
 /**
- * Adds `$CLAUDE_CONFIG_DIR/projects/**\/*.jsonl` to the spend patterns when
- * the variable is set and no pattern already resolves to it. Same rule as
- * detector.ts's `withConfigDirPattern` (not exported; copied for the same
- * import-cycle reason as `DEFAULT_SPEND_PATHS`). The comparison is
- * case-insensitive so a differently-cased path can't scan the same files
- * twice under two cache keys on Windows.
- */
-function withConfigDirPattern(patterns: string[], resolvePath: (p: string) => string): string[] {
-  const dir = process.env.CLAUDE_CONFIG_DIR?.trim();
-  if (!dir) return patterns;
-  const extra = resolvePath(`${dir.replace(/[\\/]+$/, '')}/projects/**/*.jsonl`);
-  const norm = (p: string): string => p.replace(/\\/g, '/').toLowerCase();
-  if (patterns.some(p => norm(p) === norm(extra))) return patterns;
-  return [...patterns, extra];
-}
-
-/**
  * Extracts a priced usage record from one Claude Code transcript JSONL
  * line. Field names below are verified against a real local transcript
  * (`~/.claude/projects/**\/*.jsonl`, `type:'assistant'` lines) during Phase
  * 4 implementation -- see the Phase 4 report for the exact sample. No
  * `costUSD`/cost field exists in the current format, so cost is always
- * computed from `message.model` + `message.usage` via `costCentsFor`.
+ * computed from `message.model` + `message.usage` via `costCentsExact`.
  */
 function finiteNonNegative(v: unknown): number {
   const n = Number(v ?? 0);
@@ -88,7 +72,7 @@ export function extractClaudeCodeSpend(line: unknown): SpendRecord | null {
   if (!Number.isFinite(ts)) return null;
 
   // Correction item 3: `Number(v) || 0` lets `Infinity` through unguarded
-  // (it's truthy), which would otherwise flow into `costCentsFor` and
+  // (it's truthy), which would otherwise flow into `costCentsExact` and
   // eventually render as the literal string "$Infinity" in the Total Spend
   // card. `finiteNonNegative` rejects it (and NaN, and negatives) the same
   // way codex-cli's sibling extractor's `Number.isFinite` guard already does.
@@ -143,7 +127,7 @@ function requestKey(obj: Record<string, unknown>, msg: Record<string, unknown>):
  */
 function usageRecord(ts: number, u: Record<string, unknown>, model: string | undefined): SpendRecord {
   // Correction item 3: `Number(v) || 0` lets `Infinity` through unguarded
-  // (it's truthy), which would otherwise flow into `costCentsFor` and
+  // (it's truthy), which would otherwise flow into `costCentsExact` and
   // eventually render as the literal string "$Infinity" in the Total Spend
   // card. `finiteNonNegative` rejects it (and NaN, and negatives).
   const inputTokens = finiteNonNegative(u.input_tokens);
@@ -159,7 +143,7 @@ function usageRecord(ts: number, u: Record<string, unknown>, model: string | und
   const cacheWriteTokens = cacheWrite5mTokens + cacheWrite1hTokens;
 
   const costCents = model
-    ? costCentsFor(model, {
+    ? costCentsExact(model, {
         inputTokens,
         outputTokens,
         cacheReadTokens,
@@ -568,8 +552,8 @@ class ClaudeCodeQuotaProvider implements QuotaProvider {
     const resolve = (p: string): string => this.ctx.resolvePath(p);
     const patterns = withConfigDirPattern(
       (rawPaths && rawPaths.length ? rawPaths : DEFAULT_SPEND_PATHS).map(resolve),
-      resolve,
-    );
+      this.ctx,
+    ).map(resolve);
     const scanner = JsonlSpendScanner.shared(this.ctx.cacheDir);
     const records = await scanner.scan({
       key: 'claude-code',
