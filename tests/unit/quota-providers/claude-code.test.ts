@@ -2,7 +2,17 @@ import './../../helpers/electron-stub';
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { claudeUsageLiveResponse } from '../../helpers/fixtures';
-import { parseClaudeUsage } from '../../../src/main/connectors/claude-code/quota';
+import * as fs from 'fs';
+import * as path from 'path';
+import {
+  createClaudeCodeQuotaProvider,
+  extractClaudeCodeSpendRecords,
+  parseClaudeUsage,
+} from '../../../src/main/connectors/claude-code/quota';
+import { JsonlSpendScanner, SpendRecord } from '../../../src/main/connectors/shared/jsonl-spend-scanner';
+import { costCentsFor } from '../../../src/main/connectors/shared/model-pricing';
+import { createFakeContext } from '../../helpers/fake-context';
+import { makeTempDir, removeTempDir } from '../../helpers/temp-dir';
 
 const NOW = Date.parse('2026-09-17T03:14:05Z');
 const SEVEN_DAY_MS = 604_800_000;
@@ -298,5 +308,201 @@ describe('Claude usage parsing: extra usage money', () => {
     // Assert
     assert.equal(buckets['extra-usage'].unit, 'credits');
     assert.equal(buckets['extra-usage'].remaining, 7);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Local transcript spend (extractor, scanner dedupe, provider wiring)
+// ---------------------------------------------------------------------------
+
+const SPEND_MODEL = 'claude-sonnet-5';
+// Large enough that every record costs whole cents (`costCentsFor` rounds),
+// small enough to stay under any long-context threshold.
+const BASE_INPUT = 20_000;
+const BASE_CACHE_READ = 100_000;
+
+function assistantLine(overrides: {
+  id?: string;
+  requestId?: string;
+  model?: string;
+  output?: number;
+  usage?: Record<string, unknown>;
+}): Record<string, unknown> {
+  return {
+    type: 'assistant',
+    timestamp: new Date().toISOString(),
+    requestId: overrides.requestId ?? 'req_1',
+    message: {
+      id: overrides.id ?? 'msg_1',
+      model: overrides.model ?? SPEND_MODEL,
+      usage: {
+        input_tokens: BASE_INPUT,
+        output_tokens: overrides.output ?? 1_000,
+        cache_read_input_tokens: BASE_CACHE_READ,
+        cache_creation_input_tokens: 0,
+        ...overrides.usage,
+      },
+    },
+  };
+}
+
+function writeLines(file: string, lines: unknown[], append = false): void {
+  const body = lines.map(l => JSON.stringify(l)).join('\n') + '\n';
+  if (append) fs.appendFileSync(file, body);
+  else fs.writeFileSync(file, body);
+}
+
+function sumRecords(records: SpendRecord[]): { cents: number; output: number } {
+  return records.reduce(
+    (acc, r) => ({ cents: acc.cents + (r.costCents ?? 0), output: acc.output + r.outputTokens }),
+    { cents: 0, output: 0 },
+  );
+}
+
+describe('Claude Code spend: extractClaudeCodeSpendRecords', () => {
+  it('prices 1-hour cache writes at the 1h rate (2x input), not the 5m rate', () => {
+    // Arrange
+    const line = assistantLine({
+      output: 0,
+      usage: {
+        input_tokens: 0,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 1_000_000,
+        cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 1_000_000 },
+      },
+    });
+
+    // Act
+    const [record] = extractClaudeCodeSpendRecords(line);
+
+    // Assert
+    const input = costCentsFor(SPEND_MODEL, { inputTokens: 1_000_000, outputTokens: 0 }) ?? 0;
+    assert.equal(record.costCents, costCentsFor(SPEND_MODEL, { inputTokens: 0, outputTokens: 0, cacheWrite1hTokens: 1_000_000 }));
+    assert.equal(record.costCents, input * 2);
+    assert.equal(record.cacheWriteTokens, 1_000_000);
+  });
+
+  it('treats a flat cache_creation_input_tokens without the split as 5-minute writes', () => {
+    // Arrange
+    const line = assistantLine({
+      output: 0,
+      usage: { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 1_000_000 },
+    });
+
+    // Act
+    const [record] = extractClaudeCodeSpendRecords(line);
+
+    // Assert
+    assert.equal(record.costCents, costCentsFor(SPEND_MODEL, { inputTokens: 0, outputTokens: 0, cacheWrite5mTokens: 1_000_000 }));
+  });
+
+  it('applies the fast-mode surcharge when usage.speed is "fast"', () => {
+    // Arrange: fast mode is priced only on models that offer it (Opus 5.5)
+    const model = 'claude-opus-5-5';
+
+    // Act
+    const [std] = extractClaudeCodeSpendRecords(assistantLine({ model, usage: { speed: 'standard' } }));
+    const [fst] = extractClaudeCodeSpendRecords(assistantLine({ model, usage: { speed: 'fast' } }));
+
+    // Assert
+    assert.equal(
+      fst.costCents,
+      costCentsFor(model, { inputTokens: BASE_INPUT, outputTokens: 1_000, cacheReadTokens: BASE_CACHE_READ, fastTier: true }),
+    );
+    assert.ok((fst.costCents ?? 0) > (std.costCents ?? 0));
+  });
+
+  it('prices each advisor iteration with its own model as a separate record', () => {
+    // Arrange
+    const line = assistantLine({
+      usage: {
+        iterations: [
+          { type: 'message', input_tokens: 10, output_tokens: 100 },
+          {
+            type: 'advisor_message',
+            model: 'claude-fable-5-1',
+            input_tokens: 50_000,
+            output_tokens: 2_000,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 0,
+          },
+        ],
+      },
+    });
+
+    // Act
+    const records = extractClaudeCodeSpendRecords(line);
+
+    // Assert
+    assert.equal(records.length, 2);
+    const advisor = records[1];
+    assert.equal(advisor.model, 'claude-fable-5-1');
+    assert.equal(advisor.inputTokens, 50_000);
+    assert.equal(advisor.costCents, costCentsFor('claude-fable-5-1', { inputTokens: 50_000, outputTokens: 2_000 }));
+    assert.notEqual(advisor.dedupeKey, records[0].dedupeKey);
+  });
+});
+
+describe('Claude Code spend: duplicate content-block lines', () => {
+  it('counts one message once, keeping the largest output, across two incremental reads', async () => {
+    // Arrange
+    const dir = makeTempDir();
+    try {
+      const file = path.join(dir, 'session.jsonl');
+      const scanner = JsonlSpendScanner.shared(path.join(dir, 'cache'));
+      const opts = {
+        key: 'claude-code',
+        patterns: [path.join(dir, '*.jsonl').replace(/\\/g, '/')],
+        extract: (l: unknown) => extractClaudeCodeSpendRecords(l),
+      };
+      const one = (out: number): number =>
+        costCentsFor(SPEND_MODEL, { inputTokens: BASE_INPUT, outputTokens: out, cacheReadTokens: BASE_CACHE_READ }) ?? 0;
+      writeLines(file, [assistantLine({ output: 1_000 }), assistantLine({ output: 5_000 })]);
+
+      // Act
+      const first = sumRecords(await scanner.scan(opts));
+      writeLines(
+        file,
+        [assistantLine({ output: 10_000 }), assistantLine({ id: 'msg_2', requestId: 'req_2', output: 700 })],
+        true,
+      );
+      const second = sumRecords(await scanner.scan(opts));
+
+      // Assert
+      assert.equal(first.output, 5_000);
+      assert.equal(first.cents, one(5_000));
+      assert.equal(second.output, 10_700);
+      assert.equal(second.cents, one(10_000) + one(700));
+      assert.ok(one(700) > 0);
+    } finally {
+      removeTempDir(dir);
+    }
+  });
+});
+
+describe('Claude Code spend: provider wiring', () => {
+  it('attaches local spend even when the claude.ai usage fetch needs a login', async () => {
+    // Arrange
+    const dir = makeTempDir();
+    try {
+      writeLines(path.join(dir, 'session.jsonl'), [assistantLine({ output: 100 })]);
+      const ctx = createFakeContext({ cacheDir: path.join(dir, 'cache') });
+      const provider = createClaudeCodeQuotaProvider(
+        { paths: [path.join(dir, '*.jsonl').replace(/\\/g, '/')] },
+        ctx,
+        { fetchUsage: async () => ({ kind: 'needs-login' }) },
+      );
+
+      // Act
+      const snapshot = await provider.fetch();
+
+      // Assert
+      assert.equal(snapshot.ok, false);
+      assert.ok(!snapshot.ok && snapshot.needsLogin);
+      const today = snapshot.spend?.find(t => t.period === 'today');
+      assert.ok(today && (today.costCents ?? 0) > 0);
+    } finally {
+      removeTempDir(dir);
+    }
   });
 });

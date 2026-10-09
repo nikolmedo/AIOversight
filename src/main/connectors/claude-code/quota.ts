@@ -1,5 +1,5 @@
 import { ConnectorContext, QuotaBucket, QuotaProvider, QuotaSnapshot, SpendTile } from '../types';
-import { fetchClaudeUsage } from './browser-session';
+import { fetchClaudeUsage, UsageResult } from './browser-session';
 import { JsonlSpendScanner, SpendRecord } from '../shared/jsonl-spend-scanner';
 import { costCentsFor } from '../shared/model-pricing';
 
@@ -42,6 +42,23 @@ const DEFAULT_SPEND_PATHS = [
 ];
 
 /**
+ * Adds `$CLAUDE_CONFIG_DIR/projects/**\/*.jsonl` to the spend patterns when
+ * the variable is set and no pattern already resolves to it. Same rule as
+ * detector.ts's `withConfigDirPattern` (not exported; copied for the same
+ * import-cycle reason as `DEFAULT_SPEND_PATHS`). The comparison is
+ * case-insensitive so a differently-cased path can't scan the same files
+ * twice under two cache keys on Windows.
+ */
+function withConfigDirPattern(patterns: string[], resolvePath: (p: string) => string): string[] {
+  const dir = process.env.CLAUDE_CONFIG_DIR?.trim();
+  if (!dir) return patterns;
+  const extra = resolvePath(`${dir.replace(/[\\/]+$/, '')}/projects/**/*.jsonl`);
+  const norm = (p: string): string => p.replace(/\\/g, '/').toLowerCase();
+  if (patterns.some(p => norm(p) === norm(extra))) return patterns;
+  return [...patterns, extra];
+}
+
+/**
  * Extracts a priced usage record from one Claude Code transcript JSONL
  * line. Field names below are verified against a real local transcript
  * (`~/.claude/projects/**\/*.jsonl`, `type:'assistant'` lines) during Phase
@@ -75,14 +92,81 @@ export function extractClaudeCodeSpend(line: unknown): SpendRecord | null {
   // eventually render as the literal string "$Infinity" in the Total Spend
   // card. `finiteNonNegative` rejects it (and NaN, and negatives) the same
   // way codex-cli's sibling extractor's `Number.isFinite` guard already does.
+  const model = typeof msg.model === 'string' ? msg.model : undefined;
+  const record = usageRecord(ts, u, model);
+  const key = requestKey(obj, msg);
+  return key ? { ...record, dedupeKey: key } : record;
+}
+
+/**
+ * All priced records for one transcript line: the main request
+ * (`extractClaudeCodeSpend`) plus one record per advisor-tool iteration.
+ * Top-level `usage` only sums the `message` iterations, so each
+ * `advisor_message` iteration is billed separately at its own `model`.
+ * Every record carries a `dedupeKey` (when the line has `message.id` and
+ * `requestId`) because Claude Code writes one line per content block, each
+ * repeating the same usage with a growing `output_tokens`.
+ *
+ * Main session files also carry `cost-state` lines (`totalCostUSD`,
+ * `modelUsage`); they are not used here, totals come from per-request usage.
+ */
+export function extractClaudeCodeSpendRecords(line: unknown): SpendRecord[] {
+  const main = extractClaudeCodeSpend(line);
+  if (!main) return [];
+  const msg = (line as Record<string, unknown>).message as Record<string, unknown>;
+  const u = msg.usage as Record<string, unknown>;
+  const out = [main];
+  if (!Array.isArray(u.iterations)) return out;
+  u.iterations.forEach((it, i) => {
+    const iter = asObject(it);
+    if (!iter || iter.type !== 'advisor_message') return;
+    const model = typeof iter.model === 'string' ? iter.model : undefined;
+    const record = usageRecord(main.ts, iter, model);
+    out.push(main.dedupeKey ? { ...record, dedupeKey: `${main.dedupeKey}|advisor:${i}` } : record);
+  });
+  return out;
+}
+
+/** `message.id|requestId`, the identity shared by a request's content-block lines. */
+function requestKey(obj: Record<string, unknown>, msg: Record<string, unknown>): string | null {
+  const id = nonEmptyString(msg.id);
+  const requestId = nonEmptyString(obj.requestId);
+  return id && requestId ? `${id}|${requestId}` : null;
+}
+
+/**
+ * Prices one Anthropic `usage` object (top-level or one iteration). Cache
+ * writes are split into 5-minute and 1-hour tiers from `cache_creation`;
+ * any part of the flat `cache_creation_input_tokens` the split doesn't
+ * account for is billed as 5-minute writes (the split is sometimes partial
+ * when iterations are present). `speed: 'fast'` applies the fast-mode rate.
+ */
+function usageRecord(ts: number, u: Record<string, unknown>, model: string | undefined): SpendRecord {
+  // Correction item 3: `Number(v) || 0` lets `Infinity` through unguarded
+  // (it's truthy), which would otherwise flow into `costCentsFor` and
+  // eventually render as the literal string "$Infinity" in the Total Spend
+  // card. `finiteNonNegative` rejects it (and NaN, and negatives).
   const inputTokens = finiteNonNegative(u.input_tokens);
   const outputTokens = finiteNonNegative(u.output_tokens);
   const cacheReadTokens = finiteNonNegative(u.cache_read_input_tokens);
-  const cacheWriteTokens = finiteNonNegative(u.cache_creation_input_tokens);
-  const model = typeof msg.model === 'string' ? msg.model : undefined;
+  const flatCacheWrite = finiteNonNegative(u.cache_creation_input_tokens);
+  const split = asObject(u.cache_creation);
+  const cacheWrite1hTokens = finiteNonNegative(split?.ephemeral_1h_input_tokens);
+  const cacheWrite5mTokens = Math.max(
+    finiteNonNegative(split?.ephemeral_5m_input_tokens),
+    flatCacheWrite - cacheWrite1hTokens,
+  );
+  const cacheWriteTokens = cacheWrite5mTokens + cacheWrite1hTokens;
 
   const costCents = model
-    ? costCentsFor(model, { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens })
+    ? costCentsFor(model, {
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheWrite5mTokens,
+        cacheWrite1hTokens,
+        fastTier: u.speed === 'fast',
+      })
     : null;
 
   return { ts, costCents, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, model };
@@ -450,15 +534,22 @@ export function parseClaudeUsage(
   return { buckets, displayMessages };
 }
 
+/** Injectable dependencies, so tests can stub the claude.ai session. */
+export interface ClaudeCodeQuotaDeps {
+  fetchUsage: () => Promise<UsageResult>;
+}
+
 class ClaudeCodeQuotaProvider implements QuotaProvider {
   constructor(
     private readonly config: Record<string, unknown>,
     private readonly ctx: ConnectorContext,
+    private readonly deps: ClaudeCodeQuotaDeps,
   ) {}
 
+  /** Local spend doesn't depend on claude.ai, so it is attached to the
+   * error/needs-login snapshot too. */
   async fetch(): Promise<QuotaSnapshot> {
     const snapshot = await this.fetchQuota();
-    if (!snapshot.ok) return snapshot;
     try {
       const spend = await this.computeSpend();
       return { ...snapshot, spend };
@@ -474,21 +565,23 @@ class ClaudeCodeQuotaProvider implements QuotaProvider {
    * `fetch()` and simply omits `spend`, never fails the whole snapshot. */
   private async computeSpend(): Promise<SpendTile[]> {
     const rawPaths = this.config.paths as string[] | undefined;
-    const patterns = (rawPaths && rawPaths.length ? rawPaths : DEFAULT_SPEND_PATHS).map(p =>
-      this.ctx.resolvePath(p),
+    const resolve = (p: string): string => this.ctx.resolvePath(p);
+    const patterns = withConfigDirPattern(
+      (rawPaths && rawPaths.length ? rawPaths : DEFAULT_SPEND_PATHS).map(resolve),
+      resolve,
     );
     const scanner = JsonlSpendScanner.shared(this.ctx.cacheDir);
     const records = await scanner.scan({
       key: 'claude-code',
       patterns,
-      extract: line => extractClaudeCodeSpend(line),
+      extract: line => extractClaudeCodeSpendRecords(line),
     });
     return scanner.aggregate(records, Date.now());
   }
 
   private async fetchQuota(): Promise<QuotaSnapshot> {
     const fetchedAt = Date.now();
-    const result = await fetchClaudeUsage();
+    const result = await this.deps.fetchUsage();
 
     if (result.kind === 'needs-login') {
       return {
@@ -529,6 +622,7 @@ class ClaudeCodeQuotaProvider implements QuotaProvider {
 export function createClaudeCodeQuotaProvider(
   config: Record<string, unknown>,
   ctx: ConnectorContext,
+  deps: ClaudeCodeQuotaDeps = { fetchUsage: fetchClaudeUsage },
 ): QuotaProvider {
-  return new ClaudeCodeQuotaProvider(config, ctx);
+  return new ClaudeCodeQuotaProvider(config, ctx, deps);
 }

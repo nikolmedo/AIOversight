@@ -148,6 +148,12 @@ export type QuotaSnapshot =
        */
       retryAfterMs?: number;
       /**
+       * Spend measured from a source that doesn't depend on the failed
+       * fetch (e.g. Claude Code's local transcripts while claude.ai needs a
+       * sign-in). Same shape and conventions as the `ok: true` field.
+       */
+      spend?: SpendTile[];
+      /**
        * The only data source is a desktop app that isn't running right now.
        * This is an expected, non-error state, and `error` carries the notice
        * text (e.g. "Open Antigravity to see its quota."). Set it only when the
