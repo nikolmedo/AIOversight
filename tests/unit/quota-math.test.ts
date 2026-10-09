@@ -291,6 +291,8 @@ describe('connectorStatusFor', () => {
     assert.equal(hasMissingQuotaSecret(def([field('k', 'quota')], ['k'])), false);
     assert.equal(hasMissingQuotaSecret(def([field('t', 'notifications')])), false);
     assert.equal(hasMissingQuotaSecret(def([{ key: 'n', type: 'string' }])), false);
+    assert.equal(hasMissingQuotaSecret(def([field('g', 'general')])), false);
+    assert.equal(hasMissingQuotaSecret(def([field('u')])), false);
     assert.equal(hasMissingQuotaSecret(undefined), false);
   });
 });

@@ -328,11 +328,11 @@ function connectorStatusFor(
   return 'active';
 }
 
-/** True when a quota-section secret field of `def` has no stored value. */
+/** True when a secret field in the 'quota' section (unsectioned or 'general' ones are not quota-relevant) has no stored value. */
 function hasMissingQuotaSecret(def: ConnectorMetadata | undefined): boolean {
   if (!def) return false;
   return def.configSchema.some(
-    f => f.type === 'secret' && (f.section ?? 'general') !== 'notifications' && !def.setSecretKeys?.includes(f.key),
+    f => f.type === 'secret' && f.section === 'quota' && !def.setSecretKeys?.includes(f.key),
   );
 }
 

@@ -767,9 +767,8 @@ function bindConnectorLinks(): void {
     }
     const login = target.closest('[data-role="connector-login"]') as HTMLButtonElement | null;
     if (login) {
+      setButtonBusy(login, true, 'Opening sign-in…');
       const idleLabel = login.textContent ?? '';
-      login.disabled = true;
-      login.setAttribute('aria-busy', 'true');
       login.textContent = 'Opening sign-in…';
       const id = login.dataset.connectorId;
       try {
@@ -780,8 +779,7 @@ function bindConnectorLinks(): void {
       } finally {
         // The quota push usually re-renders this button anyway; if it does
         // not (cancelled, window closed), the old one must not stay stuck.
-        login.disabled = false;
-        login.removeAttribute('aria-busy');
+        setButtonBusy(login, false);
         login.textContent = idleLabel;
       }
     }

@@ -108,11 +108,11 @@ h1 { font-size: 13px; font-weight: 600; }
 .update-banner-fill { height: 100%; width: var(--fill, 0%); background: var(--accent-solid); }
 
 /* ── Scroll area ────────────────────────────────────────── */
-main { flex: 1; overflow-y: auto; overflow-x: hidden; }
 /* Scroll cue: a soft shadow on whichever edge has more content behind it.
    The two `local` gradients repaint --surface over the `scroll` shadows once
    the content reaches that edge, so nothing shows when it all fits. */
 main {
+  flex: 1; overflow-y: auto; overflow-x: hidden;
   background:
     linear-gradient(var(--surface) 30%, transparent) top / 100% 24px no-repeat local,
     linear-gradient(transparent, var(--surface) 70%) bottom / 100% 24px no-repeat local,
