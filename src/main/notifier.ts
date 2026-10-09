@@ -67,7 +67,12 @@ export class Notifier {
       source: event.source,
     };
     this.settings.pushEvent(record);
-    onRecord?.(record);
+    try {
+      onRecord?.(record);
+    } catch (err) {
+      // A UI push (e.g. to a destroyed window) must never cost the user the OS notification.
+      this.log('warn', '[notifier] onRecord failed', { err: String(err) });
+    }
 
     if (!cfg.showNotifications) {
       this.log('info', '[notifier] suppressed (notifications disabled in settings)');
