@@ -293,7 +293,14 @@ function formatUpdatedAgo(ts: number, now: number): string {
   return `Updated ${formatRelativeTime(ts, now)}`;
 }
 
-type ConnectorStatus = 'off' | 'active' | 'error' | 'needs-login' | 'needs-setup' | 'app-not-running';
+type ConnectorStatus =
+  | 'off'
+  | 'active'
+  | 'error'
+  | 'needs-login'
+  | 'needs-setup'
+  | 'app-not-running'
+  | 'not-detected';
 
 /**
  * One status per connector for the Integrations list. A quota error only
@@ -307,12 +314,13 @@ type ConnectorStatus = 'off' | 'active' | 'error' | 'needs-login' | 'needs-setup
  */
 function connectorStatusFor(
   enabled: { notifications: boolean; quota: boolean } | undefined,
-  snap: { ok: boolean; needsLogin?: boolean; appNotRunning?: boolean } | undefined,
+  snap: { ok: boolean; needsLogin?: boolean; appNotRunning?: boolean; notDetected?: boolean } | undefined,
   missingSecret: boolean = false,
 ): ConnectorStatus {
   if (!enabled || (!enabled.notifications && !enabled.quota)) return 'off';
   if (enabled.quota && snap && !snap.ok) {
     if (snap.appNotRunning) return 'app-not-running';
+    if (snap.notDetected) return 'not-detected';
     if (snap.needsLogin) return 'needs-login';
     return missingSecret ? 'needs-setup' : 'error';
   }
@@ -331,6 +339,20 @@ function hasMissingQuotaSecret(def: ConnectorMetadata | undefined): boolean {
 /** A snapshot that stands for "the connector's desktop app is closed" (see `appNotRunning` in types.ts). */
 function isAppNotRunning(snap: QuotaSnapshot | undefined): boolean {
   return !!snap && !snap.ok && !!snap.appNotRunning;
+}
+
+/** A snapshot that stands for "the tool isn't installed here" (see `notDetected` in types.ts). */
+function isNotDetected(snap: QuotaSnapshot | undefined): boolean {
+  return !!snap && !snap.ok && !!snap.notDetected;
+}
+
+/**
+ * An expected absence rather than an error: the app is closed or the tool
+ * isn't installed. Both windows show `error` as a neutral notice and the
+ * popup and tooltip leave the connector out.
+ */
+function isExpectedAbsence(snap: QuotaSnapshot | undefined): boolean {
+  return isAppNotRunning(snap) || isNotDetected(snap);
 }
 
 function formatExactReset(ts: number, fmt: '12h' | '24h'): string {

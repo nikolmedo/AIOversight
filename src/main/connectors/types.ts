@@ -165,6 +165,17 @@ export type QuotaSnapshot =
        * data up soon after the app opens.
        */
       appNotRunning?: boolean;
+      /**
+       * The tool this connector reads is not installed on this computer: its
+       * default local install/data location is simply absent. Like
+       * `appNotRunning` it is an expected, non-error state with a short
+       * friendly `error` ("Cursor isn't installed on this computer."), and it
+       * has the same effects (left out of the tray popup and tooltip, neutral
+       * notice in settings, no poll backoff). Set it only for the default
+       * locations: a user-configured path that does not exist, or data that
+       * is present but unreadable or expired, is a real error.
+       */
+      notDetected?: boolean;
     };
 
 export interface QuotaProvider {

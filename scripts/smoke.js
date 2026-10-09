@@ -276,6 +276,12 @@ function testQuotaMath() {
         sandbox.isAppNotRunning({ ok: false, error: 'x', appNotRunning: true }) === true &&
           sandbox.isAppNotRunning({ ok: false, error: 'x' }) === false &&
           sandbox.isAppNotRunning(undefined) === false);
+  check("connectorStatusFor: quota on, notDetected -> 'not-detected' (neutral, not 'error')",
+        sandbox.connectorStatusFor(on, { ok: false, notDetected: true }) === 'not-detected');
+  check('isExpectedAbsence: appNotRunning or notDetected, never a plain error',
+        sandbox.isExpectedAbsence({ ok: false, error: 'x', notDetected: true }) === true &&
+          sandbox.isExpectedAbsence({ ok: false, error: 'x', appNotRunning: true }) === true &&
+          sandbox.isExpectedAbsence({ ok: false, error: 'x' }) === false);
 
   // --- paceStateFor: static-threshold boundaries (no resetsAt/windowMs) -----
   const staticBucket = used => ({ used, limit: 100 });
@@ -640,6 +646,10 @@ function testQuotaView() {
   );
   check('planTrayPopup: several closed apps -> "A, B and C aren\'t running"',
         twoClosedPlan.emptyMessage === "Nothing to show. Alpha, Beta and Gamma aren't running.", twoClosedPlan.emptyMessage);
+  const notInstalled = { ok: false, fetchedAt: now, error: "Tool isn't installed on this computer.", notDetected: true };
+  const absentPlan = sandbox.planTrayPopup([popupDef('live', 'Live'), popupDef('tool', 'Tool')], { live: okSnap, tool: notInstalled });
+  check('planTrayPopup: omits a notDetected (not installed) connector',
+        JSON.stringify(absentPlan.visible.map(d => d.id)) === JSON.stringify(['live']), JSON.stringify(absentPlan));
   const nonePlan = sandbox.planTrayPopup(
     [popupDef('live', 'Live', true, false), popupDef('broken', 'Broken', true, false)],
     {},

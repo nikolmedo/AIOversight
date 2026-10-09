@@ -239,8 +239,48 @@ describe('renderProviderBlock copy', () => {
     assert.match(renderProviderBlock(def, undefined, undefined, { now: NOW }), /Waiting for the first refresh\./);
     assert.match(renderProviderBlock(def, okSnap([]), undefined, { now: NOW }), /No usage reported yet\./);
     const err = renderProviderBlock(def, { ok: false, fetchedAt: NOW, error: 'a very long error message' }, undefined, { now: NOW });
-    assert.match(err, /data-role="open-settings">Configure</);
+    assert.match(err, /data-role="open-settings"[^>]*>Configure</);
     assert.match(err, /title="a very long error message"/);
+  });
+
+  it('points the Configure action at the connector, for the settings deep link', () => {
+    const err = renderProviderBlock(def, { ok: false, fetchedAt: NOW, error: 'x' }, undefined, { now: NOW });
+    assert.match(err, /data-role="open-settings" data-connector-id="c"/);
+  });
+
+  it('offers the connector\'s sign-in button for a needsLogin error when it declares a login', () => {
+    const snap = { ok: false, fetchedAt: NOW, error: 'Session expired.', needsLogin: true };
+    const withLogin = renderProviderBlock({ ...def, loginLabel: 'Sign in to Claude' }, snap, undefined, { now: NOW });
+    assert.match(withLogin, /data-role="connector-login" data-connector-id="c">Sign in to Claude</);
+    const withoutLogin = renderProviderBlock(def, snap, undefined, { now: NOW });
+    assert.doesNotMatch(withoutLogin, /connector-login/);
+    const plainError = renderProviderBlock({ ...def, loginLabel: 'Sign in' }, { ok: false, fetchedAt: NOW, error: 'x' }, undefined, { now: NOW });
+    assert.doesNotMatch(plainError, /connector-login/);
+  });
+});
+
+describe('planTrayPopup — not-installed tools', () => {
+  const { planTrayPopup } = loadView();
+  const def = (id: string) => ({ id, name: id, quotaEnabled: true });
+  const absent = { ok: false, fetchedAt: NOW, error: "Cursor isn't installed on this computer.", notDetected: true };
+  const closed = { ok: false, fetchedAt: NOW, error: 'Open it.', appNotRunning: true };
+
+  it('leaves a notDetected connector out of the popup', () => {
+    const plan = planTrayPopup([def('a'), def('b')], { a: absent, b: okSnap([bucket()]) }, undefined, NOW);
+    assert.deepEqual(plan.visible.map((d: { id: string }) => d.id), ['b']);
+  });
+
+  it('says "installed", not "running", when every hidden connector is not installed', () => {
+    const plan = planTrayPopup([def('Cursor')], { Cursor: absent }, undefined, NOW);
+    assert.equal(plan.emptyMessage, "Nothing to show. Cursor isn't installed.");
+  });
+
+  it('keeps the "running" phrasing for closed apps and combines both when mixed', () => {
+    assert.equal(planTrayPopup([def('A')], { A: closed }, undefined, NOW).emptyMessage, "Nothing to show. A isn't running.");
+    assert.equal(
+      planTrayPopup([def('A'), def('B')], { A: closed, B: absent }, undefined, NOW).emptyMessage,
+      "Nothing to show. A and B aren't running or installed.",
+    );
   });
 });
 

@@ -2,6 +2,7 @@ import './../../helpers/electron-stub';
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { setUserDataPath, resetElectronStub } from '../../helpers/electron-stub';
 import { makeTempDir, removeTempDir } from '../../helpers/temp-dir';
@@ -195,6 +196,69 @@ describe('Codex CLI quota provider', () => {
     // Assert
     assert.equal(snapshot.ok, false);
     if (!snapshot.ok) {
+      assert.match(snapshot.error, /keyring/);
+    }
+  });
+});
+
+describe('Codex CLI quota provider — not installed', () => {
+  const ENV_KEYS = ['CODEX_HOME', 'HOME', 'USERPROFILE', 'APPDATA'] as const;
+  let dir: string;
+  let saved: Record<string, string | undefined>;
+  let runtime: ConnectorRuntime;
+
+  beforeEach(() => {
+    dir = makeTempDir('aioversight-codex-absent-');
+    saved = Object.fromEntries(ENV_KEYS.map(k => [k, process.env[k]]));
+    delete process.env.CODEX_HOME;
+    process.env.HOME = dir;
+    process.env.USERPROFILE = dir;
+    process.env.APPDATA = path.join(dir, 'AppData', 'Roaming');
+    setUserDataPath(dir);
+    resetElectronStub();
+    runtime = new ConnectorRuntime(new SecretStore());
+  });
+
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    removeTempDir(dir);
+  });
+
+  it('reports notDetected with a short notice when no Codex folder exists at all', async () => {
+    // Arrange
+    assert.equal(os.homedir(), dir);
+    const def = findConnector('codex-cli')!;
+    const provider = def.quota!.create({}, runtime.contextFor(def));
+
+    // Act
+    const snapshot = await provider.fetch();
+
+    // Assert
+    assert.equal(snapshot.ok, false);
+    if (!snapshot.ok) {
+      assert.equal(snapshot.notDetected, true);
+      assert.equal(snapshot.needsLogin, undefined);
+      assert.match(snapshot.error, /Codex CLI/);
+      assert.doesNotMatch(snapshot.error, /looked at/);
+    }
+  });
+
+  it('keeps a real error when ~/.codex exists but holds no auth.json', async () => {
+    // Arrange — the keyring credential store leaves the folder without a file.
+    fs.mkdirSync(path.join(dir, '.codex'), { recursive: true });
+    const def = findConnector('codex-cli')!;
+    const provider = def.quota!.create({}, runtime.contextFor(def));
+
+    // Act
+    const snapshot = await provider.fetch();
+
+    // Assert
+    assert.equal(snapshot.ok, false);
+    if (!snapshot.ok) {
+      assert.equal(snapshot.notDetected, undefined);
       assert.match(snapshot.error, /keyring/);
     }
   });

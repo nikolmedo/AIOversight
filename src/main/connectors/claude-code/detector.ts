@@ -85,6 +85,14 @@ export function createClaudeCodeDetector(
             }
           }
           if (typeof content === 'string') return content;
+          // An assistant line with neither text nor tool_use (Claude Code
+          // writes one line per content block, so a turn can end on a
+          // thinking-only line) is a finished turn with nothing to quote.
+          // '' rather than undefined: the watcher keeps the previous snippet
+          // on undefined, which would pair this "finished" event with the
+          // earlier "Tool '…' awaiting approval" text. An empty snippet
+          // falls back to the watcher's default "finished" message.
+          if ((obj.type ?? obj.role) === 'assistant' && typeof obj.text !== 'string') return '';
         }
         if (typeof obj.text === 'string') return obj.text;
         return undefined;

@@ -22,7 +22,10 @@ contextBridge.exposeInMainWorld('awPopup', {
    * connectors are absent. */
   getPollIntervals: () =>
     ipcRenderer.invoke('trayPopup:getPollIntervals') as Promise<Record<string, number>>,
-  openSettings: () => ipcRenderer.invoke('trayPopup:openSettings'),
+  /** Pass a connector id to open Settings at that connector's drawer. */
+  openSettings: (connectorId?: string) => ipcRenderer.invoke('trayPopup:openSettings', connectorId),
+  /** Runs the connector's own sign-in flow (same as Settings' sign-in button). */
+  login: (connectorId: string) => ipcRenderer.invoke('trayPopup:login', connectorId) as Promise<boolean>,
   /** Omit `id` to refresh every enabled connector; passing `id` resolves to
    * `{ [id]: snapshot }`, not the full map — see tray-popup.ts's caller. */
   refresh: (id?: string) =>

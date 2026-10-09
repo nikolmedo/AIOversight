@@ -1,6 +1,18 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { BucketPref } from '../main/connectors/types';
 
+// `settings:openConnector` (popup "Configure" deep link) can arrive before the
+// page has subscribed: main sends it on `did-finish-load` of a new window,
+// while the page subscribes only after its async bootstrap. Buffer the last
+// id here (the preload runs first) and hand it over on subscribe.
+let pendingOpenConnector: string | null = null;
+let openConnectorListener: ((id: string) => void) | null = null;
+ipcRenderer.on('settings:openConnector', (_: unknown, id: unknown) => {
+  if (typeof id !== 'string') return;
+  if (openConnectorListener) openConnectorListener(id);
+  else pendingOpenConnector = id;
+});
+
 const api = {
   getInitial: () => ipcRenderer.invoke('settings:get'),
   setConnectorEnabled: (
@@ -57,6 +69,19 @@ const api = {
     const listener = (_: unknown, e: { id: string; snapshot: unknown }) => cb(e);
     ipcRenderer.on('quota:update', listener);
     return () => ipcRenderer.removeListener('quota:update', listener);
+  },
+  /** Main asks to open a connector's drawer; a request that arrived before
+   * this call is delivered immediately. One subscriber at a time. */
+  onOpenConnector: (cb: (id: string) => void) => {
+    openConnectorListener = cb;
+    if (pendingOpenConnector != null) {
+      const id = pendingOpenConnector;
+      pendingOpenConnector = null;
+      cb(id);
+    }
+    return () => {
+      if (openConnectorListener === cb) openConnectorListener = null;
+    };
   },
 };
 
