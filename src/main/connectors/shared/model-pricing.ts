@@ -496,6 +496,16 @@ export interface CostCentsInput {
  * silently mistaken for a genuinely free one by the Total Spend card.
  */
 export function costCentsFor(model: string, t: CostCentsInput): number | null {
+  const exact = costCentsExact(model, t);
+  return exact == null ? null : Math.round(exact);
+}
+
+/**
+ * Same as `costCentsFor` but unrounded, so a caller that sums many small
+ * records (a scan of thousands of sub-cent requests) can round once at the
+ * end instead of losing up to half a cent per record.
+ */
+export function costCentsExact(model: string, t: CostCentsInput): number | null {
   const rate = rateFor(model);
   if (!rate) return null;
 
@@ -544,5 +554,5 @@ export function costCentsFor(model: string, t: CostCentsInput): number | null {
     (cacheWrite5mTokens / 1_000_000) * cacheWriteRate * multiplier +
     (cacheWrite1hTokens / 1_000_000) * cacheWrite1hRate * multiplier;
 
-  return Math.round(dollars * 100);
+  return dollars * 100;
 }

@@ -238,8 +238,7 @@ class AnthropicQuotaProvider implements QuotaProvider {
       }
       page = json.next_page;
     }
-    this.ctx.log('warn', `[anthropic] ${label} still had more pages after ${MAX_PAGES}; totals are partial`);
-    return buckets;
+    throw new Error(`the ${label} still had more pages after ${MAX_PAGES}; refusing to report partial totals`);
   }
 
   private async fetchWithAdminKey(adminKey: string, fetchedAt: number): Promise<QuotaSnapshot> {

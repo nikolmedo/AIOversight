@@ -411,7 +411,7 @@ describe('AnthropicQuotaProvider', () => {
     assert.equal(urls.filter(u => u.includes('page=page_2')).length, 2);
   });
 
-  it('stops paginating after a bounded number of pages', async () => {
+  it('fails the usage period instead of returning partial data after the page bound', async () => {
     // Arrange - a server that always claims there is more.
     const def = findConnector('anthropic')!;
     const ctx = runtime.contextFor(def);
@@ -431,7 +431,8 @@ describe('AnthropicQuotaProvider', () => {
     const snapshot = await def.quota!.create({}, ctx).fetch();
 
     // Assert
-    assert.equal(snapshot.ok, true);
+    assert.equal(snapshot.ok, false);
+    if (!snapshot.ok) assert.match(snapshot.error ?? '', /more pages|partial|too many/i);
     assert.equal(usageCalls, 5);
   });
 

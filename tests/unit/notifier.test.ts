@@ -116,6 +116,21 @@ describe('Notifier.handle()', () => {
     });
   });
 
+  it('still shows the notification when onRecord throws', () => {
+    // Arrange
+    const event = baseEvent({ kind: 'waiting' });
+
+    // Act
+    const result = notifier.handle(event, () => {
+      throw new Error('Object has been destroyed');
+    });
+
+    // Assert
+    assert.deepEqual(result, { shown: true });
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0].shown, true);
+  });
+
   it('suppresses a repeat event for the same (sessionId, kind) within the cooldown window', () => {
     // Arrange
     const first = baseEvent({ detectedAt: 1_000_000 });

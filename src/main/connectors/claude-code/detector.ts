@@ -8,9 +8,10 @@ export function isSubagentTranscript(file: string): boolean {
 
 /**
  * Adds the projects glob under $CLAUDE_CONFIG_DIR to the watched patterns when the
- * variable is set, skipping it when an existing pattern already resolves to it.
+ * variable is set, skipping it when an existing pattern already resolves to it
+ * (compared case-insensitively with normalized separators).
  */
-function withConfigDirPattern(patterns: string[], ctx: ConnectorContext): string[] {
+export function withConfigDirPattern(patterns: string[], ctx: ConnectorContext): string[] {
   const dir = process.env.CLAUDE_CONFIG_DIR?.trim();
   if (!dir) return patterns;
   const extra = `${dir.replace(/[\\/]+$/, '')}/projects/**/*.jsonl`;

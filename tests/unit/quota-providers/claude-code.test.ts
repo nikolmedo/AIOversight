@@ -10,7 +10,7 @@ import {
   parseClaudeUsage,
 } from '../../../src/main/connectors/claude-code/quota';
 import { JsonlSpendScanner, SpendRecord } from '../../../src/main/connectors/shared/jsonl-spend-scanner';
-import { costCentsFor } from '../../../src/main/connectors/shared/model-pricing';
+import { costCentsExact } from '../../../src/main/connectors/shared/model-pricing';
 import { createFakeContext } from '../../helpers/fake-context';
 import { makeTempDir, removeTempDir } from '../../helpers/temp-dir';
 
@@ -316,7 +316,7 @@ describe('Claude usage parsing: extra usage money', () => {
 // ---------------------------------------------------------------------------
 
 const SPEND_MODEL = 'claude-sonnet-5';
-// Large enough that every record costs whole cents (`costCentsFor` rounds),
+// Large enough that every record costs whole cents (records carry exact cents),
 // small enough to stay under any long-context threshold.
 const BASE_INPUT = 20_000;
 const BASE_CACHE_READ = 100_000;
@@ -376,8 +376,8 @@ describe('Claude Code spend: extractClaudeCodeSpendRecords', () => {
     const [record] = extractClaudeCodeSpendRecords(line);
 
     // Assert
-    const input = costCentsFor(SPEND_MODEL, { inputTokens: 1_000_000, outputTokens: 0 }) ?? 0;
-    assert.equal(record.costCents, costCentsFor(SPEND_MODEL, { inputTokens: 0, outputTokens: 0, cacheWrite1hTokens: 1_000_000 }));
+    const input = costCentsExact(SPEND_MODEL, { inputTokens: 1_000_000, outputTokens: 0 }) ?? 0;
+    assert.equal(record.costCents, costCentsExact(SPEND_MODEL, { inputTokens: 0, outputTokens: 0, cacheWrite1hTokens: 1_000_000 }));
     assert.equal(record.costCents, input * 2);
     assert.equal(record.cacheWriteTokens, 1_000_000);
   });
@@ -393,7 +393,7 @@ describe('Claude Code spend: extractClaudeCodeSpendRecords', () => {
     const [record] = extractClaudeCodeSpendRecords(line);
 
     // Assert
-    assert.equal(record.costCents, costCentsFor(SPEND_MODEL, { inputTokens: 0, outputTokens: 0, cacheWrite5mTokens: 1_000_000 }));
+    assert.equal(record.costCents, costCentsExact(SPEND_MODEL, { inputTokens: 0, outputTokens: 0, cacheWrite5mTokens: 1_000_000 }));
   });
 
   it('applies the fast-mode surcharge when usage.speed is "fast"', () => {
@@ -407,7 +407,7 @@ describe('Claude Code spend: extractClaudeCodeSpendRecords', () => {
     // Assert
     assert.equal(
       fst.costCents,
-      costCentsFor(model, { inputTokens: BASE_INPUT, outputTokens: 1_000, cacheReadTokens: BASE_CACHE_READ, fastTier: true }),
+      costCentsExact(model, { inputTokens: BASE_INPUT, outputTokens: 1_000, cacheReadTokens: BASE_CACHE_READ, fastTier: true }),
     );
     assert.ok((fst.costCents ?? 0) > (std.costCents ?? 0));
   });
@@ -438,7 +438,7 @@ describe('Claude Code spend: extractClaudeCodeSpendRecords', () => {
     const advisor = records[1];
     assert.equal(advisor.model, 'claude-fable-5-1');
     assert.equal(advisor.inputTokens, 50_000);
-    assert.equal(advisor.costCents, costCentsFor('claude-fable-5-1', { inputTokens: 50_000, outputTokens: 2_000 }));
+    assert.equal(advisor.costCents, costCentsExact('claude-fable-5-1', { inputTokens: 50_000, outputTokens: 2_000 }));
     assert.notEqual(advisor.dedupeKey, records[0].dedupeKey);
   });
 });
@@ -456,7 +456,7 @@ describe('Claude Code spend: duplicate content-block lines', () => {
         extract: (l: unknown) => extractClaudeCodeSpendRecords(l),
       };
       const one = (out: number): number =>
-        costCentsFor(SPEND_MODEL, { inputTokens: BASE_INPUT, outputTokens: out, cacheReadTokens: BASE_CACHE_READ }) ?? 0;
+        costCentsExact(SPEND_MODEL, { inputTokens: BASE_INPUT, outputTokens: out, cacheReadTokens: BASE_CACHE_READ }) ?? 0;
       writeLines(file, [assistantLine({ output: 1_000 }), assistantLine({ output: 5_000 })]);
 
       // Act
@@ -501,6 +501,28 @@ describe('Claude Code spend: provider wiring', () => {
       assert.ok(!snapshot.ok && snapshot.needsLogin);
       const today = snapshot.spend?.find(t => t.period === 'today');
       assert.ok(today && (today.costCents ?? 0) > 0);
+    } finally {
+      removeTempDir(dir);
+    }
+  });
+});
+
+describe('Claude Code spend: sub-cent records', () => {
+  it('sums fractional cents across many small records and rounds once per tile', () => {
+    // Arrange - 200 records of ~0.25 cents each (a whole-cent round per record would give 0 or 200).
+    const line = assistantLine({ output: 0, usage: { input_tokens: 500, cache_read_input_tokens: 0 } });
+    const one = extractClaudeCodeSpendRecords(line)[0];
+    assert.ok(one.costCents != null && one.costCents > 0 && one.costCents < 1);
+    const records: SpendRecord[] = Array.from({ length: 200 }, () => ({ ...one, ts: Date.now() }));
+    const dir = makeTempDir('aioversight-subcent-');
+    try {
+      // Act
+      const tiles = JsonlSpendScanner.shared(dir).aggregate(records, Date.now());
+
+      // Assert
+      const today = tiles.find(t => t.period === 'today');
+      assert.equal(today?.costCents, Math.round(one.costCents! * 200));
+      assert.ok(Number.isInteger(today?.costCents));
     } finally {
       removeTempDir(dir);
     }

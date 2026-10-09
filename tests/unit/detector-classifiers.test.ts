@@ -1,8 +1,8 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import * as assert from 'node:assert/strict';
 import { findConnector } from '../../src/main/connectors/registry';
 import { TranscriptWatcher, TranscriptWatcherOptions } from '../../src/main/connectors/shared/transcript-watcher';
-import { isSubagentTranscript } from '../../src/main/connectors/claude-code/detector';
+import { isSubagentTranscript, withConfigDirPattern } from '../../src/main/connectors/claude-code/detector';
 import { createFakeContext } from '../helpers/fake-context';
 
 /** Reach into the TranscriptWatcher's opts to extract the connector's classifier hooks. */
@@ -400,5 +400,42 @@ describe('isSubagentTranscript', () => {
     assert.equal(isSubagentTranscript('/h/.claude/projects/p/s1.jsonl'), false);
     assert.equal(isSubagentTranscript('/h/.claude/projects/p/subagents.jsonl'), false);
     assert.equal(isSubagentTranscript('/h/.claude/projects/my-subagents/s1.jsonl'), false);
+  });
+});
+
+describe('withConfigDirPattern (CLAUDE_CONFIG_DIR)', () => {
+  const DEFAULT = '~/.claude/projects/**/*.jsonl';
+  let saved: string | undefined;
+
+  beforeEach(() => {
+    saved = process.env.CLAUDE_CONFIG_DIR;
+  });
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+    else process.env.CLAUDE_CONFIG_DIR = saved;
+  });
+
+  it('is a no-op when the variable is unset or blank', () => {
+    const ctx = createFakeContext();
+    delete process.env.CLAUDE_CONFIG_DIR;
+    assert.deepEqual(withConfigDirPattern([DEFAULT], ctx), [DEFAULT]);
+    process.env.CLAUDE_CONFIG_DIR = '   ';
+    assert.deepEqual(withConfigDirPattern([DEFAULT], ctx), [DEFAULT]);
+  });
+
+  it('adds the projects glob under the directory, ignoring a trailing separator', () => {
+    process.env.CLAUDE_CONFIG_DIR = '/data/claude-alt/';
+    const result = withConfigDirPattern([DEFAULT], createFakeContext());
+    assert.deepEqual(result, [DEFAULT, '/data/claude-alt/projects/**/*.jsonl']);
+  });
+
+  it('does not duplicate a pattern that already resolves to the same glob', () => {
+    process.env.CLAUDE_CONFIG_DIR = 'C:\\Users\\Me\\.claude';
+    const ctx = createFakeContext();
+    const existing = 'c:/users/me/.CLAUDE/projects/**/*.jsonl';
+    assert.deepEqual(withConfigDirPattern([existing], ctx), [existing]);
+    const backslashed = 'C:\\USERS\\ME\\.claude\\projects\\**\\*.jsonl';
+    assert.deepEqual(withConfigDirPattern([backslashed], ctx), [backslashed]);
   });
 });

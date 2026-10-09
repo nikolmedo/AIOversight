@@ -4,6 +4,7 @@ import {
   MODEL_RATES,
   PRICING_VINTAGE,
   costCentsFor,
+  costCentsExact,
   rateFor,
 } from '../../src/main/connectors/shared/model-pricing';
 
@@ -326,5 +327,21 @@ describe('model-pricing: unknown models and cost math', () => {
     );
     // An omitted optional still means zero, not unknown.
     assert.equal(costCentsFor('claude-opus-4-8', { inputTokens: 1_000_000, outputTokens: 0 }), 500);
+  });
+});
+
+describe('model-pricing: costCentsExact', () => {
+  const small = { inputTokens: 1_000, outputTokens: 0 };
+
+  it('keeps sub-cent precision that costCentsFor rounds away', () => {
+    const exact = costCentsExact('claude-opus-5-5', small);
+    assert.ok(exact != null && exact > 0 && exact < 1 && !Number.isInteger(exact));
+    assert.equal(costCentsFor('claude-opus-5-5', small), Math.round(exact!));
+  });
+
+  it('rounds to costCentsFor for whole-cent usage and returns null for an unpriced model', () => {
+    const usage = { inputTokens: 1_000_000, outputTokens: 0 };
+    assert.equal(Math.round(costCentsExact('claude-opus-5-5', usage)!), costCentsFor('claude-opus-5-5', usage));
+    assert.equal(costCentsExact('no-such-model', usage), null);
   });
 });

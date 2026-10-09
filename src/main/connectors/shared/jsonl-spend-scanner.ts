@@ -96,9 +96,15 @@ interface CacheFileShape {
 
 /** Cache format version. Bumped whenever stored rollups would be wrong under
  * the current parsing (2: key scheme and entry shape; 3: `dedupeKey`
- * dedupe and Claude Code cache-write/fast/advisor pricing), so an old cache
+ * dedupe and Claude Code cache-write/fast/advisor pricing; 4: Claude Code
+ * rollups hold unrounded cents), so an old cache
  * is discarded and every file is re-read. */
-const CACHE_VERSION = 3;
+const CACHE_VERSION = 4;
+
+/** Records may carry fractional cents (see `costCentsExact`); tiles show whole cents, rounded once per tile. */
+function roundCents(cents: number): number {
+  return Math.round(cents);
+}
 
 function localDayKey(ts: number): string {
   const d = new Date(ts);
@@ -377,13 +383,13 @@ export class JsonlSpendScanner {
     const series: Array<number | null> = [];
     for (let i = 29; i >= 0; i--) {
       const entry = perDay.get(dayKeyOffset(now, i));
-      series.push(entry ? (entry.costKnown ? entry.costCents : null) : null);
+      series.push(entry ? (entry.costKnown ? roundCents(entry.costCents) : null) : null);
     }
 
     const tileFor = (key: string, period: SpendPeriod, label: string): SpendTile => {
       const entry = perDay.get(key);
       if (!entry) return { period, label, costCents: null, tokens: null };
-      return { period, label, costCents: entry.costKnown ? entry.costCents : null, tokens: entry.tokens };
+      return { period, label, costCents: entry.costKnown ? roundCents(entry.costCents) : null, tokens: entry.tokens };
     };
 
     let last30dCents = 0;
@@ -407,7 +413,7 @@ export class JsonlSpendScanner {
       {
         period: 'last30d',
         label: 'Last 30 days',
-        costCents: last30dHasAny ? (last30dCostKnown ? last30dCents : null) : null,
+        costCents: last30dHasAny ? (last30dCostKnown ? roundCents(last30dCents) : null) : null,
         tokens: last30dHasAny ? last30dTokens : null,
         series,
       },
