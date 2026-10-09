@@ -768,8 +768,6 @@ function bindConnectorLinks(): void {
     const login = target.closest('[data-role="connector-login"]') as HTMLButtonElement | null;
     if (login) {
       setButtonBusy(login, true, 'Opening sign-in…');
-      const idleLabel = login.textContent ?? '';
-      login.textContent = 'Opening sign-in…';
       const id = login.dataset.connectorId;
       try {
         if (id) await window.aw.connectorLogin(id);
@@ -780,7 +778,6 @@ function bindConnectorLinks(): void {
         // The quota push usually re-renders this button anyway; if it does
         // not (cancelled, window closed), the old one must not stay stuck.
         setButtonBusy(login, false);
-        login.textContent = idleLabel;
       }
     }
   });

@@ -344,8 +344,6 @@
     const id = login?.dataset.connectorId;
     if (!login || !id) return;
     setButtonBusy(login, true, 'Opening sign-in…');
-    const idleLabel = login.textContent ?? '';
-    login.textContent = 'Opening sign-in…';
     try {
       await window.awPopup.login(id);
     } catch {
@@ -356,7 +354,6 @@
       // (cancelled), the button must not stay stuck.
       if (login.isConnected) {
         setButtonBusy(login, false);
-        login.textContent = idleLabel;
       }
     }
   });

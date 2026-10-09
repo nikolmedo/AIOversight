@@ -316,6 +316,21 @@ describe('setButtonBusy', () => {
     assert.ok(!btn.classList.contains('is-busy'));
     assert.equal(btn.label.textContent, 'Refresh');
   });
+
+  it('restores the idle text of a text-only button without .btn-label', () => {
+    const btn = { ...fakeButton(), textContent: 'Sign in', childElementCount: 0, querySelector: () => null };
+    setButtonBusy(btn, true, 'Opening sign-in…');
+    assert.equal(btn.textContent, 'Opening sign-in…');
+    setButtonBusy(btn, false);
+    assert.equal(btn.textContent, 'Sign in');
+  });
+
+  it('leaves the markup of an icon button without .btn-label alone', () => {
+    const btn = { ...fakeButton(), textContent: '', childElementCount: 1, querySelector: () => null };
+    setButtonBusy(btn, true);
+    setButtonBusy(btn, false);
+    assert.equal(btn.textContent, '');
+  });
 });
 
 describe('planTrayPopup', () => {

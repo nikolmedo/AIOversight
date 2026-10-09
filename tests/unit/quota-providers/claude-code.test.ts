@@ -480,6 +480,39 @@ describe('Claude Code spend: duplicate content-block lines', () => {
   });
 });
 
+describe('Claude Code spend: dedupe across a cache reload', () => {
+  it('counts a request once when a later duplicate line arrives after a new scanner loaded the cache', async () => {
+    // Arrange
+    const dir = makeTempDir();
+    try {
+      const file = path.join(dir, 'session.jsonl');
+      const cacheDir = path.join(dir, 'cache');
+      const opts = {
+        key: 'claude-code',
+        patterns: [path.join(dir, '*.jsonl').replace(/\\/g, '/')],
+        extract: (l: unknown) => extractClaudeCodeSpendRecords(l),
+      };
+      const one = (out: number): number =>
+        costCentsExact(SPEND_MODEL, { inputTokens: BASE_INPUT, outputTokens: out, cacheReadTokens: BASE_CACHE_READ }) ?? 0;
+      writeLines(file, [assistantLine({ output: 1_000 })]);
+      const first = sumRecords(await JsonlSpendScanner.shared(cacheDir).scan(opts));
+      JsonlSpendScanner.shared(cacheDir).flushSync();
+
+      // Act: a fresh instance must load the persisted cache, not share memory
+      const reloaded = new (JsonlSpendScanner as any)(cacheDir) as JsonlSpendScanner;
+      writeLines(file, [assistantLine({ output: 5_000 })], true);
+      const second = sumRecords(await reloaded.scan(opts));
+
+      // Assert
+      assert.equal(first.output, 1_000);
+      assert.equal(second.output, 5_000);
+      assert.equal(second.cents, one(5_000));
+    } finally {
+      removeTempDir(dir);
+    }
+  });
+});
+
 describe('Claude Code spend: provider wiring', () => {
   it('attaches local spend even when the claude.ai usage fetch needs a login', async () => {
     // Arrange

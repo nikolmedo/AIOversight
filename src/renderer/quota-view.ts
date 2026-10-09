@@ -1002,10 +1002,13 @@ const REFRESH_ICON =
  * Busy state of a refresh button: disabled, `aria-busy`, a spinning icon
  * (`.is-busy`, off under reduced motion) and, for a button with a
  * `.btn-label`, the label "Refreshing…" so the feedback does not depend on
- * motion. Call again with `false` to restore the idle label.
+ * motion. A text-only button without `.btn-label` (no child elements, e.g. a
+ * sign-in button) is relabelled the same way. Call again with `false` to
+ * restore the idle label.
  */
 function setButtonBusy(btn: HTMLButtonElement, busy: boolean, busyLabel: string = 'Refreshing…'): void {
   const label = btn.querySelector<HTMLElement>('.btn-label');
+  const textOnly = !label && btn.childElementCount === 0;
   btn.disabled = busy;
   btn.classList.toggle('is-busy', busy);
   if (busy) {
@@ -1013,10 +1016,17 @@ function setButtonBusy(btn: HTMLButtonElement, busy: boolean, busyLabel: string 
     if (label) {
       btn.dataset.idleLabel = label.textContent ?? '';
       label.textContent = busyLabel;
+    } else if (textOnly) {
+      btn.dataset.idleLabel = btn.textContent ?? '';
+      btn.textContent = busyLabel;
     }
   } else {
     btn.removeAttribute('aria-busy');
-    if (label && btn.dataset.idleLabel != null) label.textContent = btn.dataset.idleLabel;
+    const idle = btn.dataset.idleLabel;
+    if (idle != null) {
+      if (label) label.textContent = idle;
+      else if (textOnly) btn.textContent = idle;
+    }
   }
 }
 
