@@ -92,6 +92,12 @@ async function main() {
     renderTotalSpendCardPanel();
     renderDrawerMeters();
   });
+  // Popup "Configure" deep link: main asks for one connector's drawer. The
+  // preload buffers a request that arrived before this subscription.
+  window.aw.onOpenConnector(id => {
+    activatePage('integrations');
+    openDrawer(id);
+  });
 }
 
 function flashButtonLabel(btn: HTMLButtonElement, label: string): void {
@@ -232,7 +238,7 @@ function renderOverviewItem(def: ConnectorMetadata): string {
   let body: string;
   if (!snap) {
     body = `<p class="row-note">${WAITING_FOR_REFRESH}</p>`;
-  } else if (!snap.ok && snap.appNotRunning) {
+  } else if (!snap.ok && isExpectedAbsence(snap)) {
     body = renderAppNotRunningNotice(
       snap.error,
       `<button type="button" class="link-btn" data-open-connector="${escapeHtml(def.id)}">Configure</button>`,
@@ -408,7 +414,7 @@ function renderMetersList(def: ConnectorMetadata, snap: QuotaSnapshot | undefine
   const note = (text: string): string =>
     `<div class="customize-group surface-block"><p class="customize-note">${text}</p></div>`;
   if (!snap) return note(`${WAITING_FOR_REFRESH} Turn on quota above if it is off.`);
-  if (!snap.ok && snap.appNotRunning) return note(escapeHtml(snap.error));
+  if (!snap.ok && isExpectedAbsence(snap)) return note(escapeHtml(snap.error));
   if (!snap.ok) return note(`Last fetch failed: ${escapeHtml(snap.error)}`);
   if (snap.buckets.length === 0) return note(NO_USAGE_REPORTED);
 
@@ -572,6 +578,7 @@ const STATUS_LABELS: Record<ConnectorStatus, string> = {
   'needs-login': 'Needs sign-in',
   'needs-setup': 'Needs setup',
   'app-not-running': 'App not running',
+  'not-detected': 'Not installed',
 };
 
 function statusFor(id: string): ConnectorStatus {
@@ -1122,26 +1129,13 @@ function refreshQuotaCard(id: string): void {
   renderOverview();
 }
 
-/**
- * `loginLabel` is the renderer's only signal that the connector actually
- * declares a `login` handler (runtime.ts sets it from `c.login?.label`,
- * which is required on ConnectorLogin). Gate on it rather than defaulting
- * to "Sign in to <name>": a connector can legitimately report `needsLogin`
- * for a sign-in that happens OUTSIDE this app (codex-cli wants `codex login`
- * in a terminal), and a button wired to a handler that doesn't exist does
- * nothing when clicked. Without a handler the snapshot's own error text —
- * which carries the instruction — is all the user gets.
- */
-function loginButtonFor(q: QuotaSnapshot, def?: ConnectorMetadata): string {
-  if (q.ok || !q.needsLogin || !def?.loginLabel) return '';
-  return `<button type="button" class="btn btn-primary btn-sm" data-role="connector-login" data-connector-id="${escapeHtml(def.id)}">${escapeHtml(def.loginLabel)}</button>`;
-}
+// `loginButtonFor` lives in quota-view.ts, shared with the tray popup.
 
 function renderQuotaSnapshot(q: QuotaSnapshot | undefined, def?: ConnectorMetadata): string {
   if (!q) {
     return `<p class="row-note">${WAITING_FOR_REFRESH}</p>`;
   }
-  if (!q.ok && q.appNotRunning) {
+  if (!q.ok && isExpectedAbsence(q)) {
     return `
       ${renderAppNotRunningNotice(q.error)}
       <p class="quota-meta-line">Last checked ${escapeHtml(formatDateTime(q.fetchedAt))}</p>

@@ -176,9 +176,9 @@
       })();
     },
     // The popup has no meter settings of its own — open the settings window
-    // instead, per the plan's Phase 2c decision.
-    openCustomize: () => {
-      void window.awPopup.openSettings();
+    // at this connector's drawer instead, per the plan's Phase 2c decision.
+    openCustomize: t => {
+      void window.awPopup.openSettings(t.connectorId);
     },
   };
 
@@ -330,11 +330,34 @@
     void window.awPopup.openSettings();
   });
 
-  // Error sections render an "Open settings" link (renderProviderBlock);
-  // delegated because the content is replaced on every render.
-  $('#content').addEventListener('click', e => {
-    if ((e.target as HTMLElement).closest('[data-role="open-settings"]')) {
-      void window.awPopup.openSettings();
+  // Error sections render a sign-in button and a "Configure" link
+  // (renderProviderBlock); delegated because the content is replaced on
+  // every render.
+  $('#content').addEventListener('click', async e => {
+    const target = e.target as HTMLElement;
+    const configure = target.closest<HTMLElement>('[data-role="open-settings"]');
+    if (configure) {
+      void window.awPopup.openSettings(configure.dataset.connectorId);
+      return;
+    }
+    const login = target.closest<HTMLButtonElement>('[data-role="connector-login"]');
+    const id = login?.dataset.connectorId;
+    if (!login || !id) return;
+    setButtonBusy(login, true, 'Opening sign-in…');
+    const idleLabel = login.textContent ?? '';
+    login.textContent = 'Opening sign-in…';
+    try {
+      await window.awPopup.login(id);
+    } catch {
+      // A rejected or cancelled sign-in just puts the button back; the error
+      // text still explains what is missing.
+    } finally {
+      // The quota push usually re-renders this row anyway; if it does not
+      // (cancelled), the button must not stay stuck.
+      if (login.isConnected) {
+        setButtonBusy(login, false);
+        login.textContent = idleLabel;
+      }
     }
   });
 

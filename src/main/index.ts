@@ -240,11 +240,32 @@ app.on('before-quit', async () => {
   await runtime?.stopAllDetectors();
 });
 
-function openSettings(): void {
+/**
+ * Starts a connector's own sign-in flow and refreshes its quota when it
+ * completes. `id` comes from a renderer, so it is checked against the
+ * registry: an unknown id or a connector without `login` is rejected.
+ */
+function runConnectorLogin(id: unknown): true {
+  const connector = typeof id === 'string' ? ALL_CONNECTORS.find(c => c.id === id) : undefined;
+  if (!connector?.login) throw new Error(`No sign-in flow for connector ${String(id)}`);
+  const ctx = runtime!.contextFor(connector);
+  connector.login.handler(ctx, () => void quotaService!.refresh(connector.id));
+  return true;
+}
+
+/**
+ * Shows the settings window, creating it if needed. With `connectorId` the
+ * page is asked to open that connector's drawer (`settings:openConnector`,
+ * the popup's "Configure" deep link); otherwise it keeps its remembered page.
+ * A new window gets the request once it has loaded; the preload buffers it
+ * until the page subscribes.
+ */
+function openSettings(connectorId?: string): void {
   trayPopup?.hide();
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     settingsWindow.show();
     settingsWindow.focus();
+    if (connectorId) settingsWindow.webContents.send('settings:openConnector', connectorId);
     return;
   }
   settingsWindow = new BrowserWindow({
@@ -270,6 +291,12 @@ function openSettings(): void {
   settingsWindow.webContents.on('did-start-loading', restoreShortcut);
   settingsWindow.webContents.on('render-process-gone', restoreShortcut);
   settingsWindow.webContents.on('destroyed', restoreShortcut);
+  if (connectorId) {
+    const win = settingsWindow;
+    win.webContents.once('did-finish-load', () => {
+      if (!win.isDestroyed()) win.webContents.send('settings:openConnector', connectorId);
+    });
+  }
   settingsWindow.loadFile(path.join(__dirname, '..', 'renderer', 'settings.html'));
   settingsWindow.on('closed', () => {
     settingsWindow = null;
@@ -475,15 +502,15 @@ function registerIpc(): void {
 
   for (const connector of ALL_CONNECTORS) {
     if (!connector.login) continue;
-    ipcMain.handle(`connector:login:${connector.id}`, () => {
-      const ctx = runtime!.contextFor(connector);
-      connector.login!.handler(ctx, () => void quotaService!.refresh(connector.id));
-      return true;
-    });
+    ipcMain.handle(`connector:login:${connector.id}`, () => runConnectorLogin(connector.id));
   }
 
-  ipcMain.handle('trayPopup:openSettings', () => {
-    openSettings();
+  // Same sign-in as the settings window's button, for the popup's error rows.
+  ipcMain.handle('trayPopup:login', (_e, id: unknown) => runConnectorLogin(id));
+
+  ipcMain.handle('trayPopup:openSettings', (_e, connectorId: unknown) => {
+    const known = typeof connectorId === 'string' && ALL_CONNECTORS.some(c => c.id === connectorId);
+    openSettings(known ? (connectorId as string) : undefined);
   });
 
   ipcMain.handle('trayPopup:getQuotas', () => quotaService!.state());
@@ -572,7 +599,7 @@ function createUpdateService(enabled: boolean): UpdateService {
       if (!state.latestVersion) return false;
       return notifier!.notifyUpdate(
         { latestVersion: state.latestVersion, canInstall: state.canInstall },
-        openSettings,
+        () => openSettings(),
       ).shown;
     },
     openExternal: url => {

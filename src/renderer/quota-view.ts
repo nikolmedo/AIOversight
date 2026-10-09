@@ -932,8 +932,9 @@ interface TrayPopupPlan {
  * check would wrongly fold a just-enabled, still-loading connector into the
  * "nothing enabled" empty state instead of `renderProviderBlock`'s "Not
  * loaded yet." row. A connector whose desktop app is closed (`appNotRunning`)
- * is left out too, since the popup is a glance at live numbers and the
- * settings window already explains that state.
+ * or whose tool isn't installed (`notDetected`) is left out too, since the
+ * popup is a glance at live numbers and the settings window already explains
+ * that state.
  *
  * Visible connectors are ordered by `providerAttentionRank`: critical, then
  * warn, then ok, then no data (errors and not-loaded-yet included), so the
@@ -951,7 +952,7 @@ function planTrayPopup(
   if (connectors.length === 0) return { visible: [], emptyMessage: 'No integrations configured.' };
   const enabled = connectors.filter(def => def.quotaEnabled);
   const ranked = enabled
-    .filter(def => !isAppNotRunning(quotas[def.id]))
+    .filter(def => !isExpectedAbsence(quotas[def.id]))
     .map(def => ({ def, rank: providerAttentionRank(quotas[def.id], bucketPrefs?.[def.id], now) }));
   ranked.sort((a, b) => b.rank - a.rank);
   const visible = ranked.map(r => r.def);
@@ -962,7 +963,10 @@ function planTrayPopup(
   const names = enabled.map(def => def.name);
   const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
   const verb = names.length === 1 ? "isn't" : "aren't";
-  return { visible, emptyMessage: `Nothing to show. ${list} ${verb} running.` };
+  const allNotDetected = enabled.every(def => isNotDetected(quotas[def.id]));
+  const anyNotDetected = enabled.some(def => isNotDetected(quotas[def.id]));
+  const state = allNotDetected ? 'installed' : anyNotDetected ? 'running or installed' : 'running';
+  return { visible, emptyMessage: `Nothing to show. ${list} ${verb} ${state}.` };
 }
 
 /**
@@ -1020,8 +1024,9 @@ const ICON_INFO =
   '<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 7.25V11M8 5v.01"/></svg>';
 
 /**
- * Neutral, non-error notice for an `appNotRunning` snapshot (settings
- * window). `actionsHtml` is appended after the text, e.g. a Configure link.
+ * Neutral, non-error notice for an `appNotRunning` or `notDetected` snapshot
+ * (settings window). `actionsHtml` is appended after the text, e.g. a
+ * Configure link.
  */
 function renderAppNotRunningNotice(message: string, actionsHtml = ''): string {
   return `
@@ -1030,6 +1035,20 @@ function renderAppNotRunningNotice(message: string, actionsHtml = ''): string {
       <span class="inline-notice-text" title="${escapeHtml(message)}">${escapeHtml(message)}</span>
       ${actionsHtml}
     </div>`;
+}
+
+/**
+ * Sign-in button for a `needsLogin` snapshot, shared by both windows (click
+ * handled by each window via `data-role="connector-login"`). Only rendered
+ * when the connector declares a login handler, which `loginLabel` signals:
+ * a connector can report `needsLogin` for a sign-in that happens outside
+ * this app (codex-cli wants `codex login` in a terminal), and a button with
+ * no handler would do nothing. The snapshot's error text then carries the
+ * instruction instead.
+ */
+function loginButtonFor(snap: QuotaSnapshot, def?: ConnectorMetadata): string {
+  if (snap.ok || !snap.needsLogin || !def?.loginLabel) return '';
+  return `<button type="button" class="btn btn-primary btn-sm" data-role="connector-login" data-connector-id="${escapeHtml(def.id)}">${escapeHtml(def.loginLabel)}</button>`;
 }
 
 /** Inner markup of a `.provider-updated` label; see `renderProviderBlock`. */
@@ -1067,8 +1086,9 @@ interface ProviderBlockOptions {
  * Per-provider quota section for the tray popup: a flat, borderless section
  * (name + plan tag + a muted "5m ago" freshness label, then meter rows). The
  * label turns to the warning colour once the data is older than twice the
- * connector's poll interval. Errors collapse to one line with a shortcut to
- * the settings window, where sign-in and configuration live.
+ * connector's poll interval. Errors collapse to one line with the
+ * connector's sign-in button (when it needs one and declares a login) and a
+ * Configure shortcut that opens the settings window at its drawer.
  */
 function renderProviderBlock(
   def: ConnectorMetadata,
@@ -1096,7 +1116,8 @@ function renderProviderBlock(
         ${head}
         <div class="provider-error">
           <span class="provider-error-text" title="${escapeHtml(snap.error)}">${escapeHtml(snap.error)}</span>
-          <button type="button" class="link-btn" data-role="open-settings">Configure</button>
+          ${loginButtonFor(snap, def)}
+          <button type="button" class="link-btn" data-role="open-settings" data-connector-id="${escapeHtml(def.id)}">Configure</button>
         </div>
       </section>
     `;

@@ -266,8 +266,8 @@ select.control option { background: var(--surface); color: var(--text); }
 .status-error .status-dot { background: var(--danger); }
 .status-needs-login, .status-needs-setup { color: var(--warn); }
 .status-needs-login .status-dot, .status-needs-setup .status-dot { background: var(--warn); }
-.status-app-not-running { color: var(--text-2); }
-.status-app-not-running .status-dot { background: var(--text-3); }
+.status-app-not-running, .status-not-detected { color: var(--text-2); }
+.status-app-not-running .status-dot, .status-not-detected .status-dot { background: var(--text-3); }
 
 .row-note { font-size: 12px; color: var(--text-2); }
 
@@ -364,7 +364,7 @@ label.row:has(.switch:disabled) { cursor: default; }
 .update-banner-bar { height: 4px; margin: 6px 6px 2px 24px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
 .update-banner-fill { height: 100%; width: var(--fill, 0%); background: var(--accent-solid); transition: width var(--dur) var(--ease); }
 
-/* Neutral counterpart of .inline-error for an expected state (appNotRunning). */
+/* Neutral counterpart of .inline-error for an expected state (appNotRunning, notDetected). */
 .inline-notice { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--text-2); }
 .inline-notice .icon { flex-shrink: 0; }
 .inline-notice-text { min-width: 0; font-size: 12px; overflow-wrap: anywhere; }

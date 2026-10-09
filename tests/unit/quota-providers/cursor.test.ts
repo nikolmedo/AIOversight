@@ -274,3 +274,66 @@ describe('Cursor quota provider', () => {
     }
   });
 });
+
+describe('Cursor quota provider — not installed', () => {
+  const ENV_KEYS = ['HOME', 'USERPROFILE', 'APPDATA'] as const;
+  let dir: string;
+  let saved: Record<string, string | undefined>;
+  let originalFetch: typeof globalThis.fetch;
+  let fetchCalls: number;
+
+  beforeEach(() => {
+    dir = makeTempDir('aioversight-cursor-absent-');
+    saved = Object.fromEntries(ENV_KEYS.map(k => [k, process.env[k]]));
+    process.env.HOME = dir;
+    process.env.USERPROFILE = dir;
+    process.env.APPDATA = path.join(dir, 'AppData', 'Roaming');
+    originalFetch = globalThis.fetch;
+    fetchCalls = 0;
+    globalThis.fetch = (async () => {
+      fetchCalls++;
+      return new Response('{}', { status: 500 });
+    }) as typeof globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    removeTempDir(dir);
+  });
+
+  it('reports notDetected with a short notice when Cursor has no local data at the default path', async () => {
+    // Arrange — an empty stateDbPath is the schema default (platform path).
+    const provider = createCursorQuotaProvider({ stateDbPath: '' }, createFakeContext({ cacheDir: dir }));
+
+    // Act
+    const snapshot = await provider.fetch();
+
+    // Assert
+    assert.equal(snapshot.ok, false);
+    if (!snapshot.ok) {
+      assert.equal(snapshot.notDetected, true);
+      assert.match(snapshot.error, /Cursor/);
+      assert.doesNotMatch(snapshot.error, /Session cookie API|state database not found/);
+    }
+    assert.equal(fetchCalls, 0);
+  });
+
+  it('keeps a real error when a custom stateDbPath does not exist', async () => {
+    // Arrange
+    const provider = createCursorQuotaProvider(
+      { stateDbPath: path.join(dir, 'missing.vscdb') },
+      createFakeContext({ cacheDir: dir }),
+    );
+
+    // Act
+    const snapshot = await provider.fetch();
+
+    // Assert
+    assert.equal(snapshot.ok, false);
+    if (!snapshot.ok) assert.equal(snapshot.notDetected, undefined);
+  });
+});

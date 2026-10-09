@@ -272,6 +272,12 @@ describe('connectorStatusFor', () => {
   it('keeps sign-in and app-closed ahead of a missing secret', () => {
     assert.equal(connectorStatusFor(on, { ok: false, needsLogin: true }, true), 'needs-login');
     assert.equal(connectorStatusFor(on, { ok: false, appNotRunning: true }, true), 'app-not-running');
+    assert.equal(connectorStatusFor(on, { ok: false, notDetected: true }, true), 'not-detected');
+  });
+
+  it('reports a not-installed tool as its own neutral status', () => {
+    assert.equal(connectorStatusFor(on, { ok: false, notDetected: true }), 'not-detected');
+    assert.equal(connectorStatusFor({ notifications: true, quota: false }, { ok: false, notDetected: true }), 'active');
   });
 
   it('reports an error without a missing secret', () => {

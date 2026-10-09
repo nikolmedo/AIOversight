@@ -91,6 +91,8 @@ interface AgentWatcherAPI {
   onLog(cb: (e: LogEntry) => void): () => void;
   onPaused(cb: (paused: boolean) => void): () => void;
   onQuotaUpdate(cb: (e: { id: string; snapshot: QuotaSnapshot }) => void): () => void;
+  /** Main asks to open a connector's drawer (popup "Configure" deep link). */
+  onOpenConnector(cb: (id: string) => void): () => void;
 }
 
 interface Window {

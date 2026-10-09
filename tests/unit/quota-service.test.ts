@@ -383,6 +383,32 @@ describe('QuotaService', () => {
     assert.equal(entry.nextAllowedFetchAt, 0);
   });
 
+  it('does not back off for a notDetected snapshot and clears an earlier failure streak', async () => {
+    // Arrange
+    const rt = rtConfig({ pollOverrideMinutes: { openai: 1 } });
+    await service.applyConfig(rt, 0);
+    await service.refresh('openai'); // fails: no admin key configured
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const entry = (service as any).providers.get('openai');
+    assert.ok(entry.consecutiveFailures >= 1);
+    const absent: QuotaSnapshot = {
+      ok: false,
+      fetchedAt: Date.now(),
+      error: "The tool isn't installed on this computer.",
+      notDetected: true,
+    };
+    entry.provider.fetch = () => Promise.resolve(absent);
+
+    // Act
+    const snapshot = await service.refresh('openai');
+
+    // Assert
+    assert.equal(snapshot, absent);
+    assert.equal(entry.consecutiveFailures, 0);
+    assert.equal(entry.nextAllowedFetchAt, 0);
+  });
+
   it('keeps polling at the normal interval while the app is not running, and picks up data once it opens', async () => {
     // Arrange
     mock.timers.enable({ apis: ['setInterval', 'setTimeout'] });

@@ -248,10 +248,10 @@ export class QuotaService extends EventEmitter {
             buckets: snap.buckets.length,
             authMethod: snap.authMethod,
           });
-        } else if (snap.appNotRunning) {
-          // Expected while the app is closed; at `warn` it would fill the Logs
-          // tab once per poll.
-          this.runtime.log('debug', `[quota] ${id} app not running`);
+        } else if (snap.appNotRunning || snap.notDetected) {
+          // Expected while the app is closed or the tool isn't installed; at
+          // `warn` it would fill the Logs tab once per poll.
+          this.runtime.log('debug', `[quota] ${id} ${snap.notDetected ? 'not installed' : 'app not running'}`);
         } else {
           this.runtime.log('warn', `[quota] ${id} failed`, { error: snap.error });
         }
@@ -286,7 +286,10 @@ export interface BackoffState {
  * Backoff state after a fetch that started at `startedAt` returned `snapshot`.
  * A success clears it. So does `appNotRunning`: the app being closed is not
  * a vendor outage, and backing off would delay picking up data after the
- * user opens the app by up to `MAX_BACKOFF_MS`.
+ * user opens the app by up to `MAX_BACKOFF_MS`. `notDetected` (tool not
+ * installed) clears it for the same reason: a fresh install is picked up
+ * within one poll interval. Polling stays at the normal interval, a cheap
+ * local check for these providers.
  */
 export function backoffAfter(
   snapshot: QuotaSnapshot,
@@ -294,7 +297,7 @@ export function backoffAfter(
   startedAt: number,
   now: number,
 ): BackoffState {
-  if (snapshot.ok || snapshot.appNotRunning) {
+  if (snapshot.ok || snapshot.appNotRunning || snapshot.notDetected) {
     return { consecutiveFailures: 0, nextAllowedFetchAt: 0 };
   }
   const consecutiveFailures = prev.consecutiveFailures + 1;

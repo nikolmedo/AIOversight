@@ -801,11 +801,16 @@ class CursorAuthError extends Error {}
  * explicitly NOT a statement about the user's credentials. */
 class CursorBlockedError extends Error {}
 
+/** No session cookie could be found or rebuilt at all — nothing was sent. */
+class CursorNoSessionError extends Error {}
+
 /** Fetch current Cursor quota: bearer token first, WorkosCursorSessionToken cookie fallback. */
 class CursorQuotaProvider implements QuotaProvider {
   constructor(
     private readonly stateDbPath: string,
     private readonly ctx: ConnectorContext,
+    /** False when the user configured `stateDbPath`; see `notDetected`. */
+    private readonly usesDefaultPath: boolean = false,
   ) {}
 
   async fetch(): Promise<QuotaSnapshot> {
@@ -840,6 +845,17 @@ class CursorQuotaProvider implements QuotaProvider {
     try {
       return await this.fetchWithCookie(fetchedAt);
     } catch (err) {
+      // No state database at the platform default and no session cookie:
+      // Cursor isn't installed (or never opened) here. A custom path that
+      // does not exist stays a real error, since the user pointed at it.
+      if (err instanceof CursorNoSessionError && !hasStateDb && this.usesDefaultPath) {
+        return {
+          ok: false,
+          fetchedAt,
+          notDetected: true,
+          error: "Cursor isn't installed on this computer. Install and open Cursor to see its usage here.",
+        };
+      }
       if (err instanceof CursorBlockedError) blockMessage = err.message;
       if (err instanceof CursorAuthError) sawAuthFailure = true;
 
@@ -948,7 +964,7 @@ class CursorQuotaProvider implements QuotaProvider {
   private async fetchWithCookie(fetchedAt: number): Promise<QuotaSnapshot> {
     const cookie = await this.resolveSessionCookie();
     if (!cookie) {
-      throw new Error('No WorkosCursorSessionToken cookie found (sign in at cursor.com in a browser)');
+      throw new CursorNoSessionError('No WorkosCursorSessionToken cookie found (sign in at cursor.com in a browser)');
     }
     const headers = { Cookie: `WorkosCursorSessionToken=${cookie}`, Accept: 'application/json' };
 
@@ -1059,6 +1075,7 @@ export function createCursorQuotaProvider(
   config: Record<string, unknown>,
   ctx: ConnectorContext,
 ): QuotaProvider {
-  const stateDbPath = (config.stateDbPath as string | undefined)?.trim() || defaultCursorStateDbPath();
-  return new CursorQuotaProvider(ctx.resolvePath(stateDbPath), ctx);
+  const configured = (config.stateDbPath as string | undefined)?.trim();
+  const stateDbPath = configured || defaultCursorStateDbPath();
+  return new CursorQuotaProvider(ctx.resolvePath(stateDbPath), ctx, !configured);
 }
