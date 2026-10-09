@@ -18,6 +18,8 @@
   let resetChipTimer: ReturnType<typeof setInterval> | null = null;
   /** Newest `fetchedAt` among the rendered ok snapshots, 0 when none. */
   let lastUpdatedAt = 0;
+  /** Exactly one provider is listed: its heading already carries "5m ago". */
+  let singleProvider = false;
 
   const UPDATED_LABEL_TICK_MS = 1_000;
   const RESET_CHIP_REFRESH_MS = 30_000;
@@ -30,7 +32,8 @@
     refreshProviderFreshness(document, now);
     const el = document.getElementById('updatedAgo');
     if (!el) return;
-    const text = lastUpdatedAt > 0 ? formatUpdatedAgo(lastUpdatedAt, now) : '';
+    // With a single provider its own heading already says when it updated.
+    const text = lastUpdatedAt > 0 && !singleProvider ? formatUpdatedAgo(lastUpdatedAt, now) : '';
     if (el.textContent !== text) el.textContent = text;
   }
 
@@ -107,6 +110,7 @@
       const snap = quotas[def.id];
       return snap?.ok ? Math.max(max, snap.fetchedAt) : max;
     }, 0);
+    singleProvider = plan.visible.length === 1;
     if (plan.emptyMessage != null) {
       panel.innerHTML = `<p class="empty">${escapeHtml(plan.emptyMessage)}</p>`;
       updateUpdatedLabel();
@@ -336,13 +340,13 @@
 
   $('#refreshAll').addEventListener('click', async () => {
     const btn = $('#refreshAll') as HTMLButtonElement;
-    btn.disabled = true;
+    setButtonBusy(btn, true);
     try {
       const next = (await window.awPopup.refresh()) as Record<string, QuotaSnapshot>;
       render(next);
       requestAnimationFrame(() => requestAnimationFrame(reportSize));
     } finally {
-      btn.disabled = false;
+      setButtonBusy(btn, false);
     }
   });
 })();

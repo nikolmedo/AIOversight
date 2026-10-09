@@ -132,8 +132,7 @@ app.whenReady().then(async () => {
       runtime!.log('debug', '[main] event dropped (paused)', { sessionId: event.sessionId });
       return;
     }
-    notifier!.handle(event);
-    settingsWindow?.webContents.send('event', event);
+    notifier!.handle(event, record => settingsWindow?.webContents.send('event', record));
   });
   runtime.onLog(entry => {
     settingsWindow?.webContents.send('log', entry);

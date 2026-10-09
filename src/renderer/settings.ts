@@ -15,6 +15,9 @@ async function main() {
   initial = await window.aw.getInitial();
   paused = initial.paused;
   quotas = initial.quotas ?? {};
+  setPlatform(initial.platform);
+  // Static HTML names the tray target for the platform the window runs on.
+  $('#quotaTrayLabel').textContent = `Show quota summary in ${trayTargetWord(initial.platform)}`;
 
   document.body.insertAdjacentHTML('beforeend', renderRowMenu());
 
@@ -59,7 +62,7 @@ async function main() {
   });
   const refreshAll = $('#refreshAllBtn') as HTMLButtonElement;
   refreshAll.addEventListener('click', async () => {
-    refreshAll.disabled = true;
+    setButtonBusy(refreshAll, true);
     try {
       const all = (await window.aw.refreshQuota()) as Record<string, QuotaSnapshot>;
       if (all) {
@@ -69,7 +72,7 @@ async function main() {
         renderDrawerMeters();
       }
     } finally {
-      refreshAll.disabled = false;
+      setButtonBusy(refreshAll, false);
     }
   });
 
@@ -228,7 +231,7 @@ function renderOverviewItem(def: ConnectorMetadata): string {
 
   let body: string;
   if (!snap) {
-    body = '<p class="row-note">Waiting for the first refresh.</p>';
+    body = `<p class="row-note">${WAITING_FOR_REFRESH}</p>`;
   } else if (!snap.ok && snap.appNotRunning) {
     body = renderAppNotRunningNotice(
       snap.error,
@@ -248,7 +251,7 @@ function renderOverviewItem(def: ConnectorMetadata): string {
         renderMeterGroup(withBillingCycleReset(snap.buckets, snap.billingCycleEnd, snap.billingCycleStart), bucketPrefs, {
           connectorId: def.id,
         })) ||
-      '<p class="row-note">No usage buckets returned.</p>';
+      `<p class="row-note">${NO_USAGE_REPORTED}</p>`;
   }
 
   return `
@@ -404,10 +407,10 @@ function focusDrawerMeter(bucketId: string): void {
 function renderMetersList(def: ConnectorMetadata, snap: QuotaSnapshot | undefined): string {
   const note = (text: string): string =>
     `<div class="customize-group surface-block"><p class="customize-note">${text}</p></div>`;
-  if (!snap) return note('Not loaded yet. Turn on quota above, then refresh.');
+  if (!snap) return note(`${WAITING_FOR_REFRESH} Turn on quota above if it is off.`);
   if (!snap.ok && snap.appNotRunning) return note(escapeHtml(snap.error));
   if (!snap.ok) return note(`Last fetch failed: ${escapeHtml(snap.error)}`);
-  if (snap.buckets.length === 0) return note('No usage buckets yet.');
+  if (snap.buckets.length === 0) return note(NO_USAGE_REPORTED);
 
   const bucketPrefs = initial.settings.connectors.bucketPrefs?.[def.id];
   const orderedIds = customizeDisplayOrder(snap.buckets, bucketPrefs);
@@ -563,15 +566,17 @@ function bindDrawerMeters(): void {
 // ---------------------------------------------------------------------------
 
 const STATUS_LABELS: Record<ConnectorStatus, string> = {
-  off: 'Not configured',
+  off: 'Off',
   active: 'Active',
   error: 'Error',
   'needs-login': 'Needs sign-in',
+  'needs-setup': 'Needs setup',
   'app-not-running': 'App not running',
 };
 
 function statusFor(id: string): ConnectorStatus {
-  return connectorStatusFor(initial.settings.connectors.enabled[id], quotas[id]);
+  const def = initial.connectors.find(c => c.id === id);
+  return connectorStatusFor(initial.settings.connectors.enabled[id], quotas[id], hasMissingQuotaSecret(def));
 }
 
 function renderStatusBadge(id: string): string {
@@ -593,7 +598,7 @@ function isConnectorEnabled(id: string): boolean {
 
 function needsAttention(id: string): boolean {
   const s = statusFor(id);
-  return s === 'error' || s === 'needs-login';
+  return s === 'error' || s === 'needs-login' || s === 'needs-setup';
 }
 
 function matchesIntegrationQuery(def: ConnectorMetadata, query: string): boolean {
@@ -755,10 +760,23 @@ function bindConnectorLinks(): void {
     }
     const login = target.closest('[data-role="connector-login"]') as HTMLButtonElement | null;
     if (login) {
+      const idleLabel = login.textContent ?? '';
       login.disabled = true;
+      login.setAttribute('aria-busy', 'true');
       login.textContent = 'Opening sign-in…';
       const id = login.dataset.connectorId;
-      if (id) await window.aw.connectorLogin(id);
+      try {
+        if (id) await window.aw.connectorLogin(id);
+      } catch {
+        // A rejected or cancelled sign-in just puts the button back; the
+        // snapshot's own error text still explains what is missing.
+      } finally {
+        // The quota push usually re-renders this button anyway; if it does
+        // not (cancelled, window closed), the old one must not stay stuck.
+        login.disabled = false;
+        login.removeAttribute('aria-busy');
+        login.textContent = idleLabel;
+      }
     }
   });
 }
@@ -875,14 +893,14 @@ function renderConnectorDetail(def: ConnectorMetadata): HTMLElement {
           <input type="number" min="0" max="1440" class="control control-num" id="pollOverride-${escapeHtml(def.id)}" data-role="poll-override" />
         </div>
         <div class="detail-actions">
-          <button type="button" class="btn btn-secondary" data-role="refresh-quota">Refresh now</button>
+          <button type="button" class="btn btn-secondary" data-role="refresh-quota">${REFRESH_ICON}<span class="btn-label">Refresh now</span></button>
         </div>
       </section>
       <section class="detail-section" data-section="meters" aria-labelledby="metersTitle-${escapeHtml(def.id)}">
         <div class="detail-section-head">
           <h3 class="overline" id="metersTitle-${escapeHtml(def.id)}">Meters</h3>
         </div>
-        <p class="detail-help">Choose which meters show, star up to ${MAX_STARRED_PER_CONNECTOR} for the menu bar / tray tooltip, and reorder them.</p>
+        <p class="detail-help">Choose which meters show, star up to ${MAX_STARRED_PER_CONNECTOR} for the ${trayTargetWord(initial.platform)}, and reorder them.</p>
         <div data-role="meters-list"></div>
       </section>`
     : '';
@@ -910,7 +928,7 @@ function renderConnectorDetail(def: ConnectorMetadata): HTMLElement {
 
     const refresh = root.querySelector('[data-role="refresh-quota"]') as HTMLButtonElement;
     refresh.addEventListener('click', async () => {
-      refresh.disabled = true;
+      setButtonBusy(refresh, true);
       try {
         const snap = (await window.aw.refreshQuota(def.id)) as QuotaSnapshot;
         if (snap) {
@@ -919,7 +937,7 @@ function renderConnectorDetail(def: ConnectorMetadata): HTMLElement {
           renderDrawerMeters();
         }
       } finally {
-        refresh.disabled = false;
+        setButtonBusy(refresh, false);
       }
     });
     const poll = root.querySelector('[data-role="poll-override"]') as HTMLInputElement;
@@ -1121,7 +1139,7 @@ function loginButtonFor(q: QuotaSnapshot, def?: ConnectorMetadata): string {
 
 function renderQuotaSnapshot(q: QuotaSnapshot | undefined, def?: ConnectorMetadata): string {
   if (!q) {
-    return '<p class="row-note">No data yet. Use <em>Refresh now</em>.</p>';
+    return `<p class="row-note">${WAITING_FOR_REFRESH}</p>`;
   }
   if (!q.ok && q.appNotRunning) {
     return `
@@ -1140,8 +1158,8 @@ function renderQuotaSnapshot(q: QuotaSnapshot | undefined, def?: ConnectorMetada
   const buckets =
     q.buckets.length > 0
       ? renderMeterGroup(withBillingCycleReset(q.buckets, q.billingCycleEnd, q.billingCycleStart), bucketPrefs, { connectorId: def?.id }) ||
-        '<p class="row-note">No usage buckets returned.</p>'
-      : '<p class="row-note">No usage buckets returned.</p>';
+        `<p class="row-note">${NO_USAGE_REPORTED}</p>`
+      : `<p class="row-note">${NO_USAGE_REPORTED}</p>`;
   const messages =
     q.displayMessages.length > 0
       ? `<ul class="quota-messages">${q.displayMessages.map(m => `<li>${escapeHtml(m)}</li>`).join('')}</ul>`
@@ -1161,7 +1179,7 @@ function renderQuotaSnapshot(q: QuotaSnapshot | undefined, def?: ConnectorMetada
 function renderEventItem(e: RecentEvent, now: number): string {
   const kind: EventKind = e.kind === 'finished' ? 'finished' : 'waiting';
   const source = e.source
-    ? `<span class="event-source" title="${escapeHtml(e.source)}"><bdi>${escapeHtml(e.source)}</bdi></span>`
+    ? `<span class="event-source" title="${escapeHtml(e.source)}"><bdi>${escapeHtml(eventSourceLabel(e.source))}</bdi></span>`
     : '';
   return `
     <li class="event-row">
@@ -1183,7 +1201,7 @@ function renderEvents(events: RecentEvent[]): void {
   const empty = $('#eventsEmpty');
   list.innerHTML = events.map(e => renderEventItem(e, now)).join('');
   list.hidden = events.length === 0;
-  empty.classList.toggle('hidden', events.length > 0);
+  empty.hidden = events.length > 0;
 
   const recent = events.slice(0, 5);
   const overview = $('#overviewEvents');

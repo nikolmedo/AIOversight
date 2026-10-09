@@ -174,6 +174,108 @@ describe('renderMeterRow', () => {
     const html = renderMeterRow(bucket({ resetsAt: NOW + H }), undefined, { now: NOW, connectorId: 'c' });
     assert.match(html, /data-chip-key="c:b"/);
   });
+
+  it('names the unit once: USD and percent carry their own, other units get a word', () => {
+    const usd = renderMeterRow(bucket({ unit: 'usd', used: 1520, limit: 2000, remaining: 480 }), undefined, { now: NOW });
+    assert.match(usd, />\$15\.20 \/ \$20\.00 · \$4\.80 remaining</);
+    const usdNoLimit = renderMeterRow(bucket({ unit: 'usd', used: 1520, limit: null, remaining: null }), undefined, { now: NOW });
+    assert.match(usdNoLimit, />\$15\.20 used</);
+    const pct = renderMeterRow(bucket({ unit: 'percent', used: 12, limit: 50, remaining: null }), undefined, { now: NOW });
+    assert.match(pct, />12% \/ 50%</);
+    assert.ok(!/percent/.test(pct.replace(/data-[a-z-]+="[^"]*"/g, '')));
+    const reqs = renderMeterRow(bucket({ unit: 'requests', used: 327, limit: 20000, remaining: null }), undefined, { now: NOW });
+    // Plain numbers use the host locale's separators.
+    assert.match(reqs, />327 \/ 20[.,\s ]?000 requests</);
+  });
+
+  it('puts the reset chip in the header for every kind of bucket', () => {
+    for (const b of [bucket({ unit: 'percent', limit: 100, resetsAt: NOW + H }), bucket({ unit: 'requests', resetsAt: NOW + H })]) {
+      const html = renderMeterRow(b, undefined, { now: NOW });
+      const chip = html.indexOf('class="reset-chip"');
+      assert.ok(chip > html.indexOf('meter-row-side'), 'chip sits in the header side');
+      assert.ok(chip < html.indexOf('meter-bar"'), 'chip comes before the bar');
+      assert.equal(html.split('class="reset-chip"').length - 1, 1);
+    }
+  });
+
+  it('gives menu-targetable rows a name and a visible more-actions button', () => {
+    const html = renderMeterRow(bucket({ label: 'Session' }), undefined, { now: NOW, connectorId: 'c' });
+    assert.match(html, /tabindex="0" role="group" aria-label="Session"/);
+    assert.match(html, /<button type="button" class="row-menu-btn" aria-haspopup="menu" aria-label="More actions for Session"/);
+    const plain = renderMeterRow(bucket(), undefined, { now: NOW });
+    assert.ok(!plain.includes('row-menu-btn') && !plain.includes('role="group"'));
+  });
+});
+
+describe('renderTotalSpendCard', () => {
+  const { renderTotalSpendCard } = loadView();
+  const defs = [{ id: 'a', name: 'A', reportsSpend: true }];
+  const tile = (period: string, costCents: number | null, tokens: number | null) => ({ period, label: period, costCents, tokens });
+
+  it('collapses to one line when nothing was measured in any period', () => {
+    const snaps = { a: okSnap([], { spend: [tile('today', null, null), tile('yesterday', null, null), tile('last30d', null, null)] }) };
+    const html = renderTotalSpendCard(snaps, defs);
+    assert.match(html, /^<p class="spend-empty" data-role="total-spend-card">No spend estimates yet\./);
+    assert.ok(!html.includes('spend-switch'));
+  });
+
+  it('keeps the card when any period has data, with sentence-case labels', () => {
+    const snaps = { a: okSnap([], { spend: [tile('today', null, null), tile('yesterday', 250, 10), tile('last30d', null, null)] }) };
+    const html = renderTotalSpendCard(snaps, defs);
+    assert.match(html, /Total spend</);
+    assert.match(html, />30 days</);
+  });
+});
+
+describe('renderProviderBlock copy', () => {
+  const { renderProviderBlock } = loadView();
+  const def = { id: 'c', name: 'Claude', quotaEnabled: true };
+
+  it('renders the provider name as a heading', () => {
+    assert.match(renderProviderBlock(def, okSnap([bucket()]), undefined, { now: NOW }), /<h2 class="provider-name">Claude<\/h2>/);
+  });
+
+  it('uses one phrasing for waiting, empty and the error action', () => {
+    assert.match(renderProviderBlock(def, undefined, undefined, { now: NOW }), /Waiting for the first refresh\./);
+    assert.match(renderProviderBlock(def, okSnap([]), undefined, { now: NOW }), /No usage reported yet\./);
+    const err = renderProviderBlock(def, { ok: false, fetchedAt: NOW, error: 'a very long error message' }, undefined, { now: NOW });
+    assert.match(err, /data-role="open-settings">Configure</);
+    assert.match(err, /title="a very long error message"/);
+  });
+});
+
+describe('setButtonBusy', () => {
+  const { setButtonBusy } = loadView();
+
+  function fakeButton(): any {
+    const attrs = new Map<string, string>();
+    const classes = new Set<string>();
+    const label = { textContent: 'Refresh' };
+    return {
+      disabled: false,
+      dataset: {} as Record<string, string>,
+      label,
+      setAttribute: (k: string, v: string) => attrs.set(k, v),
+      removeAttribute: (k: string) => attrs.delete(k),
+      getAttribute: (k: string) => attrs.get(k),
+      classList: { toggle: (c: string, on: boolean) => (on ? classes.add(c) : classes.delete(c)), contains: (c: string) => classes.has(c) },
+      querySelector: () => label,
+    };
+  }
+
+  it('marks the button busy, relabels it and restores everything afterwards', () => {
+    const btn = fakeButton();
+    setButtonBusy(btn, true);
+    assert.equal(btn.disabled, true);
+    assert.equal(btn.getAttribute('aria-busy'), 'true');
+    assert.ok(btn.classList.contains('is-busy'));
+    assert.equal(btn.label.textContent, 'Refreshing…');
+    setButtonBusy(btn, false);
+    assert.equal(btn.disabled, false);
+    assert.equal(btn.getAttribute('aria-busy'), undefined);
+    assert.ok(!btn.classList.contains('is-busy'));
+    assert.equal(btn.label.textContent, 'Refresh');
+  });
 });
 
 describe('planTrayPopup', () => {
@@ -228,7 +330,7 @@ describe('renderProviderBlock freshness', () => {
     const fresh = renderProviderBlock(def, { ...okSnap([]), fetchedAt: NOW - 5 * 60_000 }, undefined, { now: NOW, pollIntervalMs: 5 * 60_000 });
     assert.match(fresh, /class="provider-updated" data-fetched-at="\d+" data-interval-ms="300000"[^>]*>5m ago</);
     const stale = renderProviderBlock(def, { ...okSnap([]), fetchedAt: NOW - 11 * 60_000 }, undefined, { now: NOW, pollIntervalMs: 5 * 60_000 });
-    assert.match(stale, /class="provider-updated stale"[^>]*>11m ago<span class="sr-only">, out of date<\/span>/);
+    assert.match(stale, /class="provider-updated stale"[^>]*>11m ago · stale</);
   });
 
   it('shows no age label on an error snapshot', () => {

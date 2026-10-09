@@ -10,7 +10,10 @@
  *   - ok / warn / danger on their -soft pill background, composited over surface
  *   - accent on accent-soft, composited over surface
  * and the categorical palette (cat-1..cat-N: donut arcs and legend dots,
- * graphical objects under WCAG 1.4.11) against surface at 3:1.
+ * graphical objects under WCAG 1.4.11) against surface at 3:1, plus the UI
+ * component pairs at 3:1: control-border on bg / surface / surface-2 (off
+ * switch, meter track outline) and accent-solid / ok / warn / danger fills
+ * on surface.
  *
  * Usage: node scripts/check-contrast.js
  * Exit code 1 if any pair fails. Dependency-free.
@@ -91,7 +94,16 @@ function checkTheme(name, t) {
     const softBg = composite(parseColor(t[`${s}-soft`]), surface);
     add(`${s} on ${s}-soft over surface`, solid(s), softBg);
   }
-  const catKeys = Object.keys(t).filter(k => /^cat-\d+$/.test(k));
+  // UI components (WCAG 1.4.11): the outline of an off switch / meter track
+  // must stand out from every surface it sits on, and so must the fill of a
+  // checked switch and the meter fills.
+  for (const bg of ['bg', 'surface', 'surface-2']) {
+    add(`control-border on ${bg} (UI component)`, solid('control-border'), solid(bg), MIN_GRAPHIC_RATIO);
+  }
+  for (const fg of ['accent-solid', 'ok', 'warn', 'danger']) {
+    add(`${fg} on surface (UI component)`, solid(fg), surface, MIN_GRAPHIC_RATIO);
+  }
+  const catKeys =Object.keys(t).filter(k => /^cat-\d+$/.test(k));
   if (catKeys.length === 0) throw new Error(`No --cat-N palette tokens in ${name} theme`);
   for (const k of catKeys) add(`${k} on surface (graphic)`, solid(k), surface, MIN_GRAPHIC_RATIO);
 

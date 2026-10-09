@@ -658,8 +658,8 @@ function testQuotaView() {
         JSON.stringify(loadingPlan.visible.map(d => d.id)) === JSON.stringify(['loading']) && loadingPlan.emptyMessage === null,
         JSON.stringify(loadingPlan));
   const loadingHtml = sandbox.renderProviderBlock(loadingDef, undefined);
-  check('renderProviderBlock: no snapshot yet -> "Not loaded yet." note is reachable',
-        loadingHtml.includes('Not loaded yet.'), loadingHtml);
+  check('renderProviderBlock: no snapshot yet -> "Waiting for the first refresh." note is reachable',
+        loadingHtml.includes('Waiting for the first refresh.'), loadingHtml);
 
   const noticeHtml = sandbox.renderAppNotRunningNotice('Open <App> to see its quota.', '<button>Configure</button>');
   check('renderAppNotRunningNotice: neutral notice markup with info icon, escaped text and trailing actions',

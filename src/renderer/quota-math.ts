@@ -11,13 +11,33 @@
 /** `null` -> "No data". `'usd'` is integer cents. `'tokens'` uses a compact 1.2M/340k style. */
 function formatQuotaValue(n: number | null, unit: QuotaUnit): string {
   if (n == null) return 'No data';
-  // Preserves the old formatQuotaNumber('usd') convention exactly: 'usd' is
-  // integer cents. 'credits'/'requests' fall through to toLocaleString(), same
-  // as before.
-  if (unit === 'usd') return `$${(n / 100).toFixed(2)}`;
+  // 'usd' is integer cents. 'credits'/'requests' fall through to
+  // toLocaleString().
+  if (unit === 'usd') return formatUsd(n);
   if (unit === 'tokens') return formatTokens(n);
   if (unit === 'percent') return `${Math.round(n)}%`;
   return n.toLocaleString();
+}
+
+const usdFormatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+
+/** Integer cents as "$1,234.50". Fixed en-US so the symbol and separators match the English UI copy. */
+function formatUsd(cents: number): string {
+  return usdFormatter.format(cents / 100);
+}
+
+/**
+ * Word that follows a formatted value when the value does not name its own
+ * unit: "327 / 20,000 requests". USD ("$15.20") and percent ("12%") render
+ * their unit inside the value, so they take no suffix.
+ */
+function unitSuffix(unit: QuotaUnit): string {
+  return unit === 'usd' || unit === 'percent' ? '' : ` ${unit}`;
+}
+
+/** Where a starred bucket's line shows up: macOS has a menu bar, Windows and Linux only a tray tooltip. */
+function trayTargetWord(platform: string): string {
+  return platform === 'darwin' ? 'menu bar' : 'tray tooltip';
 }
 
 /** Compact token formatter: 1.2M / 340k / 950 style. */
@@ -248,6 +268,21 @@ function formatRelativeTime(ts: number, now: number): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+/**
+ * Short label for an Activity event's transcript path: the project folder, not
+ * the whole path. A transcript sits in `<project>/<session>.jsonl`; a
+ * subagent's in `<project>/<session>/subagents/<agent>.jsonl`, whose parent
+ * folder says nothing, so those resolve to `<project>`. Falls back to the
+ * input for anything without a folder.
+ */
+function eventSourceLabel(source: string): string {
+  const parts = source.split(/[\\/]+/).filter(Boolean);
+  if (parts.length < 2) return source;
+  const subagentIdx = parts.lastIndexOf('subagents');
+  if (subagentIdx >= 2 && subagentIdx === parts.length - 2) return parts[subagentIdx - 2];
+  return parts[parts.length - 2];
+}
+
 /** Footer label for the tray popup: "Updated just now", "Updated 42s ago",
  * then `formatRelativeTime`'s coarse steps ("Updated 3m ago"). A timestamp in
  * the future (clock skew) reads as "just now". */
@@ -258,23 +293,39 @@ function formatUpdatedAgo(ts: number, now: number): string {
   return `Updated ${formatRelativeTime(ts, now)}`;
 }
 
-type ConnectorStatus = 'off' | 'active' | 'error' | 'needs-login' | 'app-not-running';
+type ConnectorStatus = 'off' | 'active' | 'error' | 'needs-login' | 'needs-setup' | 'app-not-running';
 
 /**
  * One status per connector for the Integrations list. A quota error only
  * counts while quota is enabled — a stale failed snapshot from before the
  * user switched quota off must not keep the row red.
+ *
+ * `missingSecret`: a quota secret field has no stored value. It only means
+ * "Needs setup" while quota is not working (no snapshot yet, or a failed
+ * one), because some keys have environment or file fallbacks and a working
+ * snapshot proves the connector is set up.
  */
 function connectorStatusFor(
   enabled: { notifications: boolean; quota: boolean } | undefined,
   snap: { ok: boolean; needsLogin?: boolean; appNotRunning?: boolean } | undefined,
+  missingSecret: boolean = false,
 ): ConnectorStatus {
   if (!enabled || (!enabled.notifications && !enabled.quota)) return 'off';
   if (enabled.quota && snap && !snap.ok) {
     if (snap.appNotRunning) return 'app-not-running';
-    return snap.needsLogin ? 'needs-login' : 'error';
+    if (snap.needsLogin) return 'needs-login';
+    return missingSecret ? 'needs-setup' : 'error';
   }
+  if (enabled.quota && !snap && missingSecret) return 'needs-setup';
   return 'active';
+}
+
+/** True when a quota-section secret field of `def` has no stored value. */
+function hasMissingQuotaSecret(def: ConnectorMetadata | undefined): boolean {
+  if (!def) return false;
+  return def.configSchema.some(
+    f => f.type === 'secret' && (f.section ?? 'general') !== 'notifications' && !def.setSecretKeys?.includes(f.key),
+  );
 }
 
 /** A snapshot that stands for "the connector's desktop app is closed" (see `appNotRunning` in types.ts). */

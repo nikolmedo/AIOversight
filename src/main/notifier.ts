@@ -1,6 +1,6 @@
 import { Notification, shell } from 'electron';
 import { AgentEvent, EventKind } from './connectors/types';
-import { QuietHours, SettingsStore } from './settings-store';
+import { QuietHours, RecentEventRecord, SettingsStore } from './settings-store';
 
 export type NotifyResult =
   | { shown: true }
@@ -37,7 +37,12 @@ export class Notifier {
     private readonly log: Logger = () => {},
   ) {}
 
-  handle(event: AgentEvent): NotifyResult {
+  /**
+   * `onRecord` receives the record stored in the recent-events list (not
+   * called when the cooldown drops the event), so a UI push mirrors exactly
+   * what a reload would show.
+   */
+  handle(event: AgentEvent, onRecord?: (record: RecentEventRecord) => void): NotifyResult {
     const cfg = this.settings.get();
     const cooldownKey = `${event.sessionId}::${event.kind}`;
 
@@ -53,14 +58,16 @@ export class Notifier {
     }
     this.recent.set(cooldownKey, event.detectedAt);
 
-    this.settings.pushEvent({
+    const record: RecentEventRecord = {
       ts: event.detectedAt,
       agent: event.agent,
       sessionId: event.sessionId,
       message: event.message,
       kind: event.kind,
       source: event.source,
-    });
+    };
+    this.settings.pushEvent(record);
+    onRecord?.(record);
 
     if (!cfg.showNotifications) {
       this.log('info', '[notifier] suppressed (notifications disabled in settings)');
