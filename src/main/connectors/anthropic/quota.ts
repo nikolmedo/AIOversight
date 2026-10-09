@@ -1,9 +1,18 @@
 import { ConnectorContext, QuotaBucket, QuotaProvider, QuotaSnapshot } from '../types';
 import { readChromiumCookie } from '../shared/chromium-cookies';
+import { parseClaudeUsage } from '../claude-code/quota';
 
 const ADMIN_USAGE_URL = 'https://api.anthropic.com/v1/organizations/usage_report/messages';
 const ADMIN_COST_URL = 'https://api.anthropic.com/v1/organizations/cost_report';
 const CLAUDE_AI_USAGE_URL = 'https://claude.ai/api/organizations';
+const ADMIN_KEYS_URL = 'platform.claude.com/settings/admin-keys';
+
+/** Both reports default to 7 daily buckets per page; 31 (their maximum)
+ * covers a whole calendar month in one request. */
+const PAGE_LIMIT = 31;
+/** A month fits on one page, so more than a few pages means the cursor is
+ * not advancing; stop rather than poll in a loop. */
+const MAX_PAGES = 5;
 
 /** Fallback when a 429 arrives with no usable `Retry-After`. */
 const DEFAULT_RETRY_AFTER_MS = 60_000;
@@ -132,6 +141,15 @@ class RateLimitedError extends Error {
   }
 }
 
+/** No claude.ai session to try: the expected state for an unconfigured
+ * connector, as opposed to a session whose usage request failed. */
+class NoCookieError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NoCookieError';
+  }
+}
+
 function startOfMonthIso(): string {
   const d = new Date();
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).toISOString();
@@ -159,65 +177,107 @@ class AnthropicQuotaProvider implements QuotaProvider {
       }
     }
 
+    let cookieFailure: string | null = null;
     try {
       return await this.fetchWithCookie(fetchedAt);
     } catch (err) {
       if (err instanceof RateLimitedError) return rateLimitedSnapshot(fetchedAt, err);
+      if (!(err instanceof NoCookieError)) cookieFailure = String(err);
       failures.push(`claude.ai cookie: ${String(err)}`);
     }
 
-    return {
-      ok: false,
-      fetchedAt,
-      error: adminKey
-        ? `Could not fetch Anthropic usage (${failures.join('; ')}).`
-        : 'No Anthropic admin API key set. Paste an `sk-ant-admin01-…` key in the Anthropic Quota section, or sign in at claude.ai in a browser.',
-    };
+    let error: string;
+    if (adminKey) {
+      error = `Could not fetch Anthropic usage (${failures.join('; ')}).`;
+    } else if (cookieFailure) {
+      error = `Could not read claude.ai usage (${cookieFailure}). An organization admin API key (sk-ant-admin01-…) from ${ADMIN_KEYS_URL} works instead.`;
+    } else {
+      error = `No Anthropic admin API key set. Paste an organization admin key (sk-ant-admin01-…) from ${ADMIN_KEYS_URL} in the Anthropic Quota section, or sign in at claude.ai in the Claude desktop app.`;
+    }
+    return { ok: false, fetchedAt, error };
+  }
+
+  /**
+   * Fetches every page of an Admin API report (`has_more` / `next_page`,
+   * passed back as `page`) and returns the concatenated time buckets. A 429
+   * on any page means "stop asking"; any other error status throws, so a
+   * caller never sums a partial period by accident.
+   */
+  private async fetchAllPages(
+    baseUrl: string,
+    headers: Record<string, string>,
+    label: string,
+  ): Promise<Array<Record<string, unknown>>> {
+    const buckets: Array<Record<string, unknown>> = [];
+    let page: string | null = null;
+    for (let i = 0; i < MAX_PAGES; i++) {
+      const url: string = page ? `${baseUrl}&page=${encodeURIComponent(page)}` : baseUrl;
+      const resp = await httpsGetJson(url, headers);
+      if (resp.status === 429) {
+        throw new RateLimitedError(
+          resp.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS,
+          `Anthropic rate-limited the ${label} (HTTP 429)`,
+        );
+      }
+      if (resp.status === 401) {
+        throw new Error(
+          `HTTP 401 — the admin API key is invalid, expired or revoked. Create a new one at ${ADMIN_KEYS_URL}.`,
+        );
+      }
+      if (resp.status === 403) {
+        throw new Error(
+          `HTTP 403 — this key cannot read usage. It must be an organization admin key (sk-ant-admin01-…) from ${ADMIN_KEYS_URL}.`,
+        );
+      }
+      if (resp.status >= 400) throw new Error(`HTTP ${resp.status}`);
+
+      const json = (resp.json ?? {}) as Record<string, unknown>;
+      if (Array.isArray(json.data)) buckets.push(...(json.data as Array<Record<string, unknown>>));
+      if (json.has_more !== true || typeof json.next_page !== 'string' || !json.next_page) {
+        return buckets;
+      }
+      page = json.next_page;
+    }
+    this.ctx.log('warn', `[anthropic] ${label} still had more pages after ${MAX_PAGES}; totals are partial`);
+    return buckets;
   }
 
   private async fetchWithAdminKey(adminKey: string, fetchedAt: number): Promise<QuotaSnapshot> {
     const start = startOfMonthIso();
     const end = nextMonthIso();
-    const usageUrl = `${ADMIN_USAGE_URL}?starting_at=${encodeURIComponent(start)}&ending_at=${encodeURIComponent(end)}&bucket_width=1d&group_by[]=model`;
+    const range = `starting_at=${encodeURIComponent(start)}&ending_at=${encodeURIComponent(end)}&bucket_width=1d&limit=${PAGE_LIMIT}`;
     const headers = {
       'x-api-key': adminKey,
       'anthropic-version': '2023-06-01',
       Accept: 'application/json',
       'User-Agent': userAgent(),
     };
-    const usageResp = await httpsGetJson(usageUrl, headers);
-    if (usageResp.status === 429) {
-      throw new RateLimitedError(
-        usageResp.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS,
-        'Anthropic rate-limited the usage report (HTTP 429)',
-      );
-    }
-    if (usageResp.status >= 400) {
-      throw new Error(`HTTP ${usageResp.status}`);
-    }
-    const buckets = parseAdminUsage(usageResp.json as Record<string, unknown>);
+    const usageData = await this.fetchAllPages(
+      `${ADMIN_USAGE_URL}?${range}&group_by[]=model`,
+      headers,
+      'usage report',
+    );
+    const buckets = parseAdminUsage(usageData);
 
-    // Cost report — optional; failure here is not fatal.
+    // Cost report — optional; any failure (a 429 included) only drops the
+    // spend bucket, so the usage numbers above still reach the user.
     let usdBucket: QuotaBucket | null = null;
     try {
-      const costUrl = `${ADMIN_COST_URL}?starting_at=${encodeURIComponent(start)}&ending_at=${encodeURIComponent(end)}&bucket_width=1d`;
-      const costResp = await httpsGetJson(costUrl, headers);
-      if (costResp.status < 400) {
-        const totalCents = parseAdminCosts(costResp.json as Record<string, unknown>);
-        if (totalCents != null) {
-          usdBucket = {
-            id: 'spend-this-period',
-            label: 'Spend this period',
-            used: totalCents,
-            limit: null,
-            remaining: null,
-            unit: 'usd',
-            enabled: true,
-          };
-        }
+      const costData = await this.fetchAllPages(`${ADMIN_COST_URL}?${range}`, headers, 'cost report');
+      const totalCents = parseAdminCosts(costData);
+      if (totalCents != null) {
+        usdBucket = {
+          id: 'spend-this-period',
+          label: 'Spend this period',
+          used: totalCents,
+          limit: null,
+          remaining: null,
+          unit: 'usd',
+          enabled: true,
+        };
       }
-    } catch {
-      // optional
+    } catch (err) {
+      this.ctx.log('warn', '[anthropic] cost report unavailable', { err: String(err) });
     }
 
     const allBuckets = usdBucket ? [usdBucket, ...buckets] : buckets;
@@ -243,7 +303,7 @@ class AnthropicQuotaProvider implements QuotaProvider {
       { cookieName: 'sessionKey', hostPatterns: ['%claude.ai%', '%anthropic.com%'] },
     );
     if (!sessionKey) {
-      throw new Error('No claude.ai sessionKey cookie found');
+      throw new NoCookieError('No claude.ai sessionKey cookie found');
     }
 
     // Step 1: list organizations to find the one we belong to.
@@ -283,13 +343,18 @@ class AnthropicQuotaProvider implements QuotaProvider {
       throw new Error(`Usage HTTP ${usageResp.status}`);
     }
 
-    const buckets = parseClaudeAiUsage(usageResp.json as Record<string, unknown>);
+    // Same undocumented endpoint the Claude Code connector reads, so its
+    // parser (`limits[]`, then the `five_hour` / `seven_day` windows) is reused.
+    const { buckets, displayMessages } = parseClaudeUsage(usageResp.json, fetchedAt);
+    if (buckets.length === 0) {
+      throw new Error('claude.ai usage had no recognizable limits');
+    }
     return {
       ok: true,
       fetchedAt,
       buckets,
       membershipType: org.name ?? 'claude.ai',
-      displayMessages: [],
+      displayMessages,
       authMethod: 'cookie',
       source: `${CLAUDE_AI_USAGE_URL}/${org.uuid}/usage`,
     };
@@ -298,7 +363,7 @@ class AnthropicQuotaProvider implements QuotaProvider {
 
 /** `Number('')` is `0` and `Number('x')` is `NaN`, so a value that is present
  * but not a real number must be rejected rather than coerced — an empty
- * `amount.value` would otherwise report an authoritative $0.00 for a period
+ * cost `amount` would otherwise report an authoritative $0.00 for a period
  * whose spend is simply unknown. */
 function finiteNumber(v: unknown): number | null {
   if (v == null) return null;
@@ -307,9 +372,21 @@ function finiteNumber(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function parseAdminUsage(json: Record<string, unknown>): QuotaBucket[] {
+/** Cache writes are split by TTL under `cache_creation`; the flat
+ * `cache_creation_input_tokens` is the older shape, kept as a fallback. */
+function cacheWriteTokens(r: Record<string, unknown>): number {
+  const nested = r.cache_creation;
+  if (nested != null && typeof nested === 'object') {
+    const c = nested as Record<string, unknown>;
+    return (
+      (finiteNumber(c.ephemeral_5m_input_tokens) ?? 0) + (finiteNumber(c.ephemeral_1h_input_tokens) ?? 0)
+    );
+  }
+  return finiteNumber(r.cache_creation_input_tokens) ?? 0;
+}
+
+function parseAdminUsage(data: Array<Record<string, unknown>>): QuotaBucket[] {
   // Sum input + output tokens across the period.
-  const data = (json.data ?? []) as Array<Record<string, unknown>>;
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheRead = 0;
@@ -320,7 +397,7 @@ function parseAdminUsage(json: Record<string, unknown>): QuotaBucket[] {
       inputTokens += finiteNumber(r.uncached_input_tokens ?? r.input_tokens) ?? 0;
       outputTokens += finiteNumber(r.output_tokens) ?? 0;
       cacheRead += finiteNumber(r.cache_read_input_tokens) ?? 0;
-      cacheWrite += finiteNumber(r.cache_creation_input_tokens) ?? 0;
+      cacheWrite += cacheWriteTokens(r);
     }
   }
   const buckets: QuotaBucket[] = [];
@@ -331,49 +408,28 @@ function parseAdminUsage(json: Record<string, unknown>): QuotaBucket[] {
   return buckets;
 }
 
-function parseAdminCosts(json: Record<string, unknown>): number | null {
-  const data = (json.data ?? []) as Array<Record<string, unknown>>;
+/**
+ * `amount` is a decimal string already in cents ("123.45" USD is $1.23), so
+ * it is summed as-is and rounded once at the end to keep sub-cent precision.
+ * The docs say `currency` is currently always USD; anything else is skipped
+ * because the 'usd' unit would mislabel it.
+ */
+function parseAdminCosts(data: Array<Record<string, unknown>>): number | null {
   let totalCents = 0;
   let any = false;
   for (const day of data) {
     const results = (day.results ?? []) as Array<Record<string, unknown>>;
     for (const r of results) {
-      const value = finiteNumber((r.amount as { value?: unknown } | undefined)?.value);
-      if (value != null) {
-        totalCents += Math.round(value * 100);
+      const currency = r.currency;
+      if (currency != null && String(currency).toUpperCase() !== 'USD') continue;
+      const cents = finiteNumber(r.amount);
+      if (cents != null) {
+        totalCents += cents;
         any = true;
       }
     }
   }
-  return any ? totalCents : null;
-}
-
-function parseClaudeAiUsage(json: Record<string, unknown>): QuotaBucket[] {
-  // claude.ai's web usage endpoint isn't documented; we surface whatever
-  // numeric counters we can recognise and skip the rest.
-  const buckets: QuotaBucket[] = [];
-  for (const [key, raw] of Object.entries(json)) {
-    if (raw == null || typeof raw !== 'object') continue;
-    const m = raw as Record<string, unknown>;
-    const used = Number(m.used ?? m.count ?? m.requests ?? NaN);
-    const limit = m.limit != null ? Number(m.limit) : m.max != null ? Number(m.max) : null;
-    if (Number.isFinite(used)) {
-      buckets.push({
-        id: key,
-        label: humanise(key),
-        used,
-        limit: limit != null && Number.isFinite(limit) ? limit : null,
-        remaining: limit != null && Number.isFinite(limit) ? Math.max(0, limit - used) : null,
-        unit: 'requests',
-        enabled: true,
-      });
-    }
-  }
-  return buckets;
-}
-
-function humanise(key: string): string {
-  return key.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  return any ? Math.round(totalCents) : null;
 }
 
 function bucket(id: string, label: string, used: number): QuotaBucket {

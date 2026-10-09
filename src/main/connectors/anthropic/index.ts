@@ -17,7 +17,7 @@ const AnthropicConnector: Connector = {
       requiresEnabled: 'quota',
       default: '',
       help:
-        'Create one at console.anthropic.com/settings/admin-keys. Stays encrypted on this machine.',
+        'Organization admins create one at platform.claude.com/settings/admin-keys (not available on individual accounts). Admin keys can expire; paste a new one when it does. Stays encrypted on this machine.',
     },
   ],
   quota: {
