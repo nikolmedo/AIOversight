@@ -17,7 +17,7 @@
 .meter-pct { font-size: 12px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
 .meter-pct.warn { color: var(--warn); }
 .meter-pct.critical { color: var(--danger); }
-.meter-bar { position: relative; height: 4px; border-radius: 999px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border); }
+.meter-bar { position: relative; height: 4px; border-radius: 999px; background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--control-border); }
 .meter-bar-fill {
   height: 100%; width: var(--fill, 0%); border-radius: 999px; background: var(--ok);
   transition: width var(--dur) var(--ease);
@@ -60,3 +60,24 @@
 .meter-row-compact-body .meter-row-header > .meter-row-title,
 .meter-row-compact-body .meter-row-side > .meter-pct { display: none; }
 .meter-row-compact-body .meter-row-header:not(:has(.reset-chip)) { display: none; }
+
+/* ⋯ button on each row: the discoverable twin of right-click / Shift+F10.
+   Hidden until the row is hovered or holds focus, so keyboard users reach it
+   with Tab and then see it. */
+.row-menu-btn {
+  align-self: center; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; margin: -2px -4px -2px 0; padding: 0;
+  border: 0; border-radius: var(--radius-sm); background: transparent;
+  color: var(--text-2); font-size: 14px; line-height: 1; cursor: pointer;
+  opacity: 0;
+}
+.meter-row:hover .row-menu-btn,
+.meter-row:focus-within .row-menu-btn,
+.row-menu-btn:focus-visible { opacity: 1; }
+.row-menu-btn:hover { background: var(--surface-2); color: var(--text); }
+
+/* Refresh buttons while a fetch runs (setButtonBusy). Both windows disable
+   all animation under prefers-reduced-motion; the label also changes. */
+.btn.is-busy svg { animation: spin 900ms linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }

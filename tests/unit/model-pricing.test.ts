@@ -4,6 +4,7 @@ import {
   MODEL_RATES,
   PRICING_VINTAGE,
   costCentsFor,
+  costCentsExact,
   rateFor,
 } from '../../src/main/connectors/shared/model-pricing';
 
@@ -60,8 +61,9 @@ describe('model-pricing: Anthropic version-keyed tiers', () => {
   });
 
   it('resolves an unknown future version to the newest tier of its family, never null or the retired one', () => {
-    assert.equal(rateFor('claude-opus-6'), rateFor('claude-opus-5'));
-    assert.equal(rateFor('claude-sonnet-7-3'), rateFor('claude-sonnet-5'));
+    assert.equal(rateFor('claude-opus-6'), rateFor('claude-opus-5-5'));
+    assert.equal(rateFor('claude-sonnet-7-3'), rateFor('claude-sonnet-5-5'));
+    assert.equal(rateFor('claude-haiku-6'), rateFor('claude-haiku-5-5'));
     assert.notEqual(rateFor('claude-opus-6')!.inputPerMTokUsd, 15);
   });
 
@@ -71,15 +73,173 @@ describe('model-pricing: Anthropic version-keyed tiers', () => {
   });
 
   it('falls back to the newest tier for a bare family name with no parseable version', () => {
-    assert.equal(rateFor('opus'), rateFor('claude-opus-5'));
-    assert.equal(rateFor('sonnet'), rateFor('claude-sonnet-5'));
-    assert.equal(rateFor('haiku'), rateFor('claude-haiku-4-5'));
+    assert.equal(rateFor('opus'), rateFor('claude-opus-5-5'));
+    assert.equal(rateFor('sonnet'), rateFor('claude-sonnet-5-5'));
+    assert.equal(rateFor('haiku'), rateFor('claude-haiku-5-5'));
   });
 
   it('declares no long-context surcharge on any Claude tier', () => {
-    for (const model of ['claude-opus-4-8', 'claude-sonnet-5', 'claude-haiku-4-5', 'claude-fable-5-1']) {
+    for (const model of [
+      'claude-opus-5-5', 'claude-opus-4-8', 'claude-sonnet-5-5', 'claude-sonnet-5',
+      'claude-haiku-5-5', 'claude-haiku-4-5', 'claude-fable-5-1',
+    ]) {
       assert.equal(rateFor(model)!.longContextThresholdTokens, undefined, model);
     }
+  });
+});
+
+describe('model-pricing: 2026-10 Claude tiers', () => {
+  it('prices Opus 5.5 at $4/$20 with its own cache rates', () => {
+    assertRate('claude-opus-5-5', 4, 20);
+    const rate = rateFor('claude-opus-5-5')!;
+    assert.equal(rate.cacheWritePerMTokUsd, 5);
+    assert.equal(rate.cacheWrite1hPerMTokUsd, 8);
+    assert.equal(rate.cacheReadPerMTokUsd, 0.2);
+    // A dated snapshot still lands on 5.5.
+    assertRate('claude-opus-5-5-20260922', 4, 20);
+  });
+
+  it('keeps Opus 4.5 through 5.0 at $5/$25/$6.25/$10/$0.50', () => {
+    for (const model of ['claude-opus-4-5', 'claude-opus-4-7', 'claude-opus-4-8', 'claude-opus-5']) {
+      const rate = rateFor(model)!;
+      assert.equal(rate.inputPerMTokUsd, 5, model);
+      assert.equal(rate.cacheWritePerMTokUsd, 6.25, model);
+      assert.equal(rate.cacheWrite1hPerMTokUsd, 10, model);
+      assert.equal(rate.cacheReadPerMTokUsd, 0.5, model);
+    }
+  });
+
+  it('prices Sonnet 5.5 cache reads at $0.10 while Sonnet 5 keeps $0.20', () => {
+    assertRate('claude-sonnet-5-5', 2, 10);
+    const rate = rateFor('claude-sonnet-5-5')!;
+    assert.equal(rate.cacheReadPerMTokUsd, 0.1);
+    assert.equal(rate.cacheWritePerMTokUsd, 2.5);
+    assert.equal(rate.cacheWrite1hPerMTokUsd, 4);
+    assert.equal(rateFor('claude-sonnet-5')!.cacheReadPerMTokUsd, 0.2);
+  });
+
+  it('prices Haiku 5.5 at $0.10/$0.50 and keeps Haiku 4.5 at $1/$5', () => {
+    assertRate('claude-haiku-5-5', 0.1, 0.5);
+    const rate = rateFor('claude-haiku-5-5')!;
+    assert.equal(rate.cacheWritePerMTokUsd, 0.125);
+    assert.equal(rate.cacheWrite1hPerMTokUsd, 0.2);
+    assert.equal(rate.cacheReadPerMTokUsd, 0.01);
+    assertRate('claude-haiku-4-5', 1, 5);
+  });
+
+  it('lists a 1h cache-write rate at 2x base input on every Claude tier', () => {
+    for (const model of [
+      'claude-opus-5-5', 'claude-opus-4-8', 'claude-opus-4-1', 'claude-sonnet-5-5', 'claude-sonnet-5',
+      'claude-sonnet-4-6', 'claude-haiku-5-5', 'claude-haiku-4-5', 'claude-haiku-4', 'claude-fable-5-1', 'claude-fable-5',
+    ]) {
+      const rate = rateFor(model)!;
+      assert.equal(rate.cacheWrite1hPerMTokUsd, rate.inputPerMTokUsd * 2, model);
+    }
+  });
+
+  it('applies fast mode at 2x on Opus 5.5, 5 and 4.8 but not on Opus 4.7 or older', () => {
+    for (const model of ['claude-opus-5-5', 'claude-opus-5', 'claude-opus-4-8']) {
+      assert.equal(rateFor(model)!.fastTierMultiplier, 2, model);
+    }
+    for (const model of ['claude-opus-4-7', 'claude-opus-4-6', 'claude-opus-4-5', 'claude-sonnet-5-5', 'claude-haiku-5-5']) {
+      assert.equal(rateFor(model)!.fastTierMultiplier, undefined, model);
+    }
+    const usage = { inputTokens: 1_000_000, outputTokens: 1_000_000 };
+    assert.equal(costCentsFor('claude-opus-5-5', usage), 2400);
+    assert.equal(costCentsFor('claude-opus-5-5', { ...usage, fastTier: true }), 4800);
+    assert.equal(costCentsFor('claude-opus-4-8', { ...usage, fastTier: true }), 6000);
+    assert.equal(costCentsFor('claude-opus-4-7', { ...usage, fastTier: true }), 3000);
+  });
+});
+
+describe('model-pricing: split 5m / 1h cache writes', () => {
+  it('bills 1h cache writes at the 1h rate and 5m writes at the 5m rate', () => {
+    const none = { inputTokens: 0, outputTokens: 0 };
+    assert.equal(costCentsFor('claude-opus-5-5', { ...none, cacheWriteTokens: 1_000_000 }), 500);
+    assert.equal(costCentsFor('claude-opus-5-5', { ...none, cacheWrite5mTokens: 1_000_000 }), 500);
+    assert.equal(costCentsFor('claude-opus-5-5', { ...none, cacheWrite1hTokens: 1_000_000 }), 800);
+    assert.equal(
+      costCentsFor('claude-opus-5-5', { ...none, cacheWrite5mTokens: 1_000_000, cacheWrite1hTokens: 1_000_000 }),
+      1300,
+    );
+  });
+
+  it('prefers cacheWrite5mTokens over the legacy cacheWriteTokens instead of adding both', () => {
+    // 2M @ $6.25 = 1250c; adding the legacy 1M too would give 1875c.
+    assert.equal(
+      costCentsFor('claude-opus-4-8', {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheWriteTokens: 1_000_000,
+        cacheWrite5mTokens: 2_000_000,
+      }),
+      1250,
+    );
+  });
+
+  it('falls back to the input rate for a 1h write on a rate with no cache-write price', () => {
+    // gpt-5.1 has no cache-write rate at all: 1M @ $1.25 input.
+    assert.equal(costCentsFor('gpt-5.1', { inputTokens: 0, outputTokens: 0, cacheWrite1hTokens: 1_000_000 }), 125);
+  });
+
+  it('returns null for a non-finite split cache-write count', () => {
+    assert.equal(costCentsFor('claude-opus-5-5', { inputTokens: 0, outputTokens: 0, cacheWrite1hTokens: Infinity }), null);
+    assert.equal(costCentsFor('claude-opus-5-5', { inputTokens: 0, outputTokens: 0, cacheWrite5mTokens: NaN }), null);
+  });
+});
+
+describe('model-pricing: Haiku 5.5 prompt-length tier', () => {
+  it('declares a 100,000-token prompt-only threshold at 5x', () => {
+    const rate = rateFor('claude-haiku-5-5')!;
+    assert.equal(rate.promptLengthThresholdTokens, 100_000);
+    assert.equal(rate.promptLengthMultiplier, 5);
+    assert.equal(rateFor('claude-haiku-4-5')!.promptLengthThresholdTokens, undefined);
+    assert.equal(rateFor('gpt-5.4')!.promptLengthThresholdTokens, undefined);
+  });
+
+  it('does not count output or reasoning tokens toward the threshold', () => {
+    // 100k input @ $0.10 = 1c, 1M output @ $0.50 = 50c. Exactly 100,000 is not "over".
+    assert.equal(costCentsFor('claude-haiku-5-5', { inputTokens: 100_000, outputTokens: 1_000_000 }), 51);
+    assert.equal(
+      costCentsFor('claude-haiku-5-5', { inputTokens: 100_000, outputTokens: 0, reasoningTokens: 1_000_000 }),
+      51,
+    );
+  });
+
+  it('charges every category at 5x once the prompt is over 100,000 tokens', () => {
+    // 100,001 input @ $0.50 = 5.00005c, 1M output @ $2.50 = 250c.
+    assert.equal(costCentsFor('claude-haiku-5-5', { inputTokens: 100_001, outputTokens: 1_000_000 }), 255);
+  });
+
+  it('counts cache reads and both cache-write durations as prompt', () => {
+    // 60k input + 50k cache read = 110k prompt: 60k @ $0.50 = 3c, 50k @ $0.05 = 0.25c.
+    assert.equal(costCentsFor('claude-haiku-5-5', { inputTokens: 60_000, outputTokens: 0, cacheReadTokens: 50_000 }), 3);
+    // 1M 1h write alone is over the threshold: 1M @ $1.00.
+    assert.equal(costCentsFor('claude-haiku-5-5', { inputTokens: 0, outputTokens: 0, cacheWrite1hTokens: 1_000_000 }), 100);
+    // 1M 5m write alone: 1M @ $0.625 = 62.5c.
+    assert.equal(costCentsFor('claude-haiku-5-5', { inputTokens: 0, outputTokens: 0, cacheWrite5mTokens: 1_000_000 }), 63);
+  });
+});
+
+describe('model-pricing: regression pins for unchanged models', () => {
+  it('keeps existing Claude results unchanged', () => {
+    const none = { inputTokens: 0, outputTokens: 0 };
+    const oneEach = { inputTokens: 1_000_000, outputTokens: 1_000_000 };
+    assert.equal(costCentsFor('claude-opus-5', oneEach), 3000);
+    assert.equal(costCentsFor('claude-opus-4-8', { ...none, cacheReadTokens: 1_000_000, cacheWriteTokens: 1_000_000 }), 675);
+    assert.equal(costCentsFor('claude-sonnet-5', { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 1_000_000 }), 220);
+    assert.equal(costCentsFor('claude-sonnet-4-6', { ...oneEach, cacheWriteTokens: 1_000_000 }), 2175);
+    assert.equal(costCentsFor('claude-haiku-4-5', { ...oneEach, cacheReadTokens: 1_000_000 }), 610);
+    assert.equal(costCentsFor('claude-fable-5-1', { ...oneEach, cacheReadTokens: 1_000_000 }), 6025);
+    assert.equal(costCentsFor('claude-fable-5', { ...none, cacheReadTokens: 1_000_000, cacheWriteTokens: 1_000_000 }), 1350);
+  });
+
+  it('keeps OpenAI long-context counting output toward the 272k threshold', () => {
+    // 200k input + 100k output = 300k > 272k: (50c + 150c) x2 = 400c.
+    assert.equal(costCentsFor('gpt-5.4', { inputTokens: 200_000, outputTokens: 100_000 }), 400);
+    // 250k total stays under: 50c + 75c.
+    assert.equal(costCentsFor('gpt-5.4', { inputTokens: 200_000, outputTokens: 50_000 }), 125);
+    assert.equal(costCentsFor('gpt-5.1-codex', { inputTokens: 1_000_000, outputTokens: 1_000_000, fastTier: true }), 2250);
   });
 });
 
@@ -154,7 +314,7 @@ describe('model-pricing: unknown models and cost math', () => {
   });
 
   it('declares the pricing vintage it was verified against', () => {
-    assert.equal(PRICING_VINTAGE, '2026-09');
+    assert.equal(PRICING_VINTAGE, '2026-10');
   });
 
   it('returns null rather than an Infinity cost for a non-finite token count', () => {
@@ -167,5 +327,21 @@ describe('model-pricing: unknown models and cost math', () => {
     );
     // An omitted optional still means zero, not unknown.
     assert.equal(costCentsFor('claude-opus-4-8', { inputTokens: 1_000_000, outputTokens: 0 }), 500);
+  });
+});
+
+describe('model-pricing: costCentsExact', () => {
+  const small = { inputTokens: 1_000, outputTokens: 0 };
+
+  it('keeps sub-cent precision that costCentsFor rounds away', () => {
+    const exact = costCentsExact('claude-opus-5-5', small);
+    assert.ok(exact != null && exact > 0 && exact < 1 && !Number.isInteger(exact));
+    assert.equal(costCentsFor('claude-opus-5-5', small), Math.round(exact!));
+  });
+
+  it('rounds to costCentsFor for whole-cent usage and returns null for an unpriced model', () => {
+    const usage = { inputTokens: 1_000_000, outputTokens: 0 };
+    assert.equal(Math.round(costCentsExact('claude-opus-5-5', usage)!), costCentsFor('claude-opus-5-5', usage));
+    assert.equal(costCentsExact('no-such-model', usage), null);
   });
 });

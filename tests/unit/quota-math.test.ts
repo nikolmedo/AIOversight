@@ -216,3 +216,100 @@ describe('freshnessFor', () => {
     assert.equal(freshnessFor(now - 5 * H, undefined, now).stale, false);
   });
 });
+
+describe('formatQuotaValue', () => {
+  const { formatQuotaValue, unitSuffix } = loadRenderer('quota-math.js');
+
+  it('formats USD cents as currency with thousands separators', () => {
+    assert.equal(formatQuotaValue(1520, 'usd'), '$15.20');
+    assert.equal(formatQuotaValue(123456789, 'usd'), '$1,234,567.89');
+    assert.equal(formatQuotaValue(0, 'usd'), '$0.00');
+  });
+
+  it('keeps the other units as before', () => {
+    assert.equal(formatQuotaValue(12.4, 'percent'), '12%');
+    assert.equal(formatQuotaValue(1_500_000, 'tokens'), '1.5M');
+    assert.equal(formatQuotaValue(null, 'usd'), 'No data');
+  });
+
+  it('adds a unit word only for units the value does not already name', () => {
+    assert.equal(unitSuffix('usd'), '');
+    assert.equal(unitSuffix('percent'), '');
+    assert.equal(unitSuffix('requests'), ' requests');
+    assert.equal(unitSuffix('credits'), ' credits');
+    assert.equal(unitSuffix('tokens'), ' tokens');
+  });
+});
+
+describe('trayTargetWord', () => {
+  const { trayTargetWord } = loadRenderer('quota-math.js');
+
+  it('says menu bar on macOS and tray tooltip elsewhere', () => {
+    assert.equal(trayTargetWord('darwin'), 'menu bar');
+    assert.equal(trayTargetWord('win32'), 'tray tooltip');
+    assert.equal(trayTargetWord('linux'), 'tray tooltip');
+  });
+});
+
+describe('connectorStatusFor', () => {
+  const { connectorStatusFor, hasMissingQuotaSecret } = loadRenderer('quota-math.js');
+  const on = { notifications: false, quota: true };
+
+  it('is off when nothing is enabled', () => {
+    assert.equal(connectorStatusFor({ notifications: false, quota: false }, undefined), 'off');
+    assert.equal(connectorStatusFor(undefined, undefined), 'off');
+  });
+
+  it('needs setup when quota is on, a secret is missing and quota is not working', () => {
+    assert.equal(connectorStatusFor(on, undefined, true), 'needs-setup');
+    assert.equal(connectorStatusFor(on, { ok: false }, true), 'needs-setup');
+  });
+
+  it('ignores a missing secret when the snapshot is ok (env or file fallback)', () => {
+    assert.equal(connectorStatusFor(on, { ok: true }, true), 'active');
+  });
+
+  it('keeps sign-in and app-closed ahead of a missing secret', () => {
+    assert.equal(connectorStatusFor(on, { ok: false, needsLogin: true }, true), 'needs-login');
+    assert.equal(connectorStatusFor(on, { ok: false, appNotRunning: true }, true), 'app-not-running');
+    assert.equal(connectorStatusFor(on, { ok: false, notDetected: true }, true), 'not-detected');
+  });
+
+  it('reports a not-installed tool as its own neutral status', () => {
+    assert.equal(connectorStatusFor(on, { ok: false, notDetected: true }), 'not-detected');
+    assert.equal(connectorStatusFor({ notifications: true, quota: false }, { ok: false, notDetected: true }), 'active');
+  });
+
+  it('reports an error without a missing secret', () => {
+    assert.equal(connectorStatusFor(on, { ok: false }, false), 'error');
+  });
+
+  it('finds a quota secret field without a stored value', () => {
+    const field = (key: string, section?: string) => ({ key, type: 'secret', section });
+    const def = (schema: unknown[], set: string[] = []) => ({ configSchema: schema, setSecretKeys: set });
+    assert.equal(hasMissingQuotaSecret(def([field('k', 'quota')])), true);
+    assert.equal(hasMissingQuotaSecret(def([field('k', 'quota')], ['k'])), false);
+    assert.equal(hasMissingQuotaSecret(def([field('t', 'notifications')])), false);
+    assert.equal(hasMissingQuotaSecret(def([{ key: 'n', type: 'string' }])), false);
+    assert.equal(hasMissingQuotaSecret(def([field('g', 'general')])), false);
+    assert.equal(hasMissingQuotaSecret(def([field('u')])), false);
+    assert.equal(hasMissingQuotaSecret(undefined), false);
+  });
+});
+
+describe('eventSourceLabel', () => {
+  const { eventSourceLabel } = loadRenderer('quota-math.js');
+
+  it('shows the parent folder of a transcript', () => {
+    assert.equal(eventSourceLabel('/home/u/.claude/projects/-home-u-app/abc.jsonl'), '-home-u-app');
+    assert.equal(eventSourceLabel('C:\\Users\\u\\.claude\\projects\\C--app\\abc.jsonl'), 'C--app');
+  });
+
+  it('shows the project folder for a subagent transcript', () => {
+    assert.equal(eventSourceLabel('/p/projects/proj/sess-1/subagents/agent-9.jsonl'), 'proj');
+  });
+
+  it('falls back to the input without a folder', () => {
+    assert.equal(eventSourceLabel('abc.jsonl'), 'abc.jsonl');
+  });
+});

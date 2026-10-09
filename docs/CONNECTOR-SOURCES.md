@@ -40,21 +40,23 @@ Connector source files use a matching shorthand in their header comments: `[C]` 
   - `cursor.com/api/usage-summary` intermittently returns a Vercel WAF HTML page with HTTP 403.
   - `export-usage-events-csv` lost its cost column on 2026-08-01 (forum.cursor.com, topic 167193). The replacement, `POST cursor.com/api/dashboard/get-filtered-usage-events`, is not implemented because no request/response contract was available.
 - **Official alternative**: the Admin API `api.cursor.com/teams/*` (key prefix `crsr_`) is Teams/Enterprise only. There is no API for individual plans.
+- **Not installed**: with no state database at the platform default and no session cookie, the snapshot is `notDetected: true` (neutral "Not installed" state, no backoff). A custom `stateDbPath` that does not exist stays a real error.
 
 ## Anthropic Console (`anthropic`)
 
 - **Source order** (`anthropic/quota.ts`):
-  1. Admin API, when an admin key is set: `GET https://api.anthropic.com/v1/organizations/usage_report/messages`, then `GET /v1/organizations/cost_report` (optional, failure is non-fatal).
-  2. claude.ai: `sessionKey` cookie read from a local Chromium-based Claude app profile (`readChromiumCookie`, app name `Claude`), then `GET https://claude.ai/api/organizations` and `/api/organizations/{uuid}/usage`.
-- **Auth**: `x-api-key: sk-ant-admin01-…` plus `anthropic-version: 2023-06-01`; the cookie source sends `Cookie: sessionKey=…`. Both send an identifying `User-Agent: AIOversight/<version> (...)`.
-- **Evidence**: Vendor for the Admin API (platform.claude.com/docs/en/manage-claude/usage-cost-api). The cookie path is not vendor-documented.
-- **Last verified**: 2026-09 (docs).
-- **Vendor constraints**: not available for individual accounts; Enterprise organizations use the Analytics API instead; poll at most once per minute; data lags about 5 minutes; Anthropic asks for an identifying User-Agent.
+  1. Admin API, when an admin key is set: `GET https://api.anthropic.com/v1/organizations/usage_report/messages` (`bucket_width=1d&limit=31&group_by[]=model`), then `GET /v1/organizations/cost_report` (`bucket_width=1d&limit=31`; optional). Both page with `has_more` / `next_page` (sent back as `page`); after 5 pages with `has_more` still set the usage report fails with an error instead of showing a partial period, and the cost report drops spend.
+  2. claude.ai: `sessionKey` cookie read from a local Chromium-based Claude app profile (`readChromiumCookie`, app name `Claude`), then `GET https://claude.ai/api/organizations` and `/api/organizations/{uuid}/usage`, parsed by `parseClaudeUsage` (shared with `claude-code`): `limits[]` first, then `five_hour` / `seven_day` / `seven_day_opus` / `seven_day_sonnet`; an error when no limit is recognized.
+- **Auth**: `x-api-key: sk-ant-admin01-…` plus `anthropic-version: 2023-06-01`; the cookie source sends `Cookie: sessionKey=…`. Both send an identifying `User-Agent: AIOversight/<version> (...)`. The admin key comes from platform.claude.com/settings/admin-keys (admin role only; the expiry is chosen at creation). 401 means invalid, expired or revoked; 403 means a key without access.
+- **Evidence**: Vendor for the Admin API; the cookie path is not vendor-documented. Sources (2026-10-09): platform.claude.com/docs/en/api/beta/organization/usage_report/retrieve_messages, `.../cost_report/retrieve`, platform.claude.com/docs/en/manage-claude/usage-cost-api and `.../admin-api-keys`.
+- **Last verified**: 2026-10-09 (docs).
+- **Field notes**: usage results carry `uncached_input_tokens`, `output_tokens`, `cache_read_input_tokens` and `cache_creation.{ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}`. Cost results carry `amount` as a decimal string in cents (`"123.45"` is $1.23) and `currency` (always USD today); non-USD rows are skipped. A partially failed cost fetch drops the spend tile; a 429 on the cost report drops only the spend bucket.
+- **Vendor constraints**: not available for individual accounts; Claude Enterprise organizations need an Analytics API key, which is not supported; Claude Platform on AWS has no programmatic endpoint; the cost report excludes Priority Tier; poll at most once per minute; data lags about 5 minutes; Anthropic asks for an identifying User-Agent.
 - **Known gaps**: the claude.ai cookie path depends on an undocumented endpoint and on a cookie store that only exists for Chromium-based wrappers, not regular browsers.
 
 ## Claude Code (`claude-code`)
 
-- **Source** (`claude-code/quota.ts`, `claude-code/browser-session.ts`): a hidden Electron `BrowserWindow` on the persistent partition `persist:claude-quota` loads `https://claude.ai/settings/usage`, resolves the organization, and runs an in-page `fetch('/api/organizations/{uuid}/usage')`. The user signs in once through a visible window opened from the UI. Local spend is estimated separately from transcripts (`~/.claude/projects/**/*.jsonl`) with the shared price table.
+- **Source** (`claude-code/quota.ts`, `claude-code/browser-session.ts`): a hidden Electron `BrowserWindow` on the persistent partition `persist:claude-quota` loads `https://claude.ai/settings/usage`, resolves the organization, and runs an in-page `fetch('/api/organizations/{uuid}/usage')`. The user signs in once through a visible window opened from the UI. Local spend is estimated separately from transcripts (`~/.claude/projects/**/*.jsonl`, plus `$CLAUDE_CONFIG_DIR/projects/**/*.jsonl` when set) with the shared price table, and is attached even when claude.ai needs sign-in.
 - **Parsing** (`parseClaudeUsage` in `claude-code/quota.ts`):
   - **Primary: `limits[]`**, one bucket per entry, with no hardcoded model or kind list. Fields: `kind`, `group`, `percent` (0-100), `severity`, `resets_at` (ISO), `scope` (`null` or `{model: {id, display_name}, surface}`), `is_active`. Kinds observed on 2026-09-17: `session`, `weekly_all`, and `weekly_scoped` with a model scope (`Fable`, `id: null`). `group` sets the window (`session` 5h, `weekly` 7d); an unknown group gets `resetsAt` but no `windowMs`, so the meter uses static thresholds instead of a guessed pace.
   - **Labels and ids** come from the data. `session` and `weekly_all` keep `five-hour` / `seven-day`; a weekly model scope named Opus or Sonnet keeps `weekly-opus` / `weekly-sonnet`; anything else gets `<kind>-model-<slug>` or `<kind>-surface-<slug>` (the slug uses `scope.model.id` when non-null, else the display name), deduplicated with a numeric suffix. Ids key the persisted bucket prefs, so they must not change. If Anthropic starts filling `scope.model.id` for Fable, that bucket's id changes once and its saved prefs reset.
@@ -63,16 +65,21 @@ Connector source files use a matching shorthand in their header comments: `[C]` 
   - **Ignored on purpose: codename keys** (`nimbus_quill`, `tangelo`, `cinder_cove`, `seven_day_omelette`, `seven_day_cowork`, `seven_day_oauth_apps`, ...). They are `null` or `{utilization: 0, resets_at: null}`, have no label, and Anthropic adds and renames them freely. `limits[]` is where a real new limit appears.
   - **Money: `spend`** (`used` / `limit` as `{amount_minor, currency, exponent}`, `percent`, `enabled`, `disabled_reason`, `cap`, ...) is the same extra-usage money as `extra_usage` (both reported 0 of 4000 minor USD units, `disabled_reason: out_of_credits`). One `extra-usage` bucket in cents comes from `spend` when it is in USD, otherwise from `extra_usage`. The live `extra_usage` shape is `{monthly_limit, used_credits, currency, decimal_places, ...}`; the older `used`/`limit` keys the parser used to read are not in the current payload.
   - **`seven_day_breakdown.rows[]`** (`{key, display_name, percent}`, share of the week's usage by surface) becomes one display message, for example `This week: Claude Code 93% · Cowork 6% · Chats 1%`, without 0% rows.
+- **Local transcripts** (`claude-code/quota.ts`, `claude-code/detector.ts`, `shared/jsonl-spend-scanner.ts`):
+  - Claude Code writes one `assistant` line per content block (thinking, text, tool_use), each repeating the request's `message.usage` with a growing `output_tokens`. Spend dedupes per `message.id` + `requestId` within a file (the scanner remembers a 64-entry window per file; `CACHE_VERSION` 4) and keeps the line with the largest `output_tokens`. Local check on 2026-10-09: 7-day spend $580.15 before dedupe, $330.58 after.
+  - Cache writes are priced from `usage.cache_creation.{ephemeral_5m_input_tokens, ephemeral_1h_input_tokens}`; any part of the flat `cache_creation_input_tokens` the split does not cover is billed as 5-minute writes. `usage.speed === "fast"` applies the fast-mode rate. `usage.iterations[]` entries with `type: "advisor_message"` are not in the top-level usage and are priced separately at their own `model`.
+  - Claude Code appends metadata lines after the last assistant turn (`queue-operation`, `system` with subtype `stop_hook_summary` or `turn_duration`, `last-prompt`, `bridge-session`, `ai-title`, `pr-link`, `file-history-snapshot`, `permission-mode`, and others), so the notification watcher classifies the newest line whose status is not `unknown`, not the literal last line. Subagent transcripts (`<project>/<session-id>/subagents/agent-<id>.jsonl`, lines with `isSidechain: true`) are skipped for notifications but still scanned for spend.
+  - Main session files also carry `cost-state` lines (`totalCostUSD`, `modelUsage`). They are not used.
 - **Auth**: the claude.ai web session in the Electron partition.
 - **Evidence**: Live. On 2026-09-17 the claude.ai `/api/organizations/{uuid}/usage` response, fetched through the app's `persist:claude-quota` session, included `limits[]` (3 entries: `session`, `weekly_all`, `weekly_scoped` with model `Fable`), `spend`, `seven_day_breakdown`, and the same top-level keys as `api.anthropic.com/api/oauth/usage` returned the same day. Live for the rejected alternatives below (2026-09-16); Community for the claude.ai gate.
-- **Last verified**: 2026-09-17.
+- **Last verified**: 2026-10-09 for the local transcript handling; 2026-09-17 for the claude.ai payload.
 - **Rejected / not used**:
   - `claude /usage` and `claude -p "/usage"` hang when spawned. `/usage` is a TUI-only Ink dialog and there is no headless or JSON mode (anthropics/claude-code#40793, closed unimplemented). The CLI source was deleted. Do not reintroduce it without a non-interactive output mode.
   - `GET https://api.anthropic.com/api/oauth/usage` with `Authorization: Bearer <claudeAiOauth.accessToken>` and `anthropic-beta: oauth-2025-04-20` returned 200 (Live). Body: `five_hour` and `seven_day` as `{utilization, resets_at}`; `seven_day_opus` / `seven_day_sonnet` (often null); `extra_usage` `{is_enabled, monthly_limit, used_credits, utilization, currency}`; and a newer `limits[]` array of `{kind: session|weekly_all|weekly_scoped, group, percent, severity, resets_at, scope: {model}, is_active}`. **Deliberately not used**: on 2026-02-20 Anthropic stated that using OAuth tokens from Free/Pro/Max accounts in any other product violates the Consumer Terms (theregister.com/2026/02/20/anthropic_clarifies_ban_third_party_claude_access). Community reports persistent 429 responses without `User-Agent: claude-code/<version>` (anthropics/claude-code#31021, closed "not planned").
   - Token location, for reference only: macOS Keychain service `Claude Code-credentials`; Windows/Linux `~/.claude/.credentials.json`; `CLAUDE_CONFIG_DIR` relocates it.
   - `~/.claude/stats-cache.json` holds `/stats` aggregates, not rate limits.
 - **Community note**: the claude.ai gate is the User-Agent (the desktop app sends `Claude/<ver> ... Electron/...`), not a JavaScript challenge (xsmyile/sissy#131). The `browser-session.ts` header still describes a Cloudflare challenge; treat that as the original assumption.
-- **Sanctioned local alternative (not implemented)**: Claude Code pipes JSON to the configured `statusLine` command's stdin, including `rate_limits.five_hour` and `rate_limits.seven_day` with `used_percentage` and `resets_at` (Vendor: code.claude.com/docs/en/statusline). No network and no credentials, but the data is only fresh while a Claude Code session runs, and wiring it means editing the user's `~/.claude/settings.json`. Owner decision pending.
+- **Sanctioned local alternative (not implemented)**: Claude Code pipes JSON to the configured `statusLine` command's stdin, including `rate_limits.five_hour` and `rate_limits.seven_day` with `used_percentage` and `resets_at`, and `spend_limit` (`used_percentage`, `resets_at`; from v2.1.284 also `used_usd`, `limit_usd`, `period`, gateway only). It still lacks the Fable `weekly_scoped` limit (Vendor: code.claude.com/docs/en/statusline, checked 2026-10-09). No network and no credentials, but the data is only fresh while a Claude Code session runs, and wiring it means editing the user's `~/.claude/settings.json`. Owner decision pending.
 
 ## OpenAI (`openai`)
 
@@ -91,6 +98,7 @@ Connector source files use a matching shorthand in their header comments: `[C]` 
 - **Wire shape**: `rate_limit.primary_window` / `secondary_window` as `{used_percent, limit_window_seconds, reset_after_seconds, reset_at}`, plus `additional_rate_limits[]`, `credits`, and `rate_limit_reset_credits.available_count`. Since about July 2026 the primary window may be the weekly one, so windows are classified by duration (`classifyWindow`), not by position.
 - **OAuth facts**: client id `app_EMoamEEZ73f0CkXaXp7hrann`, token URL `https://auth.openai.com/oauth/token`. Refresh tokens rotate, and replaying a used one is a permanent error. Codex's `storage.rs` writes `auth.json` with no lock. Both are why this connector never refreshes.
 - **Known gaps**: with `cli_auth_credentials_store = keyring`, `auth.json` may not exist even though the user is signed in.
+- **Not installed**: with no `$CODEX_HOME` and none of the default Codex folders, the snapshot is `notDetected: true` (neutral "Not installed" state, no backoff). A folder without `auth.json` keeps the detailed sign-in message.
 - **Better local alternative (not implemented)**: spawn `codex app-server` and call JSON-RPC `account/rateLimits/read` (plus the `account/rateLimits/updated` push). Codex then owns auth refresh.
 
 ## GitHub Copilot (`github-copilot`)
@@ -132,6 +140,7 @@ Connector source files use a matching shorthand in their header comments: `[C]` 
 - **Evidence**: Community, from a merged vendor PR (anomalyco/opencode#16513).
 - **Last verified**: 2026-09 (source).
 - **Wire shape**: `usage.{rolling, weekly, monthly}.{status, percent, resetsAt}`. No dollar amounts.
+- **Not installed**: with no API key and no data folder at the default locations, the snapshot is `notDetected: true` (neutral "Not installed" state, no backoff). User-configured folders that do not exist stay an error.
 - **Known gaps**: which `auth.json` provider id holds the key (`opencode` or `opencode-go`) and its value field (assumed `key`) are unconfirmed; both ids are probed.
 
 ## Grok CLI (`grok`)
@@ -165,9 +174,27 @@ Connector source files use a matching shorthand in their header comments: `[C]` 
 
 ## Local spend pricing (`shared/model-pricing.ts`)
 
-- **Vintage**: `PRICING_VINTAGE = '2026-09'`.
-- **Evidence**: Vendor (platform.claude.com/docs/en/about-claude/pricing, developers.openai.com/api/docs/pricing).
-- Claude rates are keyed by model version, not by family substring. Per 1M tokens, input/output: Opus 4.5 and later $5/$25; Opus 4.1 and earlier $15/$75; Sonnet 5 $2/$10; Sonnet 4.x $3/$15; Haiku 4.5 $1/$5; Fable/Mythos 5.x $10/$50, with cache read $0.25 from 5.1.
+- **Vintage**: `PRICING_VINTAGE = '2026-10'`. Last verified 2026-10-09.
+- **Evidence**: Vendor (platform.claude.com/docs/en/about-claude/pricing, platform.claude.com/docs/en/release-notes/overview, developers.openai.com/api/docs/pricing).
+- Claude rates are keyed by model version, not by family substring. Per 1M tokens:
+
+| Model | Input | Output | 5m write | 1h write | Cache read |
+|---|---|---|---|---|---|
+| Opus 5.5 | $4 | $20 | $5 | $8 | $0.20 |
+| Opus 4.5 to 5 | $5 | $25 | $6.25 | $10 | $0.50 |
+| Opus 4 to 4.1 | $15 | $75 | $18.75 | $30 | $1.50 |
+| Sonnet 5.5 | $2 | $10 | $2.50 | $4 | $0.10 |
+| Sonnet 5 | $2 | $10 | $2.50 | $4 | $0.20 |
+| Sonnet 4 to 4.6 | $3 | $15 | $3.75 | $6 | $0.30 |
+| Haiku 5.5 | $0.10 | $0.50 | $0.125 | $0.20 | $0.01 |
+| Haiku 4.5 | $1 | $5 | $1.25 | $2 | $0.10 |
+| Haiku 3.5 | $0.80 | $4 | $1 | $1.60 | $0.08 |
+| Fable / Mythos 5.1 | $10 | $50 | $12.50 | $20 | $0.25 |
+| Fable / Mythos 5 | $10 | $50 | $12.50 | $20 | $1 |
+
+- **Haiku 5.5** costs 5x in every category when the prompt (input + cache reads + cache writes, output excluded) is over 100,000 tokens.
+- **Fast mode** is 2x on Opus 5.5, Opus 5 and Opus 4.8 only (it errors on 4.7; 4.6 bills fast requests at standard rates).
+- **Known gaps**: `inference_geo: "us"` (1.1x) is not modelled, since no transcript the repo reads records it. Sonnet 5.5 cache reads logged 2026-09-28 to 2026-10-06 were billed at $0.20, but the dateless table prices them at $0.10.
 - The previous substring table billed Opus 4.8 sessions at 3x their real cost.
 
 ## Research references

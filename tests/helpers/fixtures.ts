@@ -96,6 +96,8 @@ export function codexFunctionCallOutputLine(): Record<string, unknown> {
 }
 
 // --- Anthropic Admin API: usage_report/messages ---
+// Shape per https://platform.claude.com/docs/en/api/beta/organization/usage_report/retrieve_messages
+// (verified 2026-10-09): cache writes are nested under `cache_creation`.
 
 export function anthropicUsageReportResponse(): Record<string, unknown> {
   return {
@@ -108,7 +110,8 @@ export function anthropicUsageReportResponse(): Record<string, unknown> {
             uncached_input_tokens: 12_000,
             output_tokens: 4_500,
             cache_read_input_tokens: 800,
-            cache_creation_input_tokens: 200,
+            cache_creation: { ephemeral_5m_input_tokens: 150, ephemeral_1h_input_tokens: 50 },
+            server_tool_use: { web_search_requests: 0 },
             model: 'claude-sonnet-4-5-20250929',
           },
         ],
@@ -121,16 +124,22 @@ export function anthropicUsageReportResponse(): Record<string, unknown> {
             uncached_input_tokens: 8_000,
             output_tokens: 3_000,
             cache_read_input_tokens: 0,
-            cache_creation_input_tokens: 0,
+            cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 },
+            server_tool_use: { web_search_requests: 0 },
             model: 'claude-sonnet-4-5-20250929',
           },
         ],
       },
     ],
+    has_more: false,
+    next_page: null,
   };
 }
 
 // --- Anthropic Admin API: cost_report ---
+// Shape per https://platform.claude.com/docs/en/api/beta/organization/cost_report/retrieve
+// (verified 2026-10-09): `amount` is a decimal string in cents, so the doc's
+// own example "123.45" USD is $1.23.
 
 export function anthropicCostReportResponse(): Record<string, unknown> {
   return {
@@ -138,14 +147,25 @@ export function anthropicCostReportResponse(): Record<string, unknown> {
       {
         starting_at: '2026-06-01T00:00:00Z',
         ending_at: '2026-06-02T00:00:00Z',
-        results: [{ amount: { value: '1.25', currency: 'USD' }, description: 'Model usage' }],
+        results: [
+          {
+            amount: '123.45',
+            currency: 'USD',
+            cost_type: null,
+            description: null,
+            model: null,
+            workspace_id: null,
+          },
+        ],
       },
       {
         starting_at: '2026-06-02T00:00:00Z',
         ending_at: '2026-06-03T00:00:00Z',
-        results: [{ amount: { value: '0.75', currency: 'USD' }, description: 'Model usage' }],
+        results: [],
       },
     ],
+    has_more: false,
+    next_page: null,
   };
 }
 

@@ -18,6 +18,14 @@ export interface SpendRecord {
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
   model?: string;
+  /**
+   * Optional identity of the billed request this record belongs to. Records
+   * in the same file sharing a key are counted once: the one with the most
+   * `outputTokens` wins, even when the lines arrive in different incremental
+   * reads. For tools that log one line per content block, each repeating the
+   * same (growing) usage. Omit it and every record is counted as-is.
+   */
+  dedupeKey?: string;
 }
 
 export interface ScanOptions {
@@ -25,8 +33,12 @@ export interface ScanOptions {
   key: string;
   /** Already-resolved (no `~`/`%APPDATA%`) glob patterns supporting `*` and `**`. */
   patterns: string[];
-  /** Parses one JSON-parsed transcript line into a spend record, or `null` if the line isn't spend-relevant. */
-  extract(line: unknown, file: string): SpendRecord | null;
+  /**
+   * Parses one JSON-parsed transcript line into spend record(s), or `null` /
+   * `[]` if the line isn't spend-relevant. An array lets one line carry usage
+   * billed to several models.
+   */
+  extract(line: unknown, file: string): SpendRecord | SpendRecord[] | null;
 }
 
 /** Per-day rollup persisted in the cache — NOT raw records, to keep the on-disk cache small. */
@@ -51,17 +63,48 @@ interface FileCacheEntry {
   mtimeMs: number;
   scannedBytes: number;
   days: Record<string, DayRollup>;
+  /**
+   * What was folded into `days` for the most recent `dedupeKey`s, in
+   * insertion order, so a later line of the same request (possibly in the
+   * next incremental read) can replace its earlier contribution.
+   */
+  folded?: Record<string, FoldedRecord>;
 }
+
+/** The part of a `SpendRecord` that `addRecordToRollup` folds into a day. */
+interface FoldedRecord {
+  ts: number;
+  costCents: number | null;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+/**
+ * How many recent `dedupeKey`s each file remembers. Claude Code writes the
+ * repeated lines of one request back to back: across ~2,700 real assistant
+ * lines the furthest repeat was 3 lines after the first. 64 leaves a wide
+ * margin while keeping the on-disk cache small for long sessions.
+ */
+const DEDUPE_WINDOW = 64;
 
 interface CacheFileShape {
   version: number;
   entries: Record<string, FileCacheEntry>;
 }
 
-/** Cache format version. Bumped for the item-4 rewrite (key scheme and
- * entry shape both changed) so an old-format on-disk cache is discarded
- * rather than blindly loaded under a key scheme that no longer matches. */
-const CACHE_VERSION = 2;
+/** Cache format version. Bumped whenever stored rollups would be wrong under
+ * the current parsing (2: key scheme and entry shape; 3: `dedupeKey`
+ * dedupe and Claude Code cache-write/fast/advisor pricing; 4: Claude Code
+ * rollups hold unrounded cents), so an old cache
+ * is discarded and every file is re-read. */
+const CACHE_VERSION = 4;
+
+/** Records may carry fractional cents (see `costCentsExact`); tiles show whole cents, rounded once per tile. */
+function roundCents(cents: number): number {
+  return Math.round(cents);
+}
 
 function localDayKey(ts: number): string {
   const d = new Date(ts);
@@ -92,16 +135,52 @@ function emptyRollup(): DayRollup {
   return { costCentsSum: 0, costCentsKnown: false, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
 }
 
-function addRecordToRollup(days: Record<string, DayRollup>, record: SpendRecord): void {
+function toFolded(record: SpendRecord): FoldedRecord {
+  return {
+    ts: record.ts,
+    costCents: record.costCents,
+    inputTokens: record.inputTokens || 0,
+    outputTokens: record.outputTokens || 0,
+    cacheReadTokens: record.cacheReadTokens || 0,
+    cacheWriteTokens: record.cacheWriteTokens || 0,
+  };
+}
+
+/** Adds (`sign` 1) or removes (`sign` -1) one record's contribution to its local day. */
+function addRecordToRollup(days: Record<string, DayRollup>, record: FoldedRecord, sign: 1 | -1 = 1): void {
   const roll = (days[localDayKey(record.ts)] ??= emptyRollup());
   if (record.costCents != null) {
-    roll.costCentsSum += record.costCents;
+    roll.costCentsSum += sign * record.costCents;
     roll.costCentsKnown = true;
   }
-  roll.inputTokens += record.inputTokens || 0;
-  roll.outputTokens += record.outputTokens || 0;
-  roll.cacheReadTokens += record.cacheReadTokens || 0;
-  roll.cacheWriteTokens += record.cacheWriteTokens || 0;
+  roll.inputTokens += sign * record.inputTokens;
+  roll.outputTokens += sign * record.outputTokens;
+  roll.cacheReadTokens += sign * record.cacheReadTokens;
+  roll.cacheWriteTokens += sign * record.cacheWriteTokens;
+}
+
+/**
+ * Folds one record into `days`, honouring `dedupeKey`: a repeat of a
+ * remembered key replaces the earlier contribution when it reports at least
+ * as many output tokens, and is dropped otherwise.
+ */
+function foldRecord(days: Record<string, DayRollup>, folded: Record<string, FoldedRecord>, record: SpendRecord): void {
+  const next = toFolded(record);
+  const key = record.dedupeKey;
+  if (!key) {
+    addRecordToRollup(days, next);
+    return;
+  }
+  const prev = folded[key];
+  if (prev) {
+    if (next.outputTokens < prev.outputTokens) return;
+    addRecordToRollup(days, prev, -1);
+    delete folded[key]; // re-insert below so the key moves to the newest slot
+  }
+  addRecordToRollup(days, next);
+  folded[key] = next;
+  const keys = Object.keys(folded);
+  for (let i = 0; i < keys.length - DEDUPE_WINDOW; i++) delete folded[keys[i]];
 }
 
 /** Folds a freshly-parsed delta's per-day rollups into an existing entry's rollups in place. */
@@ -235,12 +314,16 @@ export class JsonlSpendScanner {
       if (entry && (stat.size < entry.scannedBytes || stat.mtimeMs < entry.mtimeMs)) entry = undefined;
 
       if (!entry) {
-        const { rollups, consumedBytes } = await this.parseRange(file, opts, 0, stat.size);
-        entry = { size: stat.size, mtimeMs: stat.mtimeMs, scannedBytes: consumedBytes, days: rollups };
+        const folded: Record<string, FoldedRecord> = {};
+        const { rollups, consumedBytes } = await this.parseRange(file, opts, 0, stat.size, folded);
+        entry = { size: stat.size, mtimeMs: stat.mtimeMs, scannedBytes: consumedBytes, days: rollups, folded };
         this.cache.set(cacheKey, entry);
         cacheDirty = true;
       } else if (stat.size > entry.scannedBytes || stat.mtimeMs !== entry.mtimeMs) {
-        const { rollups, consumedBytes } = await this.parseRange(file, opts, entry.scannedBytes, stat.size);
+        // A negative delta (a repeat replacing an earlier, smaller record)
+        // merges correctly: `mergeRollups` only ever adds.
+        const folded = (entry.folded ??= {});
+        const { rollups, consumedBytes } = await this.parseRange(file, opts, entry.scannedBytes, stat.size, folded);
         mergeRollups(entry.days, rollups);
         entry.scannedBytes += consumedBytes;
         entry.size = stat.size;
@@ -300,13 +383,13 @@ export class JsonlSpendScanner {
     const series: Array<number | null> = [];
     for (let i = 29; i >= 0; i--) {
       const entry = perDay.get(dayKeyOffset(now, i));
-      series.push(entry ? (entry.costKnown ? entry.costCents : null) : null);
+      series.push(entry ? (entry.costKnown ? roundCents(entry.costCents) : null) : null);
     }
 
     const tileFor = (key: string, period: SpendPeriod, label: string): SpendTile => {
       const entry = perDay.get(key);
       if (!entry) return { period, label, costCents: null, tokens: null };
-      return { period, label, costCents: entry.costKnown ? entry.costCents : null, tokens: entry.tokens };
+      return { period, label, costCents: entry.costKnown ? roundCents(entry.costCents) : null, tokens: entry.tokens };
     };
 
     let last30dCents = 0;
@@ -330,7 +413,7 @@ export class JsonlSpendScanner {
       {
         period: 'last30d',
         label: 'Last 30 days',
-        costCents: last30dHasAny ? (last30dCostKnown ? last30dCents : null) : null,
+        costCents: last30dHasAny ? (last30dCostKnown ? roundCents(last30dCents) : null) : null,
         tokens: last30dHasAny ? last30dTokens : null,
         series,
       },
@@ -371,13 +454,15 @@ export class JsonlSpendScanner {
    * returning per-day rollups for that range plus how many bytes of it were
    * actually consumed. A trailing partial line (the file is still being
    * appended to) is left unconsumed for the next scan rather than parsed
-   * early -- `consumedBytes` only ever covers whole lines.
+   * early -- `consumedBytes` only ever covers whole lines. `folded` is the
+   * file's dedupe window; it is updated in place.
    */
   private async parseRange(
     file: string,
     opts: ScanOptions,
     startByte: number,
     totalSize: number,
+    folded: Record<string, FoldedRecord>,
   ): Promise<{ rollups: Record<string, DayRollup>; consumedBytes: number }> {
     const rollups: Record<string, DayRollup> = {};
     if (totalSize <= startByte) return { rollups, consumedBytes: 0 };
@@ -405,14 +490,17 @@ export class JsonlSpendScanner {
         continue; // malformed line -- skip, keep scanning
       }
 
-      let record: SpendRecord | null;
+      let extracted: SpendRecord | SpendRecord[] | null;
       try {
-        record = opts.extract(parsed, file);
+        extracted = opts.extract(parsed, file);
       } catch {
         continue; // a throwing extract() must not abort the whole file/scan
       }
-      if (!record || !Number.isFinite(record.ts)) continue;
-      addRecordToRollup(rollups, record);
+      const records = Array.isArray(extracted) ? extracted : extracted ? [extracted] : [];
+      for (const record of records) {
+        if (!record || !Number.isFinite(record.ts)) continue;
+        foldRecord(rollups, folded, record);
+      }
     }
 
     return { rollups, consumedBytes };

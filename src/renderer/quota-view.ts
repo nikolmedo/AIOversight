@@ -45,6 +45,26 @@ function setTimeFormatPref(fmt: 'auto' | '12h' | '24h'): void {
   timeFormatPref = fmt;
 }
 
+let platformOverride: string | null = null;
+
+/** settings.ts passes `process.platform` from main; it beats the browser hint. */
+function setPlatform(platform: string): void {
+  platformOverride = platform;
+}
+
+/** `process.platform`-style name of the OS the window runs on, for copy that
+ * differs per platform. The popup has no platform bridge, so this reads the
+ * browser's own hint; settings.ts passes its authoritative value where it has
+ * one. Anything that is not macOS or Windows counts as Linux. */
+function currentPlatform(): string {
+  if (platformOverride) return platformOverride;
+  if (typeof navigator === 'undefined') return 'linux';
+  const hint = `${navigator.platform || ''} ${navigator.userAgent || ''}`;
+  if (/mac|iphone|ipad/i.test(hint)) return 'darwin';
+  if (/win/i.test(hint)) return 'win32';
+  return 'linux';
+}
+
 function resolvedHourFormat(): '12h' | '24h' {
   return timeFormatPref === 'auto' ? inferHourFormat() : timeFormatPref;
 }
@@ -159,13 +179,16 @@ function renderMeterRow(b: QuotaBucket, pref: BucketPref | undefined, options?: 
   const paceClass = paceState === 'critical' ? 'critical' : paceState === 'warn' ? 'warn' : '';
 
   // claude-code's percent-with-limit-100 buckets suppress the "/ 100%"
-  // denominator — showing a bare "45%" instead of "45% / 100% percent".
+  // denominator — showing a bare "45%" instead of "45% / 100%". The unit word
+  // follows only values that do not name their own unit ("$15.20" and "12%"
+  // already do).
   const suppressDenominator = b.unit === 'percent' && b.limit === 100;
+  const suffix = unitSuffix(b.unit);
   const stats = suppressDenominator
     ? formatQuotaValue(b.used, b.unit)
     : b.limit != null
-      ? `${formatQuotaValue(b.used, b.unit)} / ${formatQuotaValue(b.limit, b.unit)} ${b.unit}`
-      : `${formatQuotaValue(b.used, b.unit)} ${b.unit} used`;
+      ? `${formatQuotaValue(b.used, b.unit)} / ${formatQuotaValue(b.limit, b.unit)}${suffix}`
+      : `${formatQuotaValue(b.used, b.unit)}${suffix} used`;
   const remainingOnly = b.remaining != null ? `${formatQuotaValue(b.remaining, b.unit)} ${remainingWord}` : '';
   const remaining = b.remaining != null ? ` · ${remainingOnly}` : '';
   // A bucket can report ONLY a remaining figure with no `used` (e.g. Cursor's
@@ -193,18 +216,21 @@ function renderMeterRow(b: QuotaBucket, pref: BucketPref | undefined, options?: 
 
   // For plain percent buckets (used% / limit 100) the stats line is fully
   // derivable from the header's percent ("30%" up top vs "30% · 70% left"
-  // below — zero new information). Drop the line and move the reset chip up
-  // into the header instead: one less line per row, openusage-style. Buckets
-  // with real absolute figures (e.g. "327 / 20,000 requests · 19,673 left")
-  // keep the stats line — the bar/percent can't express those.
+  // below — zero new information), so the line is dropped. Buckets with real
+  // absolute figures (e.g. "327 / 20,000 requests · 19,673 left") keep it —
+  // the bar/percent can't express those. The reset chip sits in the header
+  // either way, so it never jumps between rows.
   const statsRedundant = !hasNoData && suppressDenominator;
   const statsEl = statsRedundant
     ? ''
     : `<div class="meter-row-stats">
         <span class="meter-row-value">${escapeHtml(statsLine)}</span>
-        ${resetChip}
       </div>`;
-  const headerSide = `<div class="meter-row-side">${statsRedundant ? resetChip : ''}${pctEl}</div>`;
+  const menuBtn =
+    options?.connectorId && !options.compact
+      ? `<button type="button" class="row-menu-btn" aria-haspopup="menu" aria-label="${escapeHtml(`More actions for ${b.label}`)}" title="More actions">⋯</button>`
+      : '';
+  const headerSide = `<div class="meter-row-side">${resetChip}${pctEl}${menuBtn}</div>`;
 
   const rowClasses = ['meter-row', hasNoData ? 'no-data' : ''].filter(Boolean).join(' ');
   const starredAttr = pref?.starred ? ' data-starred="true"' : '';
@@ -235,9 +261,12 @@ function renderMeterRow(b: QuotaBucket, pref: BucketPref | undefined, options?: 
   }
 
   // A row the row menu can target is a tab stop, so the menu can be opened
-  // from the keyboard (Shift+F10 / ContextMenu, see `bindRowMenu`). Compact
+  // from the keyboard (Shift+F10 / ContextMenu, see `bindRowMenu`); it is a
+  // named group so a screen reader announces which metric has focus. Compact
   // rows need no tabindex: their <summary> is focusable already.
-  const tabAttr = options?.connectorId ? ' tabindex="0"' : '';
+  const tabAttr = options?.connectorId
+    ? ` tabindex="0" role="group" aria-label="${escapeHtml(b.label)}"`
+    : '';
   return `
     <div class="${rowClasses}" data-bucket-id="${escapeHtml(b.id)}"${starredAttr}${connectorAttr}${tabAttr}>${bodyHtml}</div>
   `;
@@ -456,7 +485,7 @@ function bindTotalSpendCard(root: Document, rerender: () => void): void {
 
 /** True when at least one connector's latest snapshot has a non-empty `spend[]`. */
 function hasAnySpendData(snapshots: Record<string, QuotaSnapshot>): boolean {
-  return Object.values(snapshots).some(s => s.ok && Array.isArray(s.spend) && s.spend.length > 0);
+  return Object.values(snapshots).some(s => Array.isArray(s.spend) && s.spend.length > 0);
 }
 
 interface SpendAggregateEntry {
@@ -492,7 +521,7 @@ function aggregateSpendForPeriod(
 
   for (const def of connectors) {
     const snap = snapshots[def.id];
-    if (!snap || !snap.ok || !snap.spend) continue;
+    if (!snap || !snap.spend) continue;
     const tile = snap.spend.find(t => t.period === period);
     if (!tile) continue;
 
@@ -506,6 +535,15 @@ function aggregateSpendForPeriod(
 
   return { totalCostCents, totalTokens, byConnector };
 }
+
+/** True when no connector measured anything in any of the three periods. */
+function hasNoMeasuredSpend(snapshots: Record<string, QuotaSnapshot>, connectors: ConnectorMetadata[]): boolean {
+  const periods: SpendPeriod[] = ['today', 'yesterday', 'last30d'];
+  return periods.every(p => aggregateSpendForPeriod(snapshots, connectors, p).byConnector.length === 0);
+}
+
+const SPEND_EMPTY_HTML =
+  '<p class="spend-empty" data-role="total-spend-card">No spend estimates yet. They appear once an integration reports local usage.</p>';
 
 /** Number of `--cat-N` categorical tokens in tokens.css (`--cat-1`..`--cat-6`).
  * Keep in sync with tokens.css; scripts/check-contrast.js finds the `--cat-N`
@@ -624,7 +662,7 @@ function renderDonutSvg(slices: DonutSlice[], colorFor: (id: string) => string):
 /** The `last30d` tile's daily cost series (integer cents, oldest -> newest)
  * of one snapshot, `[]` when absent. */
 function spendSeriesOf(snap: QuotaSnapshot | undefined): Array<number | null> {
-  if (!snap || !snap.ok || !snap.spend) return [];
+  if (!snap || !snap.spend) return [];
   return snap.spend.find(t => t.period === 'last30d')?.series ?? [];
 }
 
@@ -693,7 +731,7 @@ function formatSpendHeadline(mode: SpendCardMode, totalCostCents: number | null,
   if (mode === 'costPerMtok') {
     if (totalCostCents == null || totalTokens == null || totalTokens <= 0) return 'No data';
     const costPerMtokCents = totalCostCents / (totalTokens / 1_000_000);
-    return `$${(costPerMtokCents / 100).toFixed(2)} / MTok`;
+    return `${formatUsd(costPerMtokCents)} / MTok`;
   }
   return totalCostCents != null ? formatQuotaValue(totalCostCents, 'usd') : 'No data';
 }
@@ -716,7 +754,7 @@ function renderSpendPeriodSwitcher(active: SpendPeriod): string {
   const opts: Array<{ value: SpendPeriod; label: string }> = [
     { value: 'today', label: 'Today' },
     { value: 'yesterday', label: 'Yesterday' },
-    { value: 'last30d', label: '30 Days' },
+    { value: 'last30d', label: '30 days' },
   ];
   return `<div class="spend-switch-group" role="group" aria-label="Spend period">${opts
     .map(
@@ -738,6 +776,9 @@ function renderTotalSpendCard(
   state: SpendCardState = spendCardState,
 ): string {
   if (!hasAnySpendData(snapshots)) return '';
+  // Spend[] can exist with nothing measured in any period; three "No data"
+  // cells and dead switches say less than the Overview's one line.
+  if (hasNoMeasuredSpend(snapshots, connectors)) return SPEND_EMPTY_HTML;
 
   const { totalCostCents, totalTokens, byConnector } = aggregateSpendForPeriod(
     snapshots,
@@ -791,7 +832,7 @@ function renderTotalSpendCard(
     <section class="spend-card" data-role="total-spend-card">
       <div class="spend-card-header">
         <div>
-          <h3 class="spend-card-title">Total Spend</h3>
+          <h3 class="spend-card-title">Total spend</h3>
           <p class="spend-card-subtitle">Estimated at API rates — not your bill on a flat-rate plan</p>
         </div>
         ${renderSpendPeriodSwitcher(state.period)}
@@ -830,7 +871,7 @@ function renderSpendSummary(
   // A connector can emit spend[] whose tiles are all null (nothing measured);
   // three "No data" cells say less than one line.
   if (!hasAnySpendData(snapshots) || aggregates.every(a => a.byConnector.length === 0)) {
-    return '<p class="spend-empty" data-role="total-spend-card">No spend estimates yet. They appear once an integration reports local usage.</p>';
+    return SPEND_EMPTY_HTML;
   }
 
   const cells = periods
@@ -891,8 +932,9 @@ interface TrayPopupPlan {
  * check would wrongly fold a just-enabled, still-loading connector into the
  * "nothing enabled" empty state instead of `renderProviderBlock`'s "Not
  * loaded yet." row. A connector whose desktop app is closed (`appNotRunning`)
- * is left out too, since the popup is a glance at live numbers and the
- * settings window already explains that state.
+ * or whose tool isn't installed (`notDetected`) is left out too, since the
+ * popup is a glance at live numbers and the settings window already explains
+ * that state.
  *
  * Visible connectors are ordered by `providerAttentionRank`: critical, then
  * warn, then ok, then no data (errors and not-loaded-yet included), so the
@@ -910,7 +952,7 @@ function planTrayPopup(
   if (connectors.length === 0) return { visible: [], emptyMessage: 'No integrations configured.' };
   const enabled = connectors.filter(def => def.quotaEnabled);
   const ranked = enabled
-    .filter(def => !isAppNotRunning(quotas[def.id]))
+    .filter(def => !isExpectedAbsence(quotas[def.id]))
     .map(def => ({ def, rank: providerAttentionRank(quotas[def.id], bucketPrefs?.[def.id], now) }));
   ranked.sort((a, b) => b.rank - a.rank);
   const visible = ranked.map(r => r.def);
@@ -921,7 +963,10 @@ function planTrayPopup(
   const names = enabled.map(def => def.name);
   const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
   const verb = names.length === 1 ? "isn't" : "aren't";
-  return { visible, emptyMessage: `Nothing to show. ${list} ${verb} running.` };
+  const allNotDetected = enabled.every(def => isNotDetected(quotas[def.id]));
+  const anyNotDetected = enabled.some(def => isNotDetected(quotas[def.id]));
+  const state = allNotDetected ? 'installed' : anyNotDetected ? 'running or installed' : 'running';
+  return { visible, emptyMessage: `Nothing to show. ${list} ${verb} ${state}.` };
 }
 
 /**
@@ -946,12 +991,52 @@ function providerAttentionRank(
   return rank;
 }
 
+/** One phrasing each for "no snapshot yet" and "snapshot without meters", shared by both windows. */
+const WAITING_FOR_REFRESH = 'Waiting for the first refresh.';
+const NO_USAGE_REPORTED = 'No usage reported yet.';
+
+const REFRESH_ICON =
+  '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.55M13 2.5v2.5h-2.5"/></svg>';
+
+/**
+ * Busy state of a refresh button: disabled, `aria-busy`, a spinning icon
+ * (`.is-busy`, off under reduced motion) and, for a button with a
+ * `.btn-label`, the label "Refreshing…" so the feedback does not depend on
+ * motion. A text-only button without `.btn-label` (no child elements, e.g. a
+ * sign-in button) is relabelled the same way. Call again with `false` to
+ * restore the idle label.
+ */
+function setButtonBusy(btn: HTMLButtonElement, busy: boolean, busyLabel: string = 'Refreshing…'): void {
+  const label = btn.querySelector<HTMLElement>('.btn-label');
+  const textOnly = !label && btn.childElementCount === 0;
+  btn.disabled = busy;
+  btn.classList.toggle('is-busy', busy);
+  if (busy) {
+    btn.setAttribute('aria-busy', 'true');
+    if (label) {
+      btn.dataset.idleLabel = label.textContent ?? '';
+      label.textContent = busyLabel;
+    } else if (textOnly) {
+      btn.dataset.idleLabel = btn.textContent ?? '';
+      btn.textContent = busyLabel;
+    }
+  } else {
+    btn.removeAttribute('aria-busy');
+    const idle = btn.dataset.idleLabel;
+    if (idle != null) {
+      if (label) label.textContent = idle;
+      else if (textOnly) btn.textContent = idle;
+    }
+  }
+}
+
 const ICON_INFO =
   '<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 7.25V11M8 5v.01"/></svg>';
 
 /**
- * Neutral, non-error notice for an `appNotRunning` snapshot (settings
- * window). `actionsHtml` is appended after the text, e.g. a Configure link.
+ * Neutral, non-error notice for an `appNotRunning` or `notDetected` snapshot
+ * (settings window). `actionsHtml` is appended after the text, e.g. a
+ * Configure link.
  */
 function renderAppNotRunningNotice(message: string, actionsHtml = ''): string {
   return `
@@ -962,11 +1047,25 @@ function renderAppNotRunningNotice(message: string, actionsHtml = ''): string {
     </div>`;
 }
 
+/**
+ * Sign-in button for a `needsLogin` snapshot, shared by both windows (click
+ * handled by each window via `data-role="connector-login"`). Only rendered
+ * when the connector declares a login handler, which `loginLabel` signals:
+ * a connector can report `needsLogin` for a sign-in that happens outside
+ * this app (codex-cli wants `codex login` in a terminal), and a button with
+ * no handler would do nothing. The snapshot's error text then carries the
+ * instruction instead.
+ */
+function loginButtonFor(snap: QuotaSnapshot, def?: ConnectorMetadata): string {
+  if (snap.ok || !snap.needsLogin || !def?.loginLabel) return '';
+  return `<button type="button" class="btn btn-primary btn-sm" data-role="connector-login" data-connector-id="${escapeHtml(def.id)}">${escapeHtml(def.loginLabel)}</button>`;
+}
+
 /** Inner markup of a `.provider-updated` label; see `renderProviderBlock`. */
 function freshnessMarkup(fetchedAt: number, intervalMs: number | undefined, now: number): { html: string; stale: boolean } {
   const { text, stale } = freshnessFor(fetchedAt, intervalMs, now);
-  // The warning colour alone would not reach a screen reader.
-  return { html: `${escapeHtml(text)}${stale ? '<span class="sr-only">, out of date</span>' : ''}`, stale };
+  // Colour alone would not reach everyone: say it in words too.
+  return { html: `${escapeHtml(text)}${stale ? ' · stale' : ''}`, stale };
 }
 
 /**
@@ -997,8 +1096,9 @@ interface ProviderBlockOptions {
  * Per-provider quota section for the tray popup: a flat, borderless section
  * (name + plan tag + a muted "5m ago" freshness label, then meter rows). The
  * label turns to the warning colour once the data is older than twice the
- * connector's poll interval. Errors collapse to one line with a shortcut to
- * the settings window, where sign-in and configuration live.
+ * connector's poll interval. Errors collapse to one line with the
+ * connector's sign-in button (when it needs one and declares a login) and a
+ * Configure shortcut that opens the settings window at its drawer.
  */
 function renderProviderBlock(
   def: ConnectorMetadata,
@@ -1015,10 +1115,10 @@ function renderProviderBlock(
     const intervalAttr = interval != null ? ` data-interval-ms="${interval}"` : '';
     updated = `<span class="provider-updated${stale ? ' stale' : ''}" data-fetched-at="${snap.fetchedAt}"${intervalAttr} title="Updated ${escapeHtml(formatDateTime(snap.fetchedAt))}">${html}</span>`;
   }
-  const head = `<div class="provider-head"><span class="provider-name">${escapeHtml(def.name)}</span>${tag}${updated}</div>`;
+  const head = `<div class="provider-head"><h2 class="provider-name">${escapeHtml(def.name)}</h2>${tag}${updated}</div>`;
 
   if (!snap) {
-    return `<section class="provider">${head}<p class="provider-note">Not loaded yet.</p></section>`;
+    return `<section class="provider">${head}<p class="provider-note">${WAITING_FOR_REFRESH}</p></section>`;
   }
   if (!snap.ok) {
     return `
@@ -1026,7 +1126,8 @@ function renderProviderBlock(
         ${head}
         <div class="provider-error">
           <span class="provider-error-text" title="${escapeHtml(snap.error)}">${escapeHtml(snap.error)}</span>
-          <button type="button" class="link-btn" data-role="open-settings">Open settings</button>
+          ${loginButtonFor(snap, def)}
+          <button type="button" class="link-btn" data-role="open-settings" data-connector-id="${escapeHtml(def.id)}">Configure</button>
         </div>
       </section>
     `;
@@ -1039,7 +1140,7 @@ function renderProviderBlock(
         connectorId: def.id,
         now,
       })) ||
-    '<p class="provider-note">No usage buckets yet.</p>';
+    `<p class="provider-note">${NO_USAGE_REPORTED}</p>`;
 
   return `<section class="provider">${head}${bucketsHtml}</section>`;
 }
@@ -1161,14 +1262,15 @@ function bindRowMenu(root: Document, handlers: RowMenuHandlers): void {
     hideBtn.textContent = handlers.isHidden(current) ? 'Unhide' : 'Hide';
     const starBtn = menu.querySelector('[data-action="star"]') as HTMLButtonElement;
     const starred = handlers.isStarred(current);
-    starBtn.textContent = starred ? 'Unstar' : 'Star for menu bar';
+    starBtn.textContent = starred ? 'Unstar' : `Star for ${trayTargetWord(currentPlatform())}`;
     starBtn.disabled = !starred && !handlers.canStar(current);
     const customizeBtn = menu.querySelector('[data-action="customize"]') as HTMLButtonElement | null;
     if (customizeBtn) customizeBtn.hidden = !handlers.openCustomize;
   };
 
-  /** Opens the menu for `row`, at `point` (pointer) or under the row (keyboard). */
-  const open = (row: HTMLElement, point: { x: number; y: number } | null): void => {
+  /** Opens the menu for `row`, at `point` (pointer), under `anchor` (the row's
+   * ⋯ button) or under the row (keyboard). */
+  const open = (row: HTMLElement, point: { x: number; y: number } | null, anchor?: HTMLElement): void => {
     const connectorId = row.dataset.connectorId;
     const bucketId = row.dataset.bucketId;
     if (!connectorId || !bucketId) return;
@@ -1181,13 +1283,14 @@ function bindRowMenu(root: Document, handlers: RowMenuHandlers): void {
 
     menu.hidden = false;
     const win = row.ownerDocument.defaultView;
-    const rowRect = row.getBoundingClientRect();
+    const rowRect = anchor ? anchor.getBoundingClientRect() : row.getBoundingClientRect();
     const menuRect = menu.getBoundingClientRect();
     const viewportW = win?.innerWidth ?? rowRect.right;
     const viewportH = win?.innerHeight ?? rowRect.bottom;
-    let x = point ? point.x : rowRect.left + 8;
+    let x = point ? point.x : anchor ? rowRect.right - menuRect.width : rowRect.left + 8;
     let y = point ? point.y : rowRect.bottom + 2;
     if (x + menuRect.width > viewportW) x = Math.max(0, viewportW - menuRect.width - 4);
+    if (x < 0) x = 0;
     if (y + menuRect.height > viewportH) {
       y = Math.max(0, (point ? point.y : rowRect.top - 2) - menuRect.height);
     }
@@ -1231,7 +1334,18 @@ function bindRowMenu(root: Document, handlers: RowMenuHandlers): void {
   // `contextmenu`'s own `preventDefault()`, which only stops the browser's
   // native menu from also appearing on the same right-click.
   root.addEventListener('click', e => {
-    if (!menu.hidden && !(e.target as HTMLElement).closest('#rowMenu')) close(false);
+    const target = e.target as HTMLElement;
+    // The ⋯ button toggles the menu for its own row; any other outside click
+    // just dismisses it.
+    const moreBtn = target.closest('.row-menu-btn') as HTMLElement | null;
+    const moreRow = moreBtn?.closest('[data-bucket-id]') as HTMLElement | null;
+    if (moreBtn && moreRow) {
+      const reopen = menu.hidden || openedRow !== moreRow;
+      if (!menu.hidden) close(false);
+      if (reopen) open(moreRow, null, moreBtn);
+      return;
+    }
+    if (!menu.hidden && !target.closest('#rowMenu')) close(false);
   });
 
   /** Keys while the menu is open: Escape closes, arrows/Home/End rove, Tab leaves. */

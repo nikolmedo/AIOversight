@@ -19,7 +19,10 @@ interface TrayPopupAPI {
   /** Effective poll interval in ms per polled connector; connectors that only
    * refresh by hand are absent. */
   getPollIntervals(): Promise<Record<string, number>>;
-  openSettings(): Promise<void>;
+  /** With `connectorId`, Settings opens at that connector's drawer. */
+  openSettings(connectorId?: string): Promise<void>;
+  /** Runs the connector's sign-in flow; rejects for an unknown id or one without `login`. */
+  login(connectorId: string): Promise<boolean>;
   refresh(id?: string): Promise<Record<string, QuotaSnapshot>>;
   /** Returns just the `bucketPrefs` slice (matching `getBucketPrefs`'s shape),
    * not the full `AppSettings`. */

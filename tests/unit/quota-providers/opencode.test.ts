@@ -174,3 +174,60 @@ describe('OpenCode quota provider', () => {
     }
   });
 });
+
+describe('OpenCode quota provider — not installed', () => {
+  const ENV_KEYS = [
+    'OPENCODE_API_KEY', 'OPENCODE_DATA_DIR', 'XDG_DATA_HOME', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA',
+  ] as const;
+  let dir: string;
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    dir = makeTempDir('aioversight-opencode-absent-');
+    saved = Object.fromEntries(ENV_KEYS.map(k => [k, process.env[k]]));
+    delete process.env.OPENCODE_API_KEY;
+    delete process.env.OPENCODE_DATA_DIR;
+    delete process.env.XDG_DATA_HOME;
+    process.env.HOME = dir;
+    process.env.USERPROFILE = dir;
+    process.env.APPDATA = path.join(dir, 'AppData', 'Roaming');
+    process.env.LOCALAPPDATA = path.join(dir, 'AppData', 'Local');
+  });
+
+  afterEach(() => {
+    for (const k of ENV_KEYS) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    removeTempDir(dir);
+  });
+
+  it('reports notDetected when no default data folder exists and no key is set', async () => {
+    // Arrange — the settings store fills dataDirs with the schema default.
+    const def = findConnector('opencode')!;
+    const dataDirs = def.configSchema.find(f => f.key === 'dataDirs')!.default as string[];
+    const ctx = createFakeContext({ cacheDir: dir });
+
+    // Act
+    const snapshot = await createOpencodeQuotaProvider({ dataDirs }, ctx).fetch();
+
+    // Assert
+    assert.equal(snapshot.ok, false);
+    if (!snapshot.ok) {
+      assert.equal(snapshot.notDetected, true);
+      assert.match(snapshot.error, /OpenCode/);
+    }
+  });
+
+  it('keeps a real error when the user pointed dataDirs at a missing folder', async () => {
+    // Arrange
+    const ctx = createFakeContext({ cacheDir: dir });
+
+    // Act
+    const snapshot = await createOpencodeQuotaProvider({ dataDirs: [path.join(dir, 'nope')] }, ctx).fetch();
+
+    // Assert
+    assert.equal(snapshot.ok, false);
+    if (!snapshot.ok) assert.equal(snapshot.notDetected, undefined);
+  });
+});

@@ -68,6 +68,10 @@ type QuotaSnapshot =
       needsLogin?: boolean;
       /** Desktop-app data source isn't running; `error` is a neutral notice. See types.ts. */
       appNotRunning?: boolean;
+      /** The tool isn't installed on this computer; `error` is a neutral notice. See types.ts. */
+      notDetected?: boolean;
+      /** Local spend measured independently of the failed fetch; see types.ts. */
+      spend?: SpendTile[];
     };
 
 /** Per-bucket display prefs the user controls (star / hide / reorder). */

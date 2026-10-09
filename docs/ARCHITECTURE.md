@@ -151,8 +151,8 @@ See `src/main/connectors/README.md` for the authoring guide. Architectural notes
 Used by Cursor, Claude Code, Codex CLI, and generic-jsonl connectors. Internally:
 
 1. `chokidar.watch(globs, { usePolling: true, interval: 250 })` — polling mode avoids inotify limits on large path sets
-2. On `change` event: reads the last non-empty line of the JSONL file
-3. Classifies the line via the connector-supplied `extractStatus(line)` hook
+2. On `change` event: reads the tail of the JSONL file (skipping files the connector's `ignorePath` rejects)
+3. Classifies lines via the connector-supplied `extractStatus(line)` hook, newest first, and keeps the newest line whose status is not `unknown` (tools append metadata lines after the final turn, so the literal last line is not used); the previous status is kept when nothing qualifies
 4. Starts an idle timer of `idleMs`; on expiry, emits the event
 5. Resets the timer on any new change — only fires if the file is truly quiet
 6. Deduplicates on `(file, mtime, kind)` — prevents re-notification on app restart or re-watch
@@ -163,6 +163,7 @@ Each `QuotaProvider.fetch()` must return a `QuotaSnapshot`. The service stops wa
 - Set `needsLogin: true` when authentication is missing/expired. The UI shows a sign-in button only when the connector declares a `login` handler; otherwise the `error` string must tell the user how to sign in (e.g. "Run `codex login`")
 - Return `ok: false` with a human-readable `error` string for transient API failures; set `retryAfterMs` when the vendor asks to back off
 - Set `appNotRunning: true` (with the notice in `error`) only when the source is a desktop app that is not running. The tray popup and tooltip omit the connector, and the settings window shows a neutral notice instead of an error
+- Set `notDetected: true` (with a friendly notice in `error`) only when the tool's default install/data location is absent. The flow matches `appNotRunning`: `QuotaService` neither counts it as a failure nor backs off, the renderer maps it to the `not-detected` status ("Not installed", not counted as attention) and the popup and tooltip hide the connector. A custom path that does not exist stays a real error
 - Use `null` for bucket values that are not measured; `0` means measured and genuinely zero
 - Set `authMethod` in the `ok: true` response so the UI's footnote can explain what's being used
 - Set `trayLine` for a custom one-line summary in the tray tooltip
@@ -171,6 +172,8 @@ Each `QuotaProvider.fetch()` must return a `QuotaSnapshot`. The service stops wa
 ### Local spend estimates (`connectors/shared/jsonl-spend-scanner.ts`, `connectors/shared/model-pricing.ts`)
 
 `JsonlSpendScanner` rolls token usage from local transcripts up into per-day totals with an on-disk cache under `ConnectorContext.cacheDir` (used by Claude Code, Codex CLI, Grok). `model-pricing.ts` is the single per-token rate table that turns those tokens into estimated cents (also used by OpenCode). Claude rates are keyed by model version, not just family, and the table is stamped with `PRICING_VINTAGE`; an unknown model prices to `null`, never `0`.
+
+Spend records can carry a `dedupeKey`. Claude Code writes one transcript line per content block, each repeating the request's usage, so its extractor keys records by `message.id` + `requestId` and the scanner keeps the record with the largest `output_tokens` per key. Each file remembers a window of its last 64 keys (`DEDUPE_WINDOW`), and the cache is stamped `CACHE_VERSION`. An extractor may return an array of records from one line: Claude Code uses this for `usage.iterations[]` entries of type `advisor_message`, which are billed at their own model and get a derived key (`<key>|advisor:<i>`).
 
 ### chromium-cookies (`connectors/shared/chromium-cookies.ts`)
 
@@ -193,9 +196,10 @@ Transcript file changes
         → ctx.emit({ sessionId, agent, kind, message })
           → ConnectorRuntime emits 'event'
             → main/index.ts onEvent handler
-              → Notifier.handle(event)   [apply policy]
+              → Notifier.handle(event, onRecord)   [apply policy]
                 → new Notification().show()
-              → settingsWindow.webContents.send('event', event)
+              → onRecord(record) when the notifier keeps the event
+                → settingsWindow.webContents.send('event', record)
                 → renderer: onEvent handler → renderEvents()
 ```
 
@@ -211,6 +215,20 @@ QuotaService timer fires (per-connector interval)
           → trayPopup.sendQuota(state)
           → refreshTrayQuotaSummary()
 ```
+
+### Deep link: popup to a connector's drawer
+
+```
+Tray popup "Configure" / row menu "Customize…"
+  → window.awPopup.openSettings(id)
+    → ipcMain.handle('trayPopup:openSettings')
+      → settings window shown (created if needed)
+        → webContents.send('settings:openConnector', id)
+          → preload buffers the id until the page registers onOpenConnector
+            → renderer opens that connector's drawer
+```
+
+The buffer exists because a freshly created settings window can receive the push before its script has subscribed. `trayPopup:login` runs the same `runConnectorLogin` as `connector:login:${id}`, so the popup can start a sign-in without opening Settings.
 
 ### Settings write path
 
@@ -296,6 +314,10 @@ Confirmed against the code on 2026-09-16; none of these are fixed yet.
 - **Linux `.deb` is notify-only by choice.** electron-updater 6.x ships a `DebUpdater` (installs through `pkexec` / `sudo dpkg -i`), but it is not enabled here.
 - **Dev settings folder unverified.** `productName: AI Oversight` is set only in `electron-builder.yml`. Under `npm run dev`, Electron derives the userData folder from `package.json`, which has `name: aioversight` and no `productName`, so the dev folder is expected to be `aioversight` rather than `AI Oversight`. This has not been checked, and no Linux path is documented.
 - **Devin server URL handling is inconsistent.** `resolveServerUrl` in `connectors/devin/quota.ts` throws for plain `http://` to a non-loopback host, but an `ftp://` or unparseable value silently falls back to the default `https://server.codeium.com`.
+- **Spend dedupe window.** The scanner dedupes a request's repeated lines only within the last 64 `dedupeKey`s of a file. The furthest repeat seen in about 2,700 real lines was 3 lines away, but a transcript that interleaves more than 64 requests between repeats would double count.
+- **Model pricing gaps.** `inference_geo: "us"` (1.1x) is not modelled, and Sonnet 5.5 cache reads logged 2026-09-28 to 2026-10-06 are priced at the newer $0.10 rate although they were billed at $0.20. Codex CLI, OpenCode and Grok spend still round each record to whole cents (`costCentsFor`); Claude Code sums exact cents (`costCentsExact`) and rounds once per tile.
+- **Unused transcript data.** Claude Code's `cost-state` lines (`totalCostUSD`, `modelUsage`) are not read.
+- **Undocumented claude.ai endpoints.** The Anthropic cookie path and the Claude Code `/api/organizations/{uuid}/usage` fetch rely on claude.ai endpoints with no vendor documentation.
 - **Not implemented** (sources and rationale in [CONNECTOR-SOURCES.md](CONNECTOR-SOURCES.md)):
   - Codex `app-server` JSON-RPC source (`account/rateLimits/read`).
   - Claude Code `statusLine` source (`rate_limits` on the status line command's stdin).

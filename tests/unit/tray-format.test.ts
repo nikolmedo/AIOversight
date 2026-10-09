@@ -37,6 +37,22 @@ describe('formatTrayLineFor', () => {
     assert.equal(line, null);
   });
 
+  it('returns null for a notDetected snapshot, leaving the connector out of the tooltip', () => {
+    // Arrange
+    const snap: QuotaSnapshot = {
+      ok: false,
+      fetchedAt: 1,
+      error: "Cursor isn't installed on this computer.",
+      notDetected: true,
+    };
+
+    // Act
+    const line = formatTrayLineFor('Cursor', snap);
+
+    // Assert
+    assert.equal(line, null);
+  });
+
   it('returns null for an error snapshot', () => {
     // Arrange
     const snap = quotaSnapshotError('No admin API key set.') as QuotaSnapshot;

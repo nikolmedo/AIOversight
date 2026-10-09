@@ -734,6 +734,17 @@ class CodexCliQuotaProvider implements QuotaProvider {
     const fetchedAt = Date.now();
     const auth = loadAuthFile();
 
+    // No $CODEX_HOME and none of the default Codex folders exist: Codex CLI
+    // isn't installed here. A folder without auth.json (keyring store, never
+    // signed in) still gets the detailed message below.
+    if (!auth && !process.env.CODEX_HOME && !candidateAuthPaths().some(p => fs.existsSync(path.dirname(p)))) {
+      return {
+        ok: false,
+        fetchedAt,
+        notDetected: true,
+        error: "Codex CLI isn't installed on this computer. Install it and run `codex login` to see its usage here.",
+      };
+    }
     if (!auth) {
       return {
         ok: false,

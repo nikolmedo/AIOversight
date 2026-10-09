@@ -134,6 +134,19 @@ export function resolveDataDirs(config: Record<string, unknown>, ctx: ConnectorC
   return out;
 }
 
+/**
+ * True when the data folders are the platform defaults: no
+ * `$OPENCODE_DATA_DIR`, and `dataDirs` unset or equal to the schema default
+ * the settings store fills in. Only then can a missing folder mean
+ * "OpenCode isn't installed" rather than a mistyped path.
+ */
+function usesDefaultDataDirs(config: Record<string, unknown>): boolean {
+  if (process.env.OPENCODE_DATA_DIR) return false;
+  const configured = (config.dataDirs as string[] | undefined) ?? [];
+  const defaults = defaultOpencodeDataDirs();
+  return configured.length === 0 || (configured.length === defaults.length && configured.every((p, i) => p === defaults[i]));
+}
+
 // --- opencode*.db discovery -------------------------------------------------
 
 /**
@@ -658,6 +671,18 @@ class OpencodeQuotaProvider implements QuotaProvider {
     const apiKey = this.resolveApiKey(existingDirs);
 
     if (!apiKey) {
+      // No data folder at the default locations and no key: OpenCode isn't
+      // installed here. User-pointed folders that don't exist stay an error.
+      if (existingDirs.length === 0 && usesDefaultDataDirs(this.config)) {
+        return {
+          ok: false,
+          fetchedAt,
+          notDetected: true,
+          error:
+            "OpenCode isn't installed on this computer. Install and run it, or paste an OpenCode Zen API key " +
+            'in Configure, to see its usage here.',
+        };
+      }
       if (!haveSpend) {
         return {
           ok: false,

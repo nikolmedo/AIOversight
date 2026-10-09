@@ -94,6 +94,43 @@ describe('Notifier.handle()', () => {
     assert.equal(notifications[0].options.title, 'Custom title');
   });
 
+  it('reports the stored record to onRecord only when the event is kept', () => {
+    // Arrange
+    const records: unknown[] = [];
+    const first = baseEvent({ detectedAt: 2_000_000, source: '/p/a.jsonl' });
+    const second = baseEvent({ detectedAt: 2_000_000 + 5_000 });
+
+    // Act
+    notifier.handle(first, r => records.push(r));
+    notifier.handle(second, r => records.push(r));
+
+    // Assert
+    assert.equal(records.length, 1);
+    assert.deepEqual(records[0], {
+      ts: 2_000_000,
+      agent: 'Cursor',
+      sessionId: 'cursor:abcd1234',
+      message: 'Session abcd1234 is waiting on tool approval.',
+      kind: 'waiting',
+      source: '/p/a.jsonl',
+    });
+  });
+
+  it('still shows the notification when onRecord throws', () => {
+    // Arrange
+    const event = baseEvent({ kind: 'waiting' });
+
+    // Act
+    const result = notifier.handle(event, () => {
+      throw new Error('Object has been destroyed');
+    });
+
+    // Assert
+    assert.deepEqual(result, { shown: true });
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0].shown, true);
+  });
+
   it('suppresses a repeat event for the same (sessionId, kind) within the cooldown window', () => {
     // Arrange
     const first = baseEvent({ detectedAt: 1_000_000 });

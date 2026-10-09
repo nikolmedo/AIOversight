@@ -18,6 +18,8 @@
   let resetChipTimer: ReturnType<typeof setInterval> | null = null;
   /** Newest `fetchedAt` among the rendered ok snapshots, 0 when none. */
   let lastUpdatedAt = 0;
+  /** Exactly one provider is listed: its heading already carries "5m ago". */
+  let singleProvider = false;
 
   const UPDATED_LABEL_TICK_MS = 1_000;
   const RESET_CHIP_REFRESH_MS = 30_000;
@@ -30,7 +32,8 @@
     refreshProviderFreshness(document, now);
     const el = document.getElementById('updatedAgo');
     if (!el) return;
-    const text = lastUpdatedAt > 0 ? formatUpdatedAgo(lastUpdatedAt, now) : '';
+    // With a single provider its own heading already says when it updated.
+    const text = lastUpdatedAt > 0 && !singleProvider ? formatUpdatedAgo(lastUpdatedAt, now) : '';
     if (el.textContent !== text) el.textContent = text;
   }
 
@@ -107,6 +110,7 @@
       const snap = quotas[def.id];
       return snap?.ok ? Math.max(max, snap.fetchedAt) : max;
     }, 0);
+    singleProvider = plan.visible.length === 1;
     if (plan.emptyMessage != null) {
       panel.innerHTML = `<p class="empty">${escapeHtml(plan.emptyMessage)}</p>`;
       updateUpdatedLabel();
@@ -172,9 +176,9 @@
       })();
     },
     // The popup has no meter settings of its own — open the settings window
-    // instead, per the plan's Phase 2c decision.
-    openCustomize: () => {
-      void window.awPopup.openSettings();
+    // at this connector's drawer instead, per the plan's Phase 2c decision.
+    openCustomize: t => {
+      void window.awPopup.openSettings(t.connectorId);
     },
   };
 
@@ -326,23 +330,43 @@
     void window.awPopup.openSettings();
   });
 
-  // Error sections render an "Open settings" link (renderProviderBlock);
-  // delegated because the content is replaced on every render.
-  $('#content').addEventListener('click', e => {
-    if ((e.target as HTMLElement).closest('[data-role="open-settings"]')) {
-      void window.awPopup.openSettings();
+  // Error sections render a sign-in button and a "Configure" link
+  // (renderProviderBlock); delegated because the content is replaced on
+  // every render.
+  $('#content').addEventListener('click', async e => {
+    const target = e.target as HTMLElement;
+    const configure = target.closest<HTMLElement>('[data-role="open-settings"]');
+    if (configure) {
+      void window.awPopup.openSettings(configure.dataset.connectorId);
+      return;
+    }
+    const login = target.closest<HTMLButtonElement>('[data-role="connector-login"]');
+    const id = login?.dataset.connectorId;
+    if (!login || !id) return;
+    setButtonBusy(login, true, 'Opening sign-in…');
+    try {
+      await window.awPopup.login(id);
+    } catch {
+      // A rejected or cancelled sign-in just puts the button back; the error
+      // text still explains what is missing.
+    } finally {
+      // The quota push usually re-renders this row anyway; if it does not
+      // (cancelled), the button must not stay stuck.
+      if (login.isConnected) {
+        setButtonBusy(login, false);
+      }
     }
   });
 
   $('#refreshAll').addEventListener('click', async () => {
     const btn = $('#refreshAll') as HTMLButtonElement;
-    btn.disabled = true;
+    setButtonBusy(btn, true);
     try {
       const next = (await window.awPopup.refresh()) as Record<string, QuotaSnapshot>;
       render(next);
       requestAnimationFrame(() => requestAnimationFrame(reportSize));
     } finally {
-      btn.disabled = false;
+      setButtonBusy(btn, false);
     }
   });
 })();

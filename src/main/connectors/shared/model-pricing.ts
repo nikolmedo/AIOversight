@@ -4,8 +4,8 @@
  * own copy of a rate — add it here instead.
  *
  * VINTAGE / SOURCE (read before trusting a number): the rates below reflect
- * Anthropic's and OpenAI's published per-token list pricing as verified in
- * September 2026 — *not* a live-fetched price list. They will drift as
+ * Anthropic's published per-token list pricing as verified in October 2026
+ * and OpenAI's as verified in September 2026 — *not* a live-fetched price list. They will drift as
  * vendors change pricing; that drift is expected and acceptable, but these
  * numbers must never be presented to a user as authoritative for billing
  * purposes. See the per-block comments below for per-vendor confidence notes.
@@ -37,35 +37,69 @@
 /** Structurally-checkable staleness marker (SUGGESTION, correction round) --
  * the vintage is documented in prose above too, but a constant lets tooling
  * flag it mechanically rather than relying on someone rereading the comment. */
-export const PRICING_VINTAGE = '2026-09';
+export const PRICING_VINTAGE = '2026-10';
 
 export interface ModelRate {
   inputPerMTokUsd: number;
   outputPerMTokUsd: number;
   cacheReadPerMTokUsd?: number;
+  /** 5-minute cache write. Falls back to `inputPerMTokUsd` when absent. */
   cacheWritePerMTokUsd?: number;
+  /** 1-hour cache write. Falls back to `cacheWritePerMTokUsd`, then `inputPerMTokUsd`, when absent. */
+  cacheWrite1hPerMTokUsd?: number;
   /** Above this many total tokens (input+output+cache) in one record, `longContextMultiplier` applies. */
   longContextThresholdTokens?: number;
   longContextMultiplier?: number;
+  /** Above this many PROMPT tokens (input + cache read + both cache writes; never output) in one record, `promptLengthMultiplier` applies. */
+  promptLengthThresholdTokens?: number;
+  promptLengthMultiplier?: number;
   /** Multiplier applied when the caller signals a priority/fast service tier via `costCentsFor`'s `fastTier` flag. */
   fastTierMultiplier?: number;
 }
 
 // --- Anthropic (Claude Code) -------------------------------------------------
-// Confidence: HIGH. Per-1M-token list prices as published September 2026
-// (input / output / cache read / 5-minute cache write). The JSONL usage shape
-// this repo reads doesn't distinguish 5m vs 1h cache writes, so the 5m write
-// rate is used for every cache-write token.
+// Confidence: HIGH. Per-1M-token list prices as published October 2026
+// (input / output / cache read / 5-minute cache write / 1-hour cache write).
+// Claude Code's JSONL usage splits cache writes by duration
+// (`usage.cache_creation.ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`),
+// so callers can pass both counts to `costCentsFor`; a caller that only has
+// the flat `cache_creation_input_tokens` total gets the 5m rate.
 //
 // No Claude entry declares `longContextThresholdTokens`: Anthropic charges no
 // long-context surcharge on the 4.6-and-newer models, so applying one here
-// would invent a cost the user is not billed.
+// would invent a cost the user is not billed. Haiku 5.5's higher prices for
+// prompts over 100,000 tokens are a different rule (prompt length only,
+// output excluded) and use `promptLengthThresholdTokens` instead.
+//
+// Fast mode is 2x standard on Opus 5.5, 5 and 4.8 only (removed on 4.7; 4.6
+// bills fast requests at standard rates). The `inference_geo: "us"` 1.1x
+// multiplier is not modelled: no transcript this repo reads records it.
 
-const CLAUDE_OPUS_CURRENT: ModelRate = {
+/** Opus 5.5. Cache read is 0.05x base input instead of the usual 0.1x. */
+const CLAUDE_OPUS_5_5: ModelRate = {
+  inputPerMTokUsd: 4,
+  outputPerMTokUsd: 20,
+  cacheReadPerMTokUsd: 0.2,
+  cacheWritePerMTokUsd: 5,
+  cacheWrite1hPerMTokUsd: 8,
+  fastTierMultiplier: 2,
+};
+/** Opus 4.8 / 5 — the 4.5 price list plus fast mode. */
+const CLAUDE_OPUS_FAST: ModelRate = {
   inputPerMTokUsd: 5,
   outputPerMTokUsd: 25,
   cacheReadPerMTokUsd: 0.5,
   cacheWritePerMTokUsd: 6.25,
+  cacheWrite1hPerMTokUsd: 10,
+  fastTierMultiplier: 2,
+};
+/** Opus 4.5 / 4.6 / 4.7 — no fast mode. */
+const CLAUDE_OPUS_4_5: ModelRate = {
+  inputPerMTokUsd: 5,
+  outputPerMTokUsd: 25,
+  cacheReadPerMTokUsd: 0.5,
+  cacheWritePerMTokUsd: 6.25,
+  cacheWrite1hPerMTokUsd: 10,
 };
 /** Opus 4 / 4.1 — retired, priced here only so an old transcript still totals correctly. */
 const CLAUDE_OPUS_LEGACY: ModelRate = {
@@ -73,12 +107,26 @@ const CLAUDE_OPUS_LEGACY: ModelRate = {
   outputPerMTokUsd: 75,
   cacheReadPerMTokUsd: 1.5,
   cacheWritePerMTokUsd: 18.75,
+  cacheWrite1hPerMTokUsd: 30,
 };
-const CLAUDE_SONNET_CURRENT: ModelRate = {
+/**
+ * Sonnet 5.5. Its cache read dropped from $0.20 to $0.10 on 2026-10-07; the
+ * table is dateless, so reads logged between launch (2026-09-28) and then are
+ * under-priced by $0.10/MTok.
+ */
+const CLAUDE_SONNET_5_5: ModelRate = {
+  inputPerMTokUsd: 2,
+  outputPerMTokUsd: 10,
+  cacheReadPerMTokUsd: 0.1,
+  cacheWritePerMTokUsd: 2.5,
+  cacheWrite1hPerMTokUsd: 4,
+};
+const CLAUDE_SONNET_5_0: ModelRate = {
   inputPerMTokUsd: 2,
   outputPerMTokUsd: 10,
   cacheReadPerMTokUsd: 0.2,
   cacheWritePerMTokUsd: 2.5,
+  cacheWrite1hPerMTokUsd: 4,
 };
 /** Sonnet 4 / 4.5 / 4.6. */
 const CLAUDE_SONNET_LEGACY: ModelRate = {
@@ -86,12 +134,24 @@ const CLAUDE_SONNET_LEGACY: ModelRate = {
   outputPerMTokUsd: 15,
   cacheReadPerMTokUsd: 0.3,
   cacheWritePerMTokUsd: 3.75,
+  cacheWrite1hPerMTokUsd: 6,
 };
-const CLAUDE_HAIKU_CURRENT: ModelRate = {
+/** Haiku 5.5. A prompt over 100,000 tokens pays 5x on every category, output included. */
+const CLAUDE_HAIKU_5_5: ModelRate = {
+  inputPerMTokUsd: 0.1,
+  outputPerMTokUsd: 0.5,
+  cacheReadPerMTokUsd: 0.01,
+  cacheWritePerMTokUsd: 0.125,
+  cacheWrite1hPerMTokUsd: 0.2,
+  promptLengthThresholdTokens: 100_000,
+  promptLengthMultiplier: 5,
+};
+const CLAUDE_HAIKU_4_5: ModelRate = {
   inputPerMTokUsd: 1,
   outputPerMTokUsd: 5,
   cacheReadPerMTokUsd: 0.1,
   cacheWritePerMTokUsd: 1.25,
+  cacheWrite1hPerMTokUsd: 2,
 };
 /** Haiku 3.5 — retired. */
 const CLAUDE_HAIKU_LEGACY: ModelRate = {
@@ -99,6 +159,7 @@ const CLAUDE_HAIKU_LEGACY: ModelRate = {
   outputPerMTokUsd: 4,
   cacheReadPerMTokUsd: 0.08,
   cacheWritePerMTokUsd: 1,
+  cacheWrite1hPerMTokUsd: 1.6,
 };
 /** fable / mythos 5.1+ — same list price as 5.0 except for a cheaper cache read. */
 const CLAUDE_FABLE_CURRENT: ModelRate = {
@@ -106,12 +167,14 @@ const CLAUDE_FABLE_CURRENT: ModelRate = {
   outputPerMTokUsd: 50,
   cacheReadPerMTokUsd: 0.25,
   cacheWritePerMTokUsd: 12.5,
+  cacheWrite1hPerMTokUsd: 20,
 };
 const CLAUDE_FABLE_5_0: ModelRate = {
   inputPerMTokUsd: 10,
   outputPerMTokUsd: 50,
   cacheReadPerMTokUsd: 1,
   cacheWritePerMTokUsd: 12.5,
+  cacheWrite1hPerMTokUsd: 20,
 };
 
 type ClaudeFamily = 'opus' | 'sonnet' | 'haiku' | 'fable' | 'mythos';
@@ -132,15 +195,19 @@ interface ClaudeTier {
 
 const CLAUDE_TIERS: Record<ClaudeFamily, ClaudeTier[]> = {
   opus: [
-    { minVersion: 45, rate: CLAUDE_OPUS_CURRENT },
+    { minVersion: 55, rate: CLAUDE_OPUS_5_5 },
+    { minVersion: 48, rate: CLAUDE_OPUS_FAST },
+    { minVersion: 45, rate: CLAUDE_OPUS_4_5 },
     { minVersion: 0, rate: CLAUDE_OPUS_LEGACY },
   ],
   sonnet: [
-    { minVersion: 50, rate: CLAUDE_SONNET_CURRENT },
+    { minVersion: 55, rate: CLAUDE_SONNET_5_5 },
+    { minVersion: 50, rate: CLAUDE_SONNET_5_0 },
     { minVersion: 0, rate: CLAUDE_SONNET_LEGACY },
   ],
   haiku: [
-    { minVersion: 45, rate: CLAUDE_HAIKU_CURRENT },
+    { minVersion: 55, rate: CLAUDE_HAIKU_5_5 },
+    { minVersion: 45, rate: CLAUDE_HAIKU_4_5 },
     { minVersion: 0, rate: CLAUDE_HAIKU_LEGACY },
   ],
   fable: [
@@ -183,9 +250,9 @@ export const MODEL_RATES: Record<string, ModelRate> = {
   // Only reached for a Claude id `CLAUDE_MODEL_RE` can't date (a bare family
   // name, or the legacy `claude-3-5-sonnet` ordering). They point at the
   // newest tier — see the file header for why.
-  opus: CLAUDE_OPUS_CURRENT,
-  sonnet: CLAUDE_SONNET_CURRENT,
-  haiku: CLAUDE_HAIKU_CURRENT,
+  opus: CLAUDE_OPUS_5_5,
+  sonnet: CLAUDE_SONNET_5_5,
+  haiku: CLAUDE_HAIKU_5_5,
   fable: CLAUDE_FABLE_CURRENT,
   mythos: CLAUDE_FABLE_CURRENT,
 
@@ -400,7 +467,12 @@ export interface CostCentsInput {
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens?: number;
+  /** 5-minute cache writes. Ignored when `cacheWrite5mTokens` is set, so a caller passing both never double-counts. */
   cacheWriteTokens?: number;
+  /** 5-minute cache writes, billed at `cacheWritePerMTokUsd`; takes precedence over `cacheWriteTokens`. */
+  cacheWrite5mTokens?: number;
+  /** 1-hour cache writes, billed at `cacheWrite1hPerMTokUsd`. */
+  cacheWrite1hTokens?: number;
   /**
    * Billed at `outputPerMTokUsd` — reasoning tokens aren't broken out as
    * their own priced tier in any rate this table currently covers, and
@@ -424,6 +496,16 @@ export interface CostCentsInput {
  * silently mistaken for a genuinely free one by the Total Spend card.
  */
 export function costCentsFor(model: string, t: CostCentsInput): number | null {
+  const exact = costCentsExact(model, t);
+  return exact == null ? null : Math.round(exact);
+}
+
+/**
+ * Same as `costCentsFor` but unrounded, so a caller that sums many small
+ * records (a scan of thousands of sub-cent requests) can round once at the
+ * end instead of losing up to half a cent per record.
+ */
+export function costCentsExact(model: string, t: CostCentsInput): number | null {
   const rate = rateFor(model);
   if (!rate) return null;
 
@@ -431,31 +513,46 @@ export function costCentsFor(model: string, t: CostCentsInput): number | null {
   // yield an Infinity cost and render as the literal "$Infinity". A token
   // count that is present but not a real number makes the cost unknown, which
   // is the same `null` this function already returns for an unpriced model.
-  const present = [t.inputTokens, t.outputTokens, t.cacheReadTokens, t.cacheWriteTokens, t.reasoningTokens];
+  const present = [
+    t.inputTokens,
+    t.outputTokens,
+    t.cacheReadTokens,
+    t.cacheWriteTokens,
+    t.cacheWrite5mTokens,
+    t.cacheWrite1hTokens,
+    t.reasoningTokens,
+  ];
   if (present.some(v => v != null && !Number.isFinite(v))) return null;
 
   const inputTokens = Math.max(0, t.inputTokens || 0);
   const outputTokens = Math.max(0, t.outputTokens || 0);
   const cacheReadTokens = Math.max(0, t.cacheReadTokens || 0);
-  const cacheWriteTokens = Math.max(0, t.cacheWriteTokens || 0);
+  const cacheWrite5mTokens = Math.max(0, (t.cacheWrite5mTokens ?? t.cacheWriteTokens) || 0);
+  const cacheWrite1hTokens = Math.max(0, t.cacheWrite1hTokens || 0);
   const reasoningTokens = Math.max(0, t.reasoningTokens || 0);
 
-  const totalTokens = inputTokens + outputTokens + reasoningTokens + cacheReadTokens + cacheWriteTokens;
+  const promptTokens = inputTokens + cacheReadTokens + cacheWrite5mTokens + cacheWrite1hTokens;
+  const totalTokens = promptTokens + outputTokens + reasoningTokens;
   const overLongContext =
     rate.longContextThresholdTokens != null && totalTokens > rate.longContextThresholdTokens;
   const contextMultiplier = overLongContext ? rate.longContextMultiplier ?? 1 : 1;
+  const overPromptLength =
+    rate.promptLengthThresholdTokens != null && promptTokens > rate.promptLengthThresholdTokens;
+  const promptMultiplier = overPromptLength ? rate.promptLengthMultiplier ?? 1 : 1;
   const fastMultiplier = t.fastTier ? rate.fastTierMultiplier ?? 1 : 1;
-  const multiplier = contextMultiplier * fastMultiplier;
+  const multiplier = contextMultiplier * promptMultiplier * fastMultiplier;
 
   const cacheReadRate = rate.cacheReadPerMTokUsd ?? rate.inputPerMTokUsd;
   const cacheWriteRate = rate.cacheWritePerMTokUsd ?? rate.inputPerMTokUsd;
+  const cacheWrite1hRate = rate.cacheWrite1hPerMTokUsd ?? cacheWriteRate;
 
   const dollars =
     (inputTokens / 1_000_000) * rate.inputPerMTokUsd * multiplier +
     (outputTokens / 1_000_000) * rate.outputPerMTokUsd * multiplier +
     (reasoningTokens / 1_000_000) * rate.outputPerMTokUsd * multiplier +
     (cacheReadTokens / 1_000_000) * cacheReadRate * multiplier +
-    (cacheWriteTokens / 1_000_000) * cacheWriteRate * multiplier;
+    (cacheWrite5mTokens / 1_000_000) * cacheWriteRate * multiplier +
+    (cacheWrite1hTokens / 1_000_000) * cacheWrite1hRate * multiplier;
 
-  return Math.round(dollars * 100);
+  return dollars * 100;
 }

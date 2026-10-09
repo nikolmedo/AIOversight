@@ -276,6 +276,12 @@ function testQuotaMath() {
         sandbox.isAppNotRunning({ ok: false, error: 'x', appNotRunning: true }) === true &&
           sandbox.isAppNotRunning({ ok: false, error: 'x' }) === false &&
           sandbox.isAppNotRunning(undefined) === false);
+  check("connectorStatusFor: quota on, notDetected -> 'not-detected' (neutral, not 'error')",
+        sandbox.connectorStatusFor(on, { ok: false, notDetected: true }) === 'not-detected');
+  check('isExpectedAbsence: appNotRunning or notDetected, never a plain error',
+        sandbox.isExpectedAbsence({ ok: false, error: 'x', notDetected: true }) === true &&
+          sandbox.isExpectedAbsence({ ok: false, error: 'x', appNotRunning: true }) === true &&
+          sandbox.isExpectedAbsence({ ok: false, error: 'x' }) === false);
 
   // --- paceStateFor: static-threshold boundaries (no resetsAt/windowMs) -----
   const staticBucket = used => ({ used, limit: 100 });
@@ -640,6 +646,10 @@ function testQuotaView() {
   );
   check('planTrayPopup: several closed apps -> "A, B and C aren\'t running"',
         twoClosedPlan.emptyMessage === "Nothing to show. Alpha, Beta and Gamma aren't running.", twoClosedPlan.emptyMessage);
+  const notInstalled = { ok: false, fetchedAt: now, error: "Tool isn't installed on this computer.", notDetected: true };
+  const absentPlan = sandbox.planTrayPopup([popupDef('live', 'Live'), popupDef('tool', 'Tool')], { live: okSnap, tool: notInstalled });
+  check('planTrayPopup: omits a notDetected (not installed) connector',
+        JSON.stringify(absentPlan.visible.map(d => d.id)) === JSON.stringify(['live']), JSON.stringify(absentPlan));
   const nonePlan = sandbox.planTrayPopup(
     [popupDef('live', 'Live', true, false), popupDef('broken', 'Broken', true, false)],
     {},
@@ -658,8 +668,8 @@ function testQuotaView() {
         JSON.stringify(loadingPlan.visible.map(d => d.id)) === JSON.stringify(['loading']) && loadingPlan.emptyMessage === null,
         JSON.stringify(loadingPlan));
   const loadingHtml = sandbox.renderProviderBlock(loadingDef, undefined);
-  check('renderProviderBlock: no snapshot yet -> "Not loaded yet." note is reachable',
-        loadingHtml.includes('Not loaded yet.'), loadingHtml);
+  check('renderProviderBlock: no snapshot yet -> "Waiting for the first refresh." note is reachable',
+        loadingHtml.includes('Waiting for the first refresh.'), loadingHtml);
 
   const noticeHtml = sandbox.renderAppNotRunningNotice('Open <App> to see its quota.', '<button>Configure</button>');
   check('renderAppNotRunningNotice: neutral notice markup with info icon, escaped text and trailing actions',
@@ -1327,7 +1337,7 @@ function testModelPricing() {
   check('rateFor: a dated snapshot is not mistaken for a minor version',
         rateFor('claude-sonnet-4-5-20250929').inputPerMTokUsd === 3);
   check('rateFor: a newer-than-known version resolves to the newest tier, never null',
-        rateFor('claude-opus-6') === rateFor('claude-opus-5'));
+        rateFor('claude-opus-6') === rateFor('claude-opus-5-5'));
   check('rateFor: the fable family is priced instead of falling through to null',
         rateFor('claude-fable-5-1').outputPerMTokUsd === 50);
 
@@ -1782,6 +1792,51 @@ async function testTranscriptWatcher() {
     check('tool-pending event kind is waiting', captured[1].kind === 'waiting',
           `kind=${captured[1].kind}`);
   }
+
+  await watcher.stop();
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+// --------------------------------------------------------------------------
+// TranscriptWatcher: trailing metadata lines + ignorePath (Claude Code)
+// --------------------------------------------------------------------------
+async function testTranscriptWatcherMetadataAndIgnore() {
+  console.log('TranscriptWatcher: trailing metadata lines and ignorePath');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'aw-smoke-cc-'));
+  const mainFile = path.join(tmp, 'session-a.jsonl');
+  const subDir = path.join(tmp, 'session-a', 'subagents');
+  fs.mkdirSync(subDir, { recursive: true });
+  const subFile = path.join(subDir, 'agent-1.jsonl');
+  fs.writeFileSync(mainFile, '');
+  fs.writeFileSync(subFile, '');
+
+  const captured = [];
+  const watcher = findConnector('claude-code').detector.create(
+    { paths: [path.join(tmp, '**', '*.jsonl').split(path.sep).join('/')], idleSeconds: 2 },
+    makeCtx(captured),
+  );
+  await watcher.start();
+  await sleep(500);
+
+  fs.appendFileSync(subFile, JSON.stringify({
+    type: 'assistant', isSidechain: true, message: { content: [{ type: 'text', text: 'sub done' }] },
+  }) + '\n');
+  fs.appendFileSync(mainFile, [
+    { type: 'assistant', message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'All finished.' }] } },
+    { type: 'queue-operation', operation: 'dequeue' },
+    { type: 'system', subtype: 'stop_hook_summary' },
+    { type: 'system', subtype: 'turn_duration' },
+    { type: 'last-prompt', lastPrompt: 'x' },
+  ].map(l => JSON.stringify(l)).join('\n') + '\n');
+  await sleep(4500);
+
+  check('assistant final followed by metadata lines still fires finished',
+        captured.some(e => e.kind === 'finished' && /All finished/.test(e.message)),
+        `events=${JSON.stringify(captured)}`);
+  check('subagent transcript path does not notify',
+        !captured.some(e => /sub done/.test(e.message) || /agent-1/.test(e.source)),
+        `events=${JSON.stringify(captured)}`);
+  check('exactly one event total', captured.length === 1, `got ${captured.length}`);
 
   await watcher.stop();
   fs.rmSync(tmp, { recursive: true, force: true });
@@ -2665,6 +2720,7 @@ function testUpdater() {
   testClaudeUsageParsing();
   await testCodexCumulativeStateRestart();
   await testTranscriptWatcher();
+  await testTranscriptWatcherMetadataAndIgnore();
   await testWebhook();
   console.log('---');
   if (failures === 0) {
